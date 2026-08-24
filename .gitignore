@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+server/node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# Persistent private data
+data/*
+!data/.gitkeep
+backups/*
+!backups/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Databases and user documents
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+uploads/
+documents/
+adjuntos/
+anexos/
+
+# Build/runtime
+dist/
+build/
+.cache/
+coverage/
+*.log
+*.pid
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
