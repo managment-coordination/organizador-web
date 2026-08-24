@@ -411,14 +411,14 @@ function detectResponsible(text, fallback = "") {
   if (t.includes("elena")) return "Elena Cuenca";
   if (t.includes("luis")) return "Luis Gallardo";
   if (t.includes("presidente") || t.includes("rudy")) return "Presidente";
-  if (t.includes("proveedor") || t.includes("empresa")) return "Proveedor";
+  if (t.includes("proveedor") || t.includes("empresa") || t.includes("jardinero")) return "Proveedor";
   return fallback;
 }
 
 function detectPriority(text, fallback = "Media") {
   const t = normalizeText(text);
   if (t.includes("urgente") || t.includes("inmediato")) return "Urgente";
-  if (t.includes("alta prioridad") || t.includes("importante")) return "Alta";
+  if (t.includes("alta prioridad") || t.includes("importante") || t.includes("obstruid") || t.includes("atasc")) return "Alta";
   if (t.includes("baja prioridad")) return "Baja";
   return fallback || "Media";
 }
@@ -430,12 +430,72 @@ function extractNextStep(text) {
   return lines.slice(-3).join("\n").slice(0, 1200);
 }
 
+function hasOperationalSignal(text) {
+  const t = normalizeText(text);
+  return [
+    "arqueta", "raiz", "raices", "obstru", "atasc", "tubo", "jardinero", "jardineria",
+    "puerta", "villa", "calle", "zona", "pueblo", "alumbrado", "farola", "agua",
+    "electric", "seguridad", "contenedor", "basura", "pintura", "baden", "obra",
+    "mantenimiento", "reparacion", "incidencia", "proveedor", "presupuesto",
+    "presidente", "comunidad", "propietario", "administracion", "oficina"
+  ].some((token) => t.includes(token));
+}
+
+function extractLocation(text) {
+  const raw = String(text || "");
+  const normalized = normalizeText(raw);
+  const puerta = raw.match(/puerta\s+(?:de\s+la\s+)?([0-9]{1,3}(?:\s*[-/]\s*[0-9]{1,3})?)/i);
+  if (puerta) return `puerta ${puerta[1].replace(/\s+/g, "")}`;
+  const villa = raw.match(/villa\s+([0-9]{1,3}(?:\s*[-/]\s*[0-9]{1,3})?)/i);
+  if (villa) return `villa ${villa[1].replace(/\s+/g, "")}`;
+  if (normalized.includes("pueblo")) return "zona Pueblo";
+  return "";
+}
+
+function extractIssueTitle(text) {
+  const t = normalizeText(text);
+  const location = extractLocation(text);
+  let issue = "Incidencia operativa";
+  if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc"))) issue = "Arqueta obstruida";
+  else if (t.includes("arqueta")) issue = "Revision de arqueta";
+  else if (t.includes("raiz") || t.includes("raices")) issue = "Raices afectando instalacion";
+  else if (t.includes("tubo")) issue = "Revision de tubo";
+  else if (t.includes("jardinero")) issue = "Actuacion de jardineria";
+  return location ? `${issue} en ${location}` : issue;
+}
+
+function outOfScopeProposal(text, projectMatches, taskMatches) {
+  return {
+    source: "local",
+    confidence: 0.2,
+    action: "fuera_de_alcance",
+    answer: "El texto no parece corresponder a una tarea, proyecto, incidencia, consulta o actuacion de la comunidad. No se propone guardar nada.",
+    candidates: [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].filter((m) => m.score > 0).map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
+    payload: {
+      tipo_registro: "Seguimiento",
+      comentario: String(text || "").trim().slice(0, 4000),
+      estado_nuevo: "Pendiente",
+      prioridad_nueva: "Media",
+      responsable_nuevo: "",
+      responsable_proximo_paso: "",
+      fecha_objetivo_proximo_paso: "",
+      fecha_proxima_revision: "",
+      proximo_paso: "",
+      motivo_bloqueo: "",
+    },
+  };
+}
+
 function localAiProposal(text, context) {
   const queryish = /[?¿]|\b(cual|cuanto|quien|dime|consulta|estado de|busca|listado)\b/i.test(text);
   const projectMatches = (context.projects || []).map((item) => ({ ...item, kind: "project", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
   const taskMatches = (context.tasks || []).map((item) => ({ ...item, kind: "task", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
   const best = [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].sort((a, b) => b.score - a.score)[0];
-  if (queryish) {
+  const operational = hasOperationalSignal(text);
+  if (!queryish && !operational && (!best || best.score === 0)) {
+    return outOfScopeProposal(text, projectMatches, taskMatches);
+  }
+  if (queryish && !operational) {
     const matches = [...projectMatches, ...taskMatches].filter((item) => item.score > 0).slice(0, 6);
     return {
       source: "local",
@@ -449,7 +509,7 @@ function localAiProposal(text, context) {
   }
   const allMatches = [...projectMatches, ...taskMatches].sort((a, b) => b.score - a.score);
   const nextBestScore = allMatches[1]?.score || 0;
-  if (best && (best.score >= 2 || (best.score >= 1 && nextBestScore === 0))) {
+  if (best && ((operational && best.score >= 3) || (!operational && (best.score >= 2 || (best.score >= 1 && nextBestScore === 0))))) {
     const isTask = best.kind === "task";
     return {
       source: "local",
@@ -467,6 +527,32 @@ function localAiProposal(text, context) {
         fecha_objetivo_proximo_paso: "",
         fecha_proxima_revision: "",
         proximo_paso: extractNextStep(text),
+        motivo_bloqueo: "",
+      },
+    };
+  }
+  if (operational) {
+    const title = extractIssueTitle(text);
+    const owner = detectResponsible(text, "Luis Gallardo");
+    const nextOwner = normalizeText(text).includes("jardinero") ? "Proveedor" : owner;
+    return {
+      source: "local",
+      confidence: 0.62,
+      action: "crear_tarea",
+      answer: "No he encontrado una tarea/proyecto existente con coincidencia suficiente, pero el texto si parece una incidencia operativa de la comunidad. Propongo crear una tarea nueva y revisar el proyecto contenedor antes de guardar.",
+      candidates: [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].filter((m) => m.score > 0).map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
+      payload: {
+        titulo: title,
+        categoria: "Mantenimiento",
+        tipo_registro: "Seguimiento",
+        comentario: String(text || "").trim().slice(0, 4000),
+        estado_nuevo: "Pendiente",
+        prioridad_nueva: detectPriority(text, "Alta"),
+        responsable_nuevo: owner,
+        responsable_proximo_paso: nextOwner,
+        fecha_objetivo_proximo_paso: "",
+        fecha_proxima_revision: "",
+        proximo_paso: extractNextStep(text) || "Revisar la incidencia sobre el terreno y definir actuacion.",
         motivo_bloqueo: "",
       },
     };
@@ -510,7 +596,7 @@ async function externalAiProposal(text, context) {
     "Eres el clasificador operativo de una aplicacion de gestion de comunidades.",
     "Devuelve solo JSON valido.",
     "Nunca ordenes guardar directamente. Solo propones.",
-    "Acciones permitidas: consulta, seguimiento_proyecto, seguimiento_tarea, crear_proyecto, crear_tarea, revisar_manual.",
+    "Acciones permitidas: fuera_de_alcance, consulta, seguimiento_proyecto, seguimiento_tarea, crear_proyecto, crear_tarea, revisar_manual.",
     "Si dudas entre varias entidades, usa revisar_manual y rellena candidates.",
     "Usa ids existentes solo si la coincidencia es clara.",
     "Formato: {action, confidence, answer, entity:{type,id,title}, candidates:[{type,id,title,score}], payload:{tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,responsable_proximo_paso,fecha_objetivo_proximo_paso,fecha_proxima_revision,proximo_paso,motivo_bloqueo,titulo,categoria,id_proyecto}}"
@@ -1729,6 +1815,7 @@ function homePage() {
 
     function proposalActionOptions(action) {
       const actions = [
+        ["fuera_de_alcance", "Fuera de alcance / descartar"],
         ["consulta", "Consulta"],
         ["seguimiento_proyecto", "Seguimiento de proyecto"],
         ["seguimiento_tarea", "Seguimiento de tarea"],
@@ -1812,7 +1899,7 @@ function homePage() {
         motivo_bloqueo: $("aiBlockReason").value,
         id_proyecto: $("aiProjectContainer").value
       };
-      if (action === "consulta" || action === "revisar_manual") {
+      if (action === "consulta" || action === "revisar_manual" || action === "fuera_de_alcance") {
         $("aiApplyMessage").textContent = "Esta propuesta no guarda cambios. Cambia la accion si quieres aplicar algo.";
         return;
       }
