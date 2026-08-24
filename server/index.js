@@ -471,6 +471,20 @@ function buildFormalNextStep(text, fallback = "") {
   }
 
   if (hasOperationalSignal(clean)) {
+    const steps = [];
+    if (t.includes("revis") || t.includes("terreno") || t.includes("incidencia")) {
+      steps.push("revisar la incidencia sobre el terreno y confirmar el alcance de la actuacion necesaria");
+    }
+    if (t.includes("presupuesto")) {
+      steps.push("confirmar o solicitar el presupuesto correspondiente");
+    }
+    if (t.includes("inform")) {
+      const responsible = detectResponsible(clean, "");
+      steps.push(responsible ? `informar a ${responsible} con el resultado de la revision` : "informar del resultado de la revision");
+    }
+    if (steps.length) {
+      return steps.map((step, index) => (index === 0 ? step.charAt(0).toUpperCase() + step.slice(1) : step)).join("; ") + ".";
+    }
     return "Revisar la incidencia sobre el terreno, confirmar el alcance de la actuacion necesaria y asignar responsable y plazo para su resolucion.";
   }
 
@@ -1039,12 +1053,45 @@ finally:
   return runPythonJson(script);
 }
 
-async function analyzeWithAi(session, text) {
+function targetedRecordProposal(text, context, target) {
+  const type = String(target?.type || "").trim();
+  const id = Number(target?.id || 0);
+  if (!["task", "project"].includes(type) || !id) return null;
+  const rows = type === "task" ? (context.tasks || []) : (context.projects || []);
+  const item = rows.find((row) => Number(row.id) === id) || { id, titulo: target?.title || "", estado: "", prioridad: "Media", responsable: "" };
+  const isTask = type === "task";
+  const currentState = item.estado || (isTask ? "Pendiente" : "En curso");
+  const currentOwner = item.responsable || "";
+  return {
+    source: "local-db",
+    confidence: 0.9,
+    action: isTask ? "seguimiento_tarea" : "seguimiento_proyecto",
+    answer: "Seguimiento preparado sobre el elemento seleccionado. Revisa los campos antes de guardar.",
+    entity: { type, id, title: item.titulo || target?.title || "" },
+    candidates: [{ type, id, title: item.titulo || target?.title || "", score: 10 }],
+    payload: {
+      tipo_registro: "Seguimiento",
+      comentario: buildFormalComment(text, item).slice(0, 4000),
+      estado_nuevo: detectState(text, currentState),
+      prioridad_nueva: detectPriority(text, item.prioridad || "Media"),
+      responsable_nuevo: currentOwner,
+      responsable_proximo_paso: detectResponsible(text, item.responsable_proximo_paso || currentOwner),
+      fecha_objetivo_proximo_paso: "",
+      fecha_proxima_revision: "",
+      proximo_paso: buildFormalNextStep(text, item.proximo_paso || ""),
+      motivo_bloqueo: "",
+    },
+  };
+}
+
+async function analyzeWithAi(session, text, target = null) {
   const cleanText = String(text || "").trim();
   if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
+  const context = await queryAiContext(session);
+  const targeted = targetedRecordProposal(cleanText, context, target);
+  if (targeted) return targeted;
   const smart = await querySmartAssistant(session, cleanText);
   if (smart?.handled) return smart;
-  const context = await queryAiContext(session);
   const fallback = localAiProposal(cleanText, context);
   try {
     const external = await externalAiProposal(cleanText, context);
@@ -1711,6 +1758,9 @@ function homePage() {
     .detailBox { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:9px; font-size:13px; }
     .detailBox strong { display:block; margin-bottom:3px; }
     textarea { width:100%; min-height:110px; resize:vertical; border:1px solid #cbd5e1; border-radius:6px; padding:10px 11px; font:14px Segoe UI, Arial, sans-serif; }
+    .quickRecord { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px; margin:10px 0 12px; }
+    .quickRecord h3 { margin:0 0 6px; font-size:16px; }
+    .quickRecord textarea { min-height:170px; background:white; }
     .formGrid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:9px; }
     .history { display:grid; gap:8px; }
     .historyItem { border:1px solid #e2e8f0; border-left:5px solid #94a3b8; border-radius:8px; padding:10px; background:#fff; }
@@ -1829,6 +1879,17 @@ function homePage() {
           </section>
           <section id="recordSection">
             <h2>Añadir seguimiento</h2>
+            <div id="quickRecordBox" class="quickRecord hidden">
+              <h3>Entrada inteligente de seguimiento</h3>
+              <p class="muted">Pega una transcripcion, escribe una nota rapida o usa el dictado del teclado del movil. La app lo ordenara en comentario y proximo paso antes de guardar.</p>
+              <textarea id="quickRecordText" placeholder="Ejemplo: He hablado con el proveedor. Queda pendiente revisar la arqueta, confirmar presupuesto y volver a informar..."></textarea>
+              <div class="toolbar">
+                <button id="quickRecordAnalyze">Analizar y rellenar</button>
+                <button class="ghost" id="quickRecordDictate">Dictar</button>
+                <button class="ghost" id="quickRecordClear">Limpiar</button>
+                <span class="muted" id="quickRecordMessage"></span>
+              </div>
+            </div>
             <div class="formGrid">
               <div>
                 <label>Tipo</label>
@@ -2013,6 +2074,15 @@ function homePage() {
       if (current) select.value = current;
     }
 
+    function setSelectValue(select, value) {
+      const clean = safe(value);
+      if (!clean) return;
+      if (![...select.options].some(option => option.value === clean)) {
+        select.insertAdjacentHTML("beforeend", '<option value="' + html(clean) + '">' + html(clean) + '</option>');
+      }
+      select.value = clean;
+    }
+
     function detailValue(label, value) {
       return '<div class="detailBox"><strong>' + html(label) + '</strong>' + html(value || "Sin dato") + '</div>';
     }
@@ -2089,12 +2159,75 @@ function homePage() {
       $("recordComment").value = "";
       $("recordNextStep").value = item.proximo_paso || "";
       $("recordBlockReason").value = "";
+      $("quickRecordText").value = "";
+      $("quickRecordMessage").textContent = "";
+      $("quickRecordBox").classList.toggle("hidden", !focusRecord);
       updateBlockReasonVisibility();
       $("recordSection").classList.toggle("hidden", (state.usuario || {}).rol === "Presidente");
       renderHistory(detail.history || []);
       renderAttachments(detail.attachments || []);
       $("entityModal").classList.remove("hidden");
-      if (focusRecord) setTimeout(() => $("recordComment").focus(), 50);
+      if (focusRecord) setTimeout(() => $("quickRecordText").focus(), 50);
+    }
+
+    function fillRecordFromProposal(proposal) {
+      const payload = proposal.payload || {};
+      setSelectValue($("recordType"), payload.tipo_registro || "Seguimiento");
+      setSelectValue($("recordState"), payload.estado_nuevo);
+      setSelectValue($("recordPriority"), payload.prioridad_nueva);
+      $("recordOwner").value = payload.responsable_nuevo || $("recordOwner").value;
+      $("recordNextOwner").value = payload.responsable_proximo_paso || $("recordNextOwner").value;
+      $("recordNextDate").value = (payload.fecha_objetivo_proximo_paso || payload.fecha_proxima_revision || $("recordNextDate").value || "").slice(0, 10);
+      $("recordComment").value = payload.comentario || $("recordComment").value;
+      $("recordNextStep").value = payload.proximo_paso || $("recordNextStep").value;
+      $("recordBlockReason").value = payload.motivo_bloqueo || "";
+      updateBlockReasonVisibility();
+    }
+
+    async function analyzeQuickRecord() {
+      if (!selectedEntity) return;
+      const text = $("quickRecordText").value;
+      if (!safe(text)) {
+        $("quickRecordMessage").textContent = "Pega o dicta primero el seguimiento.";
+        return;
+      }
+      $("quickRecordMessage").textContent = "Analizando...";
+      try {
+        const proposal = await api("/api/ai/analyze", {
+          method: "POST",
+          body: JSON.stringify({ text, target: { type: selectedEntity.type, id: selectedEntity.id, title: itemTitle(selectedEntity.item, selectedEntity.type) } })
+        });
+        fillRecordFromProposal(proposal);
+        $("quickRecordMessage").textContent = "Campos rellenados. Revisa y guarda el seguimiento.";
+      } catch (error) {
+        $("quickRecordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
+    function startQuickDictation() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        $("quickRecordMessage").textContent = "Si el navegador no permite dictado directo, usa el microfono del teclado del movil en esta caja.";
+        $("quickRecordText").focus();
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = "es-ES";
+      recognition.interimResults = false;
+      recognition.continuous = false;
+      $("quickRecordMessage").textContent = "Escuchando...";
+      recognition.onresult = event => {
+        const transcript = Array.from(event.results).map(result => result[0].transcript).join(" ");
+        $("quickRecordText").value = [safe($("quickRecordText").value), transcript].filter(Boolean).join("\\n");
+        $("quickRecordMessage").textContent = "Dictado añadido. Puedes analizar cuando quieras.";
+      };
+      recognition.onerror = () => {
+        $("quickRecordMessage").textContent = "No se pudo usar el dictado del navegador. Usa el microfono del teclado del movil.";
+      };
+      recognition.onend = () => {
+        if ($("quickRecordMessage").textContent === "Escuchando...") $("quickRecordMessage").textContent = "Dictado finalizado.";
+      };
+      recognition.start();
     }
 
     function closeModal() {
@@ -2417,6 +2550,13 @@ function homePage() {
     $("entityModal").addEventListener("click", event => { if (event.target.id === "entityModal") closeModal(); });
     $("recordState").addEventListener("change", updateBlockReasonVisibility);
     $("saveRecord").addEventListener("click", saveRecord);
+    $("quickRecordAnalyze").addEventListener("click", analyzeQuickRecord);
+    $("quickRecordDictate").addEventListener("click", startQuickDictation);
+    $("quickRecordClear").addEventListener("click", () => {
+      $("quickRecordText").value = "";
+      $("quickRecordMessage").textContent = "";
+      $("quickRecordText").focus();
+    });
     $("reload").addEventListener("click", loadOverview);
     $("loginButton").addEventListener("click", login);
     $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
@@ -2515,7 +2655,7 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     const body = await readBody(req);
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
-    return sendJson(res, 200, await analyzeWithAi(session, body.text || ""));
+    return sendJson(res, 200, await analyzeWithAi(session, body.text || "", body.target || null));
   }
   if (req.method === "GET" && url.pathname === "/health") {
     const databaseExists = fs.existsSync(databasePath);
