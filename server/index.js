@@ -15,6 +15,7 @@ const appName = process.env.APP_NAME || "Organizador Web";
 const dataDir = path.join(rootDir, "data");
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
+const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/organizador_tareas.db");
 
 for (const dir of [dataDir, logsDir, backupsDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -82,14 +83,17 @@ const server = http.createServer((req, res) => {
     return sendHtml(res, 200, homePage());
   }
   if (req.method === "GET" && url.pathname === "/health") {
+    const databaseExists = fs.existsSync(databasePath);
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: 1,
+      step: databaseExists ? 3 : 1,
       port,
       dataDir,
-      databaseConfigured: Boolean(process.env.DATABASE_PATH),
-      migratedRealData: false,
+      databasePath,
+      databaseConfigured: databaseExists,
+      databaseSize: databaseExists ? fs.statSync(databasePath).size : 0,
+      migratedRealData: databaseExists,
       timestamp: new Date().toISOString()
     });
   }
