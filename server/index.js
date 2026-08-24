@@ -430,6 +430,53 @@ function extractNextStep(text) {
   return lines.slice(-3).join("\n").slice(0, 1200);
 }
 
+function cleanTranscriptText(text) {
+  return String(text || "")
+    .replace(/\d{2}:\d{2}:\d{2}\s+Speaker\s+\d+/gi, " ")
+    .replace(/\bSpeaker\s+\d+\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildFormalComment(text, contextItem = null) {
+  const clean = cleanTranscriptText(text);
+  const t = normalizeText(clean);
+  const location = extractLocation(clean);
+  const zone = t.includes("pueblo") && location !== "zona Pueblo" ? "zona Pueblo" : "";
+  const place = [location, zone].filter(Boolean).join(", ");
+
+  if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc") || t.includes("raiz") || t.includes("raices") || t.includes("tubo"))) {
+    return [
+      `Se recibe aviso sobre una arqueta${place ? ` situada en ${place}` : ""}, que presenta riesgo de obstruccion.`,
+      "Segun la informacion trasladada, se observan raices procedentes de un tubo que estan bloqueando parcialmente la arqueta.",
+      "Se indica que el jardinero ha revisado la situacion, pero no ha intervenido por el riesgo de que el material retirado caiga al fondo y provoque una obstruccion aguas abajo.",
+    ].join(" ");
+  }
+
+  if (hasOperationalSignal(clean)) {
+    const subject = contextItem?.titulo || contextItem?.title || "la actuacion indicada";
+    const summary = clean ? clean.slice(0, 900) : "Se aporta informacion operativa pendiente de revisar.";
+    return `Se registra comunicacion relacionada con ${subject}. Informacion recibida: ${summary}`;
+  }
+
+  return clean.slice(0, 4000);
+}
+
+function buildFormalNextStep(text, fallback = "") {
+  const clean = cleanTranscriptText(text);
+  const t = normalizeText(clean);
+
+  if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc") || t.includes("raiz") || t.includes("raices") || t.includes("tubo"))) {
+    return "Coordinar revision sobre el terreno con el proveedor/jardinero, valorar la retirada controlada de las raices y confirmar si es necesaria una intervencion especializada para evitar la obstruccion de la red.";
+  }
+
+  if (hasOperationalSignal(clean)) {
+    return "Revisar la incidencia sobre el terreno, confirmar el alcance de la actuacion necesaria y asignar responsable y plazo para su resolucion.";
+  }
+
+  return extractNextStep(clean) || fallback || "Revisar la informacion aportada y definir el siguiente paso operativo.";
+}
+
 function hasOperationalSignal(text) {
   const t = normalizeText(text);
   return [
@@ -519,14 +566,14 @@ function localAiProposal(text, context) {
       candidates: [best, ...(best.kind === "task" ? taskMatches : projectMatches).filter((item) => item.id !== best.id).slice(0, 4)].map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
       payload: {
         tipo_registro: "Seguimiento",
-        comentario: String(text || "").trim().slice(0, 4000),
+        comentario: buildFormalComment(text, best).slice(0, 4000),
         estado_nuevo: detectState(text, isTask ? (best.estado || "Pendiente") : (best.estado || "En curso")),
         prioridad_nueva: detectPriority(text, best.prioridad || "Media"),
         responsable_nuevo: best.responsable || "",
         responsable_proximo_paso: detectResponsible(text, best.responsable_proximo_paso || best.responsable || ""),
         fecha_objetivo_proximo_paso: "",
         fecha_proxima_revision: "",
-        proximo_paso: extractNextStep(text),
+        proximo_paso: buildFormalNextStep(text, extractNextStep(text)),
         motivo_bloqueo: "",
       },
     };
@@ -545,14 +592,14 @@ function localAiProposal(text, context) {
         titulo: title,
         categoria: "Mantenimiento",
         tipo_registro: "Seguimiento",
-        comentario: String(text || "").trim().slice(0, 4000),
+        comentario: buildFormalComment(text).slice(0, 4000),
         estado_nuevo: "Pendiente",
         prioridad_nueva: detectPriority(text, "Alta"),
         responsable_nuevo: owner,
         responsable_proximo_paso: nextOwner,
         fecha_objetivo_proximo_paso: "",
         fecha_proxima_revision: "",
-        proximo_paso: extractNextStep(text) || "Revisar la incidencia sobre el terreno y definir actuacion.",
+        proximo_paso: buildFormalNextStep(text, "Revisar la incidencia sobre el terreno y definir actuacion."),
         motivo_bloqueo: "",
       },
     };
@@ -565,14 +612,14 @@ function localAiProposal(text, context) {
     candidates: [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].filter((m) => m.score > 0).map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
     payload: {
       tipo_registro: "Seguimiento",
-      comentario: String(text || "").trim().slice(0, 4000),
+      comentario: buildFormalComment(text).slice(0, 4000),
       estado_nuevo: "En curso",
       prioridad_nueva: "Media",
       responsable_nuevo: "",
       responsable_proximo_paso: "",
       fecha_objetivo_proximo_paso: "",
       fecha_proxima_revision: "",
-      proximo_paso: extractNextStep(text),
+      proximo_paso: buildFormalNextStep(text, extractNextStep(text)),
       motivo_bloqueo: "",
     },
   };
