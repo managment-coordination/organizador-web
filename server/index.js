@@ -331,55 +331,96 @@ function homePage() {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${appName}</title>
   <style>
-    :root { --bg:#eef2f7; --ink:#111827; --muted:#64748b; --line:#dbe3ef; --blue:#1d4ed8; --green:#15803d; --amber:#b45309; --red:#b91c1c; }
+    :root {
+      --bg:#f3f6fb; --surface:#ffffff; --surface-soft:#f8fafc; --ink:#111827; --muted:#64748b;
+      --line:#d9e2ee; --blue:#1d4ed8; --blue-soft:#dbeafe; --green:#15803d; --amber:#b45309;
+      --red:#b91c1c; --shadow:0 10px 30px rgba(15,23,42,.08);
+    }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Segoe UI, Arial, sans-serif; background: var(--bg); color: var(--ink); }
-    header { background:#0f172a; color:white; padding:18px 22px; display:flex; justify-content:space-between; gap:16px; align-items:center; }
-    header h1 { margin:0; font-size:24px; }
-    main { max-width: 1440px; margin: 0 auto; padding: 18px; }
-    section { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-    h2 { margin: 0 0 10px; font-size: 20px; }
+    header { background:#0f172a; color:white; padding:16px 22px; }
+    .topbar { max-width:1480px; margin:0 auto; display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    .brand h1 { margin:0; font-size:22px; line-height:1.1; }
+    .brand p { margin:5px 0 0; color:#cbd5e1; font-size:13px; }
+    .session { display:flex; gap:10px; align-items:center; justify-content:flex-end; flex-wrap:wrap; font-size:13px; color:#dbeafe; }
+    main { max-width: 1480px; margin: 0 auto; padding: 16px; }
+    section { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    h2 { margin: 0; font-size: 19px; }
     label { display:block; font-weight:700; font-size:13px; color:#334155; margin:10px 0 4px; }
     .muted { color: var(--muted); }
     .grid { display:grid; gap:12px; }
-    .counts { grid-template-columns: repeat(6, minmax(120px, 1fr)); margin-bottom:12px; }
-    .count { background:white; border:1px solid var(--line); border-radius:8px; padding:12px; }
-    .count strong { display:block; font-size:26px; }
-    .split { grid-template-columns: 1fr 1fr; align-items:start; }
-    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-    input, select { border:1px solid #cbd5e1; border-radius:6px; padding:9px 10px; font:14px Segoe UI, Arial, sans-serif; min-width: 170px; }
-    .cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap:10px; }
-    .card { border:1px solid var(--line); border-left:5px solid #94a3b8; border-radius:8px; padding:11px; background:#fff; min-height:142px; }
-    .card h3 { margin:0 0 6px; font-size:16px; line-height:1.25; }
-    .meta { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
-    .pill { border-radius:999px; padding:4px 8px; font-size:12px; font-weight:700; background:#eef2f7; color:#334155; }
-    .prioridad-Urgente { border-left-color:#b91c1c; }
-    .prioridad-Alta { border-left-color:#ea580c; }
-    .prioridad-Media { border-left-color:#b45309; }
-    .prioridad-Baja { border-left-color:#15803d; }
-    .estado-Pendiente { background:#fef3c7; color:#78350f; }
-    .estado-En-curso { background:#dbeafe; color:#1e3a8a; }
-    .estado-Pendiente-de-tercero { background:#ffedd5; color:#7c2d12; }
-    .estado-Bloqueada, .estado-Bloqueado { background:#fee2e2; color:#7f1d1d; }
-    .estado-Terminada, .estado-Finalizado { background:#dcfce7; color:#14532d; }
-    .line { font-size:13px; color:#334155; margin-top:5px; }
+    .counts { grid-template-columns: repeat(6, minmax(130px, 1fr)); margin-bottom:12px; }
+    .count { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:12px; box-shadow:0 1px 0 rgba(15,23,42,.03); }
+    .count strong { display:block; font-size:25px; margin-top:4px; }
+    .workbench { display:grid; grid-template-columns: 270px 1fr; gap:12px; align-items:start; }
+    .sidebar { position:sticky; top:12px; }
+    .sidebar h2 { margin-bottom:10px; }
+    .tabs { display:grid; gap:8px; }
+    .tab { width:100%; display:flex; justify-content:space-between; align-items:center; text-align:left; background:var(--surface-soft); color:#1f2937; border:1px solid var(--line); }
+    .tab.active { background:var(--blue); color:white; border-color:var(--blue); }
+    .tab span:last-child { font-weight:800; }
+    .filters { display:grid; gap:9px; margin-top:12px; }
+    input, select { border:1px solid #cbd5e1; border-radius:6px; padding:10px 11px; font:14px Segoe UI, Arial, sans-serif; width:100%; min-height:40px; background:white; color:var(--ink); }
+    .toolbar { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+    .contentHead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; margin-bottom:12px; }
+    .contentHead p { margin:5px 0 0; font-size:13px; }
+    .cards { display:grid; grid-template-columns: repeat(auto-fill, minmax(315px, 1fr)); gap:11px; }
+    .card { border:1px solid var(--line); border-left:6px solid #94a3b8; border-radius:8px; padding:12px; background:#fff; min-height:154px; box-shadow:0 1px 0 rgba(15,23,42,.04); display:flex; flex-direction:column; gap:8px; }
+    .card h3 { margin:0; font-size:16px; line-height:1.25; overflow-wrap:anywhere; }
+    .meta { display:flex; gap:6px; flex-wrap:wrap; }
+    .pill { border-radius:999px; padding:4px 8px; font-size:12px; font-weight:700; background:#eef2f7; color:#334155; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .priority-Urgente { border-left-color:#b91c1c; }
+    .priority-Alta { border-left-color:#ea580c; }
+    .priority-Media { border-left-color:#b45309; }
+    .priority-Baja { border-left-color:#15803d; }
+    .state-Pendiente { background:#fef3c7; color:#78350f; }
+    .state-En-curso { background:#dbeafe; color:#1e3a8a; }
+    .state-Pendiente-de-tercero { background:#ffedd5; color:#7c2d12; }
+    .state-Bloqueada, .state-Bloqueado { background:#fee2e2; color:#7f1d1d; }
+    .state-Terminada, .state-Finalizado, .state-Finalizada { background:#dcfce7; color:#14532d; }
+    .line { font-size:13px; color:#334155; line-height:1.35; overflow-wrap:anywhere; }
+    .line strong { color:#111827; }
+    .nextStep { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:8px; margin-top:auto; }
     .empty { padding:16px; color:var(--muted); border:1px dashed #cbd5e1; border-radius:8px; }
     button { border:0; border-radius:6px; background:var(--blue); color:white; padding:10px 13px; font-weight:700; cursor:pointer; }
     button.secondary { background:#64748b; }
-    .login { max-width:440px; margin:40px auto; }
+    button.ghost { background:#e2e8f0; color:#1f2937; }
+    .login { max-width:440px; margin:44px auto; box-shadow:var(--shadow); }
     .login h2 { font-size:24px; }
     .login input, .login select, .login button { width:100%; margin-bottom:8px; }
     .hidden { display:none !important; }
-    @media (max-width: 1000px) { .split, .counts { grid-template-columns:1fr; } header { align-items:flex-start; flex-direction:column; } }
+    @media (max-width: 1100px) {
+      .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .workbench { grid-template-columns: 1fr; }
+      .sidebar { position:static; }
+      .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 700px) {
+      header { padding:14px; }
+      .topbar { align-items:flex-start; flex-direction:column; }
+      main { padding:10px; }
+      section { padding:12px; }
+      .counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .filters, .tabs { grid-template-columns:1fr; }
+      .cards { grid-template-columns:1fr; }
+      .contentHead { flex-direction:column; }
+      .toolbar button { flex:1 1 auto; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>${appName}</h1>
-      <div class="muted" style="color:#cbd5e1">Paso 5 - acceso con usuario - solo lectura</div>
+    <div class="topbar">
+      <div class="brand">
+        <h1>${appName}</h1>
+        <p>Paso 6 - lectura optimizada para movil y escritorio</p>
+      </div>
+      <div class="session">
+        <span id="sessionStatus">Comprobando acceso...</span>
+        <button class="secondary hidden" id="logoutTop">Salir</button>
+      </div>
     </div>
-    <div id="sessionStatus">Comprobando acceso...</div>
   </header>
   <main>
     <section id="loginView" class="login hidden">
@@ -394,30 +435,52 @@ function homePage() {
     </section>
     <div id="appView" class="hidden">
       <div class="grid counts" id="counts"></div>
-      <div class="grid split">
-        <section>
-          <h2>Proyectos</h2>
+      <div class="workbench">
+        <section class="sidebar">
+          <h2>Vista</h2>
+          <div class="tabs">
+            <button class="tab active" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
+            <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
+          </div>
+          <div class="filters">
+            <div>
+              <label>Busqueda</label>
+              <input id="search" placeholder="Nombre, responsable, comentario..." />
+            </div>
+            <div>
+              <label>Estado</label>
+              <select id="stateFilter"><option value="">Todos los estados</option></select>
+            </div>
+            <div>
+              <label>Comunidad</label>
+              <select id="communityFilter"><option value="">Todas las comunidades</option></select>
+            </div>
+            <div>
+              <label>Prioridad</label>
+              <select id="priorityFilter"><option value="">Todas las prioridades</option></select>
+            </div>
+          </div>
           <div class="toolbar">
-            <input id="projectSearch" placeholder="Buscar proyecto..." />
-            <select id="projectState"><option value="">Todos los estados</option></select>
             <button id="reload">Actualizar</button>
-            <button class="secondary" id="logout">Salir</button>
+            <button class="ghost" id="clearFilters">Limpiar</button>
           </div>
-          <div class="cards" id="projects"></div>
         </section>
-        <section id="tasksSection">
-          <h2>Tareas</h2>
-          <div class="toolbar">
-            <input id="taskSearch" placeholder="Buscar tarea..." />
-            <select id="taskState"><option value="">Todos los estados</option></select>
+        <section>
+          <div class="contentHead">
+            <div>
+              <h2 id="contentTitle">Proyectos</h2>
+              <p class="muted" id="contentSubtitle">Vista de lectura.</p>
+            </div>
+            <div class="muted" id="visibleCount"></div>
           </div>
-          <div class="cards" id="tasks"></div>
+          <div class="cards" id="cards"></div>
         </section>
       </div>
     </div>
   </main>
   <script>
     let state = { usuario: null, proyectos: [], tareas: [] };
+    let currentView = "projects";
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -427,32 +490,53 @@ function homePage() {
       return '<div class="count"><span class="muted">' + html(label) + '</span><strong>' + html(value) + '</strong></div>';
     }
 
-    function fillSelect(select, rows, field) {
+    function rowTitle(row) {
+      return currentView === "projects" ? row.nombre : row.titulo;
+    }
+
+    function rowState(row) {
+      return currentView === "projects" ? row.estado_general : row.estado;
+    }
+
+    function rowOwner(row) {
+      return currentView === "projects" ? row.responsable_principal : row.responsable;
+    }
+
+    function activeRows() {
+      return currentView === "projects" ? state.proyectos : state.tareas;
+    }
+
+    function fillSelect(select, rows, getter, allText) {
       const current = select.value;
-      const values = [...new Set(rows.map(row => safe(row[field])).filter(Boolean))].sort();
-      select.innerHTML = '<option value="">Todos los estados</option>' + values.map(value => '<option>' + html(value) + '</option>').join('');
+      const values = [...new Set(rows.map(getter).map(safe).filter(Boolean))].sort();
+      select.innerHTML = '<option value="">' + html(allText) + '</option>' + values.map(value => '<option>' + html(value) + '</option>').join('');
       select.value = values.includes(current) ? current : "";
     }
 
-    function card(row, type) {
-      const title = type === "project" ? row.nombre : row.titulo;
-      const stateText = type === "project" ? row.estado_general : row.estado;
-      const owner = type === "project" ? row.responsable_principal : row.responsable;
+    function card(row) {
+      const title = rowTitle(row);
+      const stateText = rowState(row);
+      const owner = rowOwner(row);
       const nextOwner = row.responsable_proximo_paso || "";
       const date = row.fecha_objetivo_proximo_paso || row.fecha_proxima_revision || "";
       const next = row.proximo_paso || "";
-      const project = type === "task" && row.proyecto ? '<div class="line"><strong>Proyecto:</strong> ' + html(row.proyecto) + '</div>' : "";
-      return '<article class="card prioridad-' + slug(row.prioridad) + '">' +
+      const project = currentView === "tasks" && row.proyecto ? '<div class="line"><strong>Proyecto:</strong> ' + html(row.proyecto) + '</div>' : "";
+      const updated = row.fecha_ultima_actualizacion ? '<div class="line"><strong>Ultima actualizacion:</strong> ' + html(row.fecha_ultima_actualizacion) + '</div>' : "";
+      return '<article class="card priority-' + slug(row.prioridad) + '">' +
         '<h3>' + html(title) + '</h3>' +
         '<div class="meta">' +
-          '<span class="pill estado-' + slug(stateText) + '">' + html(stateText) + '</span>' +
+          '<span class="pill state-' + slug(stateText) + '">' + html(stateText || "Sin estado") + '</span>' +
           '<span class="pill">' + html(row.prioridad || "Sin prioridad") + '</span>' +
           '<span class="pill">' + html(row.comunidad || "Sin comunidad") + '</span>' +
         '</div>' +
         project +
         '<div class="line"><strong>Responsable:</strong> ' + html(owner || "Sin responsable") + '</div>' +
-        '<div class="line"><strong>Proximo:</strong> ' + html(nextOwner || "Sin asignar") + (date ? " - " + html(date) : "") + '</div>' +
-        (next ? '<div class="line"><strong>Paso:</strong> ' + html(next) + '</div>' : '') +
+        updated +
+        '<div class="nextStep">' +
+          '<div class="line"><strong>Proximo responsable:</strong> ' + html(nextOwner || "Sin asignar") + '</div>' +
+          '<div class="line"><strong>Fecha:</strong> ' + html(date || "Sin fecha") + '</div>' +
+          (next ? '<div class="line"><strong>Proximo paso:</strong> ' + html(next) + '</div>' : '') +
+        '</div>' +
         '</article>';
     }
 
@@ -475,6 +559,7 @@ function homePage() {
     function showLogin(message = "") {
       $("loginView").classList.remove("hidden");
       $("appView").classList.add("hidden");
+      $("logoutTop").classList.add("hidden");
       $("sessionStatus").textContent = "Sin sesion";
       $("loginMessage").textContent = message;
       loadUsers();
@@ -483,6 +568,7 @@ function homePage() {
     function showApp() {
       $("loginView").classList.add("hidden");
       $("appView").classList.remove("hidden");
+      $("logoutTop").classList.remove("hidden");
     }
 
     async function loadUsers() {
@@ -509,21 +595,41 @@ function homePage() {
       showLogin("Sesion cerrada.");
     }
 
+    function matchesSearch(row, text) {
+      const haystack = [
+        rowTitle(row), row.categoria, rowState(row), rowOwner(row), row.responsable_proximo_paso,
+        row.proximo_paso, row.proyecto, row.comunidad, row.prioridad
+      ].join(" ").toLowerCase();
+      return !text || haystack.includes(text);
+    }
+
+    function refreshFilterOptions() {
+      const rows = activeRows();
+      fillSelect($("stateFilter"), rows, rowState, "Todos los estados");
+      fillSelect($("communityFilter"), rows, row => row.comunidad, "Todas las comunidades");
+      fillSelect($("priorityFilter"), rows, row => row.prioridad, "Todas las prioridades");
+    }
+
     function render() {
-      const ps = safe($("projectSearch").value).toLowerCase();
-      const ts = safe($("taskSearch").value).toLowerCase();
-      const pState = $("projectState").value;
-      const tState = $("taskState").value;
-      const projects = state.proyectos.filter(row =>
-        (!pState || row.estado_general === pState) &&
-        (!ps || [row.nombre, row.categoria, row.responsable_principal, row.comunidad].join(" ").toLowerCase().includes(ps))
+      const search = safe($("search").value).toLowerCase();
+      const selectedState = $("stateFilter").value;
+      const selectedCommunity = $("communityFilter").value;
+      const selectedPriority = $("priorityFilter").value;
+      const rows = activeRows().filter(row =>
+        (!selectedState || rowState(row) === selectedState) &&
+        (!selectedCommunity || row.comunidad === selectedCommunity) &&
+        (!selectedPriority || row.prioridad === selectedPriority) &&
+        matchesSearch(row, search)
       );
-      const tasks = state.tareas.filter(row =>
-        (!tState || row.estado === tState) &&
-        (!ts || [row.titulo, row.categoria, row.responsable, row.proyecto, row.proximo_paso, row.comunidad].join(" ").toLowerCase().includes(ts))
-      );
-      $("projects").innerHTML = projects.length ? projects.map(row => card(row, "project")).join("") : '<div class="empty">No hay proyectos con ese filtro.</div>';
-      $("tasks").innerHTML = tasks.length ? tasks.map(row => card(row, "task")).join("") : '<div class="empty">No hay tareas visibles para este perfil.</div>';
+      const title = currentView === "projects" ? "Proyectos" : "Tareas";
+      $("contentTitle").textContent = title;
+      $("contentSubtitle").textContent = currentView === "projects"
+        ? "Proyectos visibles segun tus comunidades y permisos."
+        : "Tareas visibles segun tus comunidades y permisos.";
+      $("visibleCount").textContent = rows.length + " de " + activeRows().length + " visibles";
+      $("cards").innerHTML = rows.length ? rows.map(card).join("") : '<div class="empty">No hay elementos con esos filtros.</div>';
+      $("projectTab").classList.toggle("active", currentView === "projects");
+      $("taskTab").classList.toggle("active", currentView === "tasks");
     }
 
     async function loadOverview() {
@@ -534,7 +640,8 @@ function homePage() {
         showApp();
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - solo lectura";
-        $("tasksSection").classList.toggle("hidden", user.rol === "Presidente");
+        if (user.rol === "Presidente") currentView = "projects";
+        $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("counts").innerHTML =
           countCard("Usuarios", data.counts.usuarios) +
           countCard("Comunidades", data.counts.comunidades) +
@@ -542,8 +649,9 @@ function homePage() {
           countCard("Tareas activas", data.counts.tareas_activas) +
           countCard("Asambleas", data.counts.asambleas) +
           countCard("Propiedades", data.counts.propiedades_contabilidad);
-        fillSelect($("projectState"), data.proyectos, "estado_general");
-        fillSelect($("taskState"), data.tareas, "estado");
+        $("projectTabCount").textContent = data.proyectos.length;
+        $("taskTabCount").textContent = data.tareas.length;
+        refreshFilterOptions();
         render();
       } catch (error) {
         if (error.status === 401) {
@@ -554,14 +662,33 @@ function homePage() {
       }
     }
 
-    $("projectSearch").addEventListener("input", render);
-    $("taskSearch").addEventListener("input", render);
-    $("projectState").addEventListener("change", render);
-    $("taskState").addEventListener("change", render);
+    function switchView(view) {
+      currentView = view;
+      $("search").value = "";
+      $("stateFilter").value = "";
+      $("communityFilter").value = "";
+      $("priorityFilter").value = "";
+      refreshFilterOptions();
+      render();
+    }
+
+    $("projectTab").addEventListener("click", () => switchView("projects"));
+    $("taskTab").addEventListener("click", () => switchView("tasks"));
+    $("search").addEventListener("input", render);
+    $("stateFilter").addEventListener("change", render);
+    $("communityFilter").addEventListener("change", render);
+    $("priorityFilter").addEventListener("change", render);
+    $("clearFilters").addEventListener("click", () => {
+      $("search").value = "";
+      $("stateFilter").value = "";
+      $("communityFilter").value = "";
+      $("priorityFilter").value = "";
+      render();
+    });
     $("reload").addEventListener("click", loadOverview);
     $("loginButton").addEventListener("click", login);
     $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
-    $("logout").addEventListener("click", logout);
+    $("logoutTop").addEventListener("click", logout);
     loadOverview();
   </script>
 </body>
@@ -620,7 +747,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 5 : 1,
+      step: databaseExists ? 6 : 1,
       port,
       dataDir,
       databasePath,
