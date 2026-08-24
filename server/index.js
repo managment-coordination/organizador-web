@@ -15,6 +15,10 @@ const port = Number(process.env.PORT || 8771);
 const host = process.env.HOST || "0.0.0.0";
 const appName = process.env.APP_NAME || "Organizador Web";
 const pythonBin = process.env.PYTHON_BIN || "python3";
+const aiProvider = (process.env.AI_PROVIDER || "local").toLowerCase();
+const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
+const aiBaseUrl = process.env.AI_BASE_URL || (aiProvider === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://api.openai.com/v1");
+const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "meta/llama-3.1-70b-instruct" : "gpt-4.1-mini");
 const dataDir = path.join(rootDir, "data");
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
@@ -330,6 +334,223 @@ print(json.dumps({
 }, ensure_ascii=False))
 `;
   return runPythonJson(script);
+}
+
+function queryAiContext(session) {
+  const script = `
+import json
+import sqlite3
+
+path = ${JSON.stringify(databasePath)}
+role = ${JSON.stringify(session?.rol || "")}
+allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+def community_filter(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1 = 0", []
+    marks = ",".join("?" for _ in allowed_ids)
+    prefix = f"{alias}." if alias else ""
+    return f" AND {prefix}id_comunidad IN ({marks})", allowed_ids
+
+pf, pp = community_filter("p")
+tf, tp = community_filter("t")
+projects = [dict(r) for r in conn.execute("""
+    SELECT p.id_proyecto AS id, p.nombre AS titulo, p.categoria, p.estado_general AS estado,
+           p.prioridad, p.responsable_principal AS responsable, p.responsable_proximo_paso,
+           p.fecha_objetivo_proximo_paso, c.nombre AS comunidad
+    FROM proyectos p
+    LEFT JOIN comunidades c ON c.id_comunidad = p.id_comunidad
+    WHERE COALESCE(p.activo, 1) = 1
+""" + pf + " ORDER BY p.fecha_ultima_actualizacion DESC, p.id_proyecto DESC LIMIT 120", pp)]
+tasks = [dict(r) for r in conn.execute("""
+    SELECT t.id_tarea AS id, t.titulo, t.categoria, t.estado, t.prioridad,
+           t.responsable, t.responsable_proximo_paso, t.fecha_objetivo_proximo_paso,
+           t.proximo_paso, p.nombre AS proyecto, c.nombre AS comunidad
+    FROM tareas t
+    LEFT JOIN proyectos p ON p.id_proyecto = t.id_proyecto
+    LEFT JOIN comunidades c ON c.id_comunidad = t.id_comunidad
+    WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0
+""" + tf + " ORDER BY t.fecha_ultima_actualizacion DESC, t.id_tarea DESC LIMIT 160", tp)]
+communities = [dict(r) for r in conn.execute("SELECT id_comunidad AS id, nombre FROM comunidades WHERE COALESCE(activo, 1) = 1 ORDER BY nombre")]
+conn.close()
+print(json.dumps({"projects": projects, "tasks": tasks, "communities": communities}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function scoreTextMatch(text, title) {
+  const source = normalizeText(text);
+  const tokens = normalizeText(title).split(" ").filter((token) => token.length > 2);
+  return tokens.reduce((score, token) => score + (source.includes(token) ? 1 : 0), 0);
+}
+
+function detectState(text, fallback = "En curso") {
+  const t = normalizeText(text);
+  if (t.includes("bloque")) return fallback === "Bloqueada" ? "Bloqueada" : "Bloqueado";
+  if (t.includes("finaliz") || t.includes("terminad") || t.includes("cerrad")) return fallback === "Terminada" ? "Terminada" : "Finalizado";
+  if (t.includes("tercero") || t.includes("proveedor") || t.includes("pendiente de")) return "Pendiente de tercero";
+  if (t.includes("pendiente")) return "Pendiente";
+  return fallback;
+}
+
+function detectResponsible(text, fallback = "") {
+  const t = normalizeText(text);
+  if (t.includes("elena")) return "Elena Cuenca";
+  if (t.includes("luis")) return "Luis Gallardo";
+  if (t.includes("presidente") || t.includes("rudy")) return "Presidente";
+  if (t.includes("proveedor") || t.includes("empresa")) return "Proveedor";
+  return fallback;
+}
+
+function detectPriority(text, fallback = "Media") {
+  const t = normalizeText(text);
+  if (t.includes("urgente") || t.includes("inmediato")) return "Urgente";
+  if (t.includes("alta prioridad") || t.includes("importante")) return "Alta";
+  if (t.includes("baja prioridad")) return "Baja";
+  return fallback || "Media";
+}
+
+function extractNextStep(text) {
+  const lines = String(text || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const index = lines.findIndex((line) => normalizeText(line).includes("proximo") || normalizeText(line).includes("siguiente"));
+  if (index >= 0) return lines.slice(index, index + 4).join("\n").slice(0, 1200);
+  return lines.slice(-3).join("\n").slice(0, 1200);
+}
+
+function localAiProposal(text, context) {
+  const queryish = /[?¿]|\b(cual|cuanto|quien|dime|consulta|estado de|busca|listado)\b/i.test(text);
+  const projectMatches = (context.projects || []).map((item) => ({ ...item, kind: "project", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
+  const taskMatches = (context.tasks || []).map((item) => ({ ...item, kind: "task", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
+  const best = [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].sort((a, b) => b.score - a.score)[0];
+  if (queryish) {
+    const matches = [...projectMatches, ...taskMatches].filter((item) => item.score > 0).slice(0, 6);
+    return {
+      source: "local",
+      confidence: matches.length ? 0.55 : 0.25,
+      action: "consulta",
+      answer: matches.length
+        ? "He encontrado posibles coincidencias:\n" + matches.map((m) => `- ${m.kind === "project" ? "Proyecto" : "Tarea"} ${m.id}: ${m.titulo} | Estado: ${m.estado || ""} | Responsable: ${m.responsable || ""}`).join("\n")
+        : "No he encontrado una coincidencia clara en proyectos o tareas visibles.",
+      candidates: matches.map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
+    };
+  }
+  const allMatches = [...projectMatches, ...taskMatches].sort((a, b) => b.score - a.score);
+  const nextBestScore = allMatches[1]?.score || 0;
+  if (best && (best.score >= 2 || (best.score >= 1 && nextBestScore === 0))) {
+    const isTask = best.kind === "task";
+    return {
+      source: "local",
+      confidence: Math.min(0.85, 0.35 + best.score / 10),
+      action: isTask ? "seguimiento_tarea" : "seguimiento_proyecto",
+      entity: { type: best.kind, id: best.id, title: best.titulo },
+      candidates: [best, ...(best.kind === "task" ? taskMatches : projectMatches).filter((item) => item.id !== best.id).slice(0, 4)].map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
+      payload: {
+        tipo_registro: "Seguimiento",
+        comentario: String(text || "").trim().slice(0, 4000),
+        estado_nuevo: detectState(text, isTask ? (best.estado || "Pendiente") : (best.estado || "En curso")),
+        prioridad_nueva: detectPriority(text, best.prioridad || "Media"),
+        responsable_nuevo: best.responsable || "",
+        responsable_proximo_paso: detectResponsible(text, best.responsable_proximo_paso || best.responsable || ""),
+        fecha_objetivo_proximo_paso: "",
+        fecha_proxima_revision: "",
+        proximo_paso: extractNextStep(text),
+        motivo_bloqueo: "",
+      },
+    };
+  }
+  return {
+    source: "local",
+    confidence: 0.35,
+    action: "revisar_manual",
+    answer: "No hay coincidencia suficientemente clara. Revisa si corresponde crear un proyecto o tarea nueva, o selecciona manualmente un elemento existente.",
+    candidates: [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].filter((m) => m.score > 0).map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
+    payload: {
+      tipo_registro: "Seguimiento",
+      comentario: String(text || "").trim().slice(0, 4000),
+      estado_nuevo: "En curso",
+      prioridad_nueva: "Media",
+      responsable_nuevo: "",
+      responsable_proximo_paso: "",
+      fecha_objetivo_proximo_paso: "",
+      fecha_proxima_revision: "",
+      proximo_paso: extractNextStep(text),
+      motivo_bloqueo: "",
+    },
+  };
+}
+
+function cleanAiJson(content) {
+  const text = String(content || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
+  return JSON.parse(text);
+}
+
+async function externalAiProposal(text, context) {
+  if (!aiApiKey || aiProvider === "local") return null;
+  const catalog = {
+    projects: (context.projects || []).slice(0, 80),
+    tasks: (context.tasks || []).slice(0, 100),
+  };
+  const system = [
+    "Eres el clasificador operativo de una aplicacion de gestion de comunidades.",
+    "Devuelve solo JSON valido.",
+    "Nunca ordenes guardar directamente. Solo propones.",
+    "Acciones permitidas: consulta, seguimiento_proyecto, seguimiento_tarea, crear_proyecto, crear_tarea, revisar_manual.",
+    "Si dudas entre varias entidades, usa revisar_manual y rellena candidates.",
+    "Usa ids existentes solo si la coincidencia es clara.",
+    "Formato: {action, confidence, answer, entity:{type,id,title}, candidates:[{type,id,title,score}], payload:{tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,responsable_proximo_paso,fecha_objetivo_proximo_paso,fecha_proxima_revision,proximo_paso,motivo_bloqueo,titulo,categoria,id_proyecto}}"
+  ].join("\\n");
+  const response = await fetch(`${aiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${aiApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: aiModel,
+      temperature: 0.1,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: `Catalogo visible:\n${JSON.stringify(catalog)}\n\nTexto recibido:\n${text}` },
+      ],
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`IA externa no disponible (${response.status})`);
+  }
+  const data = await response.json();
+  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
+  parsed.source = aiProvider;
+  return parsed;
+}
+
+async function analyzeWithAi(session, text) {
+  const cleanText = String(text || "").trim();
+  if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
+  const context = await queryAiContext(session);
+  const fallback = localAiProposal(cleanText, context);
+  try {
+    const external = await externalAiProposal(cleanText, context);
+    return external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback;
+  } catch (error) {
+    return { ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` };
+  }
 }
 
 function queryActionOptions(session) {
@@ -781,6 +1002,138 @@ finally:
   return runPythonJson(script);
 }
 
+function createEntity(session, type, payload, pc) {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime, date
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+entity_type = ${JSON.stringify(type)}
+data = ${JSON.stringify(payload || {})}
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def today_iso():
+    return date.today().isoformat()
+
+def is_superuser():
+    return role == "Superusuario"
+
+def audit(conn, action, entity="", entity_id_value=None, detail=""):
+    conn.execute(
+        "INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (now_iso(), user, pc, action, entity, entity_id_value, str(detail or "")[:1000]),
+    )
+
+def check_can_write():
+    if not user:
+        raise PermissionError("No autenticado.")
+    if role == "Presidente":
+        raise PermissionError("El perfil Presidente no puede crear tareas ni proyectos.")
+    if role not in {"Superusuario", "Administrador", "Usuario"}:
+        raise PermissionError("Tu perfil no tiene permiso de escritura.")
+
+def choose_community(conn):
+    requested = data.get("id_comunidad")
+    if requested:
+        cid = int(requested)
+    elif not is_superuser() and len(allowed_ids) == 1:
+        cid = allowed_ids[0]
+    else:
+        row = conn.execute("SELECT id_comunidad FROM comunidades WHERE nombre = 'Macrocomunidad San Roque Club' AND COALESCE(activo, 1) = 1").fetchone()
+        cid = int(row["id_comunidad"]) if row else (allowed_ids[0] if allowed_ids else 0)
+    if not cid:
+        raise ValueError("No hay comunidad disponible para crear el elemento.")
+    if not is_superuser() and cid not in allowed_ids:
+        raise PermissionError("No tienes permiso para crear en esta comunidad.")
+    return cid
+
+check_can_write()
+titulo = str(data.get("titulo") or data.get("nombre") or "").strip()
+if not titulo:
+    raise ValueError("El titulo es obligatorio.")
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    conn.execute("PRAGMA foreign_keys = ON")
+    with conn:
+        cid = choose_community(conn)
+        if entity_type == "project":
+            cur = conn.execute(
+                """
+                INSERT INTO proyectos
+                (id_comunidad, nombre, descripcion, categoria, estado_general, prioridad,
+                 responsable_principal, responsable_proximo_paso, fecha_objetivo_proximo_paso,
+                 fecha_inicio, observaciones, activo, fecha_creacion, fecha_ultima_actualizacion,
+                 usuario_creacion, pc_creacion, usuario_ultima_actualizacion, pc_ultima_actualizacion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid, titulo, str(data.get("descripcion") or data.get("comentario") or "").strip(),
+                    str(data.get("categoria") or "General").strip(),
+                    str(data.get("estado_nuevo") or data.get("estado") or "En curso").strip(),
+                    str(data.get("prioridad_nueva") or data.get("prioridad") or "Media").strip(),
+                    str(data.get("responsable_nuevo") or data.get("responsable") or user).strip(),
+                    str(data.get("responsable_proximo_paso") or data.get("responsable_nuevo") or data.get("responsable") or user).strip(),
+                    str(data.get("fecha_objetivo_proximo_paso") or data.get("fecha_proxima_revision") or "").strip(),
+                    today_iso(), str(data.get("proximo_paso") or "").strip(),
+                    now_iso(), now_iso(), user, pc, user, pc,
+                ),
+            )
+            new_id = int(cur.lastrowid)
+            audit(conn, "Crear proyecto web IA", "proyecto", new_id, titulo)
+            print(json.dumps({"ok": True, "type": "project", "id": new_id}, ensure_ascii=False))
+        elif entity_type == "task":
+            project_id = int(data.get("id_proyecto") or 0)
+            if not project_id:
+                raise ValueError("Para crear una tarea desde la web debes seleccionar un proyecto contenedor.")
+            project = conn.execute("SELECT * FROM proyectos WHERE id_proyecto = ?", (project_id,)).fetchone()
+            if not project:
+                raise ValueError("El proyecto seleccionado no existe.")
+            if not is_superuser() and int(project["id_comunidad"] or 0) not in allowed_ids:
+                raise PermissionError("No tienes permiso para usar ese proyecto.")
+            cur = conn.execute(
+                """
+                INSERT INTO tareas
+                (id_comunidad, id_proyecto, titulo, descripcion, categoria, estado, prioridad,
+                 responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
+                 fecha_proxima_revision, proximo_paso, activa, archivada,
+                 fecha_creacion, fecha_ultima_actualizacion, usuario_creacion, pc_creacion,
+                 usuario_ultima_actualizacion, pc_ultima_actualizacion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(project["id_comunidad"]), project_id, titulo,
+                    str(data.get("descripcion") or data.get("comentario") or "").strip(),
+                    str(data.get("categoria") or "General").strip(),
+                    str(data.get("estado_nuevo") or data.get("estado") or "Pendiente").strip(),
+                    str(data.get("prioridad_nueva") or data.get("prioridad") or "Media").strip(),
+                    str(data.get("responsable_nuevo") or data.get("responsable") or user).strip(),
+                    str(data.get("responsable_proximo_paso") or data.get("responsable_nuevo") or data.get("responsable") or user).strip(),
+                    str(data.get("fecha_objetivo_proximo_paso") or data.get("fecha_proxima_revision") or "").strip(),
+                    str(data.get("fecha_proxima_revision") or data.get("fecha_objetivo_proximo_paso") or "").strip(),
+                    str(data.get("proximo_paso") or "").strip(),
+                    now_iso(), now_iso(), user, pc, user, pc,
+                ),
+            )
+            new_id = int(cur.lastrowid)
+            audit(conn, "Crear tarea web IA", "tarea", new_id, titulo)
+            print(json.dumps({"ok": True, "type": "task", "id": new_id}, ensure_ascii=False))
+        else:
+            raise ValueError("Tipo de entidad no valido.")
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function homePage() {
   return `<!doctype html>
 <html lang="es">
@@ -863,6 +1216,11 @@ function homePage() {
     .historyItem h4 { margin:0 0 6px; font-size:14px; }
     .historyItem p { margin:5px 0 0; white-space:pre-wrap; line-height:1.35; }
     .dangerText { color:#991b1b; font-weight:700; }
+    .aiBox { display:grid; gap:12px; }
+    .aiInput { min-height:220px; }
+    .proposal { border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:10px; }
+    .proposalHead { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center; }
+    .confidence { font-weight:800; color:#1d4ed8; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -890,7 +1248,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 7 - acciones controladas con historial y auditoria</p>
+        <p>Paso 8 - IA con propuesta editable y confirmacion</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -917,6 +1275,7 @@ function homePage() {
           <div class="tabs">
             <button class="tab active" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
+            <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
           </div>
           <div class="filters">
             <div>
@@ -1027,6 +1386,7 @@ function homePage() {
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [] };
     let currentView = "projects";
     let selectedEntity = null;
+    let aiProposal = null;
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -1049,6 +1409,7 @@ function homePage() {
     }
 
     function activeRows() {
+      if (currentView === "ai") return [];
       return currentView === "projects" ? state.proyectos : state.tareas;
     }
 
@@ -1295,6 +1656,17 @@ function homePage() {
     }
 
     function render() {
+      if (currentView === "ai") {
+        $("contentTitle").textContent = "IA operativa";
+        $("contentSubtitle").textContent = "Pega una llamada, reunion o consulta. La IA propone y tu confirmas antes de guardar.";
+        $("visibleCount").textContent = "";
+        $("cards").innerHTML = aiPanelHtml();
+        $("projectTab").classList.remove("active");
+        $("taskTab").classList.remove("active");
+        $("aiTab").classList.add("active");
+        bindAiPanel();
+        return;
+      }
       const search = safe($("search").value).toLowerCase();
       const selectedState = $("stateFilter").value;
       const selectedCommunity = $("communityFilter").value;
@@ -1314,6 +1686,155 @@ function homePage() {
       $("cards").innerHTML = rows.length ? rows.map(card).join("") : '<div class="empty">No hay elementos con esos filtros.</div>';
       $("projectTab").classList.toggle("active", currentView === "projects");
       $("taskTab").classList.toggle("active", currentView === "tasks");
+      $("aiTab").classList.remove("active");
+    }
+
+    function aiPanelHtml() {
+      return '<section class="aiBox">' +
+        '<h2>Entrada inteligente</h2>' +
+        '<textarea id="aiText" class="aiInput" placeholder="Pega aqui una transcripcion, resumen de llamada, correo o pregunta..."></textarea>' +
+        '<div class="toolbar">' +
+          '<button id="aiAnalyze">Analizar</button>' +
+          '<button class="ghost" id="aiClear">Limpiar</button>' +
+          '<span class="muted" id="aiMessage"></span>' +
+        '</div>' +
+        '<div id="aiResult"></div>' +
+      '</section>';
+    }
+
+    function bindAiPanel() {
+      $("aiAnalyze").addEventListener("click", analyzeAiText);
+      $("aiClear").addEventListener("click", () => {
+        $("aiText").value = "";
+        $("aiResult").innerHTML = "";
+        $("aiMessage").textContent = "";
+        aiProposal = null;
+      });
+    }
+
+    function entityOptionsHtml(kind, selectedId) {
+      const rows = kind === "project" ? state.proyectos : state.tareas;
+      return '<option value="">Seleccionar...</option>' + rows.map(row => {
+        const id = kind === "project" ? row.id_proyecto : row.id_tarea;
+        const title = kind === "project" ? row.nombre : row.titulo;
+        return '<option value="' + html(id) + '"' + (String(id) === String(selectedId || "") ? " selected" : "") + '>' + html(id + " - " + title) + '</option>';
+      }).join("");
+    }
+
+    function projectContainerOptions(selectedId) {
+      return '<option value="">Selecciona proyecto contenedor...</option>' + state.proyectos.map(row =>
+        '<option value="' + html(row.id_proyecto) + '"' + (String(row.id_proyecto) === String(selectedId || "") ? " selected" : "") + '>' + html(row.id_proyecto + " - " + row.nombre) + '</option>'
+      ).join("");
+    }
+
+    function proposalActionOptions(action) {
+      const actions = [
+        ["consulta", "Consulta"],
+        ["seguimiento_proyecto", "Seguimiento de proyecto"],
+        ["seguimiento_tarea", "Seguimiento de tarea"],
+        ["crear_proyecto", "Crear proyecto"],
+        ["crear_tarea", "Crear tarea"],
+        ["revisar_manual", "Revisar manualmente"]
+      ];
+      return actions.map(([value, label]) => '<option value="' + value + '"' + (value === action ? " selected" : "") + '>' + label + '</option>').join("");
+    }
+
+    function renderAiProposal(proposal) {
+      const payload = proposal.payload || {};
+      const entityType = proposal.entity?.type || (proposal.action === "seguimiento_tarea" ? "task" : "project");
+      const entityId = proposal.entity?.id || "";
+      const states = entityType === "task" ? options.estados_tarea : options.estados_proyecto;
+      const candidatesHtml = (proposal.candidates || []).length
+        ? '<div class="detailBox"><strong>Candidatos detectados</strong>' + proposal.candidates.map(c => '<div>' + html((c.type === "task" ? "Tarea" : "Proyecto") + " " + c.id + " - " + c.title + " | score " + c.score) + '</div>').join("") + '</div>'
+        : "";
+      $("aiResult").innerHTML = '<div class="proposal">' +
+        '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
+        (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
+        (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
+        candidatesHtml +
+        '<div class="formGrid">' +
+          '<div><label>Accion</label><select id="aiAction">' + proposalActionOptions(proposal.action || "revisar_manual") + '</select></div>' +
+          '<div><label>Elemento existente</label><select id="aiEntity">' + entityOptionsHtml(entityType, entityId) + '</select></div>' +
+          '<div><label>Proyecto contenedor para tarea nueva</label><select id="aiProjectContainer">' + projectContainerOptions(payload.id_proyecto) + '</select></div>' +
+          '<div><label>Titulo nuevo</label><input id="aiTitle" value="' + html(payload.titulo || proposal.entity?.title || "") + '" /></div>' +
+          '<div><label>Categoria</label><input id="aiCategory" value="' + html(payload.categoria || "General") + '" /></div>' +
+          '<div><label>Estado</label><select id="aiState">' + (states || []).map(v => '<option value="' + html(v) + '"' + (v === payload.estado_nuevo ? " selected" : "") + '>' + html(v) + '</option>').join("") + '</select></div>' +
+          '<div><label>Prioridad</label><select id="aiPriority">' + (options.prioridades || []).map(v => '<option value="' + html(v) + '"' + (v === payload.prioridad_nueva ? " selected" : "") + '>' + html(v) + '</option>').join("") + '</select></div>' +
+          '<div><label>Responsable</label><input id="aiOwner" list="responsiblesList" value="' + html(payload.responsable_nuevo || "") + '" /></div>' +
+          '<div><label>Proximo responsable</label><input id="aiNextOwner" list="responsiblesList" value="' + html(payload.responsable_proximo_paso || "") + '" /></div>' +
+          '<div><label>Fecha proximo paso</label><input id="aiNextDate" type="date" value="' + html((payload.fecha_objetivo_proximo_paso || "").slice(0, 10)) + '" /></div>' +
+        '</div>' +
+        '<label>Comentario</label><textarea id="aiComment">' + html(payload.comentario || "") + '</textarea>' +
+        '<label>Proximo paso</label><textarea id="aiNextStep">' + html(payload.proximo_paso || "") + '</textarea>' +
+        '<label>Motivo bloqueo</label><textarea id="aiBlockReason">' + html(payload.motivo_bloqueo || "") + '</textarea>' +
+        '<div class="toolbar"><button class="green" id="aiApply">Aplicar propuesta</button><span class="muted" id="aiApplyMessage"></span></div>' +
+      '</div>';
+      $("aiApply").addEventListener("click", applyAiProposal);
+      $("aiAction").addEventListener("change", () => {
+        const action = $("aiAction").value;
+        const kind = action.includes("tarea") ? "task" : "project";
+        $("aiEntity").innerHTML = entityOptionsHtml(kind, "");
+      });
+    }
+
+    async function analyzeAiText() {
+      const text = $("aiText").value;
+      if (!safe(text)) {
+        $("aiMessage").textContent = "Pega primero un texto.";
+        return;
+      }
+      $("aiMessage").textContent = "Analizando...";
+      $("aiResult").innerHTML = "";
+      try {
+        if (!options.responsables.length) await loadOptions();
+        aiProposal = await api("/api/ai/analyze", { method: "POST", body: JSON.stringify({ text }) });
+        $("aiMessage").textContent = "Propuesta generada. Revisala antes de aplicar.";
+        renderAiProposal(aiProposal);
+      } catch (error) {
+        $("aiMessage").textContent = error.message;
+      }
+    }
+
+    async function applyAiProposal() {
+      const action = $("aiAction").value;
+      const payload = {
+        titulo: $("aiTitle").value,
+        categoria: $("aiCategory").value,
+        tipo_registro: "Seguimiento",
+        estado_nuevo: $("aiState").value,
+        prioridad_nueva: $("aiPriority").value,
+        responsable_nuevo: $("aiOwner").value,
+        responsable_proximo_paso: $("aiNextOwner").value,
+        fecha_objetivo_proximo_paso: $("aiNextDate").value,
+        fecha_proxima_revision: $("aiNextDate").value,
+        comentario: $("aiComment").value,
+        proximo_paso: $("aiNextStep").value,
+        motivo_bloqueo: $("aiBlockReason").value,
+        id_proyecto: $("aiProjectContainer").value
+      };
+      if (action === "consulta" || action === "revisar_manual") {
+        $("aiApplyMessage").textContent = "Esta propuesta no guarda cambios. Cambia la accion si quieres aplicar algo.";
+        return;
+      }
+      if (!confirm("Se aplicara la propuesta editada. ¿Confirmas guardar el cambio?")) return;
+      $("aiApplyMessage").textContent = "Aplicando...";
+      try {
+        let result;
+        if (action === "seguimiento_proyecto" || action === "seguimiento_tarea") {
+          const type = action === "seguimiento_tarea" ? "task" : "project";
+          const id = $("aiEntity").value;
+          if (!id) throw new Error("Selecciona el elemento existente.");
+          result = await api("/api/entity/record", { method: "POST", body: JSON.stringify({ type, id, payload }) });
+        } else {
+          const type = action === "crear_tarea" ? "task" : "project";
+          result = await api("/api/entity/create", { method: "POST", body: JSON.stringify({ type, payload }) });
+        }
+        $("aiApplyMessage").textContent = "Guardado correctamente.";
+        await loadOverview();
+        if (result?.type && result?.id) await openEntity(result.type, result.id, false);
+      } catch (error) {
+        $("aiApplyMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
     }
 
     async function loadOverview() {
@@ -1323,7 +1844,7 @@ function homePage() {
         state = data;
         showApp();
         const user = data.usuario || {};
-        $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - solo lectura";
+        $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
         if (user.rol === "Presidente") currentView = "projects";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("counts").innerHTML =
@@ -1358,6 +1879,7 @@ function homePage() {
 
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
+    $("aiTab").addEventListener("click", () => switchView("ai"));
     $("search").addEventListener("input", render);
     $("stateFilter").addEventListener("change", render);
     $("communityFilter").addEventListener("change", render);
@@ -1461,12 +1983,29 @@ async function handle(req, res) {
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await writeEntityRecord(session, type, id, body.payload || {}, String(pc)));
   }
+  if (req.method === "POST" && url.pathname === "/api/entity/create") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const type = String(body.type || "").trim();
+    if (!["task", "project"].includes(type)) return sendJson(res, 400, { ok: false, error: "Tipo no valido." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await createEntity(session, type, body.payload || {}, String(pc)));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await analyzeWithAi(session, body.text || ""));
+  }
   if (req.method === "GET" && url.pathname === "/health") {
     const databaseExists = fs.existsSync(databasePath);
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 7 : 1,
+      step: databaseExists ? 8 : 1,
       port,
       dataDir,
       databasePath,
@@ -1476,6 +2015,9 @@ async function handle(req, res) {
       authRequired: true,
       readonly: false,
       actionsEnabled: true,
+      aiEnabled: true,
+      aiProvider: aiApiKey && aiProvider !== "local" ? aiProvider : "local",
+      aiExternalConfigured: Boolean(aiApiKey && aiProvider !== "local"),
       timestamp: new Date().toISOString()
     });
   }
