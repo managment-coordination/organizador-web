@@ -673,9 +673,377 @@ async function externalAiProposal(text, context) {
   return parsed;
 }
 
+function querySmartAssistant(session, text) {
+  const script = `
+import json
+import re
+import sqlite3
+import unicodedata
+from datetime import datetime
+
+path = ${JSON.stringify(databasePath)}
+question = ${JSON.stringify(text)}
+role = ${JSON.stringify(session?.rol || "")}
+allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
+
+def norm(value):
+    text = str(value or "").upper()
+    text = "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
+    text = re.sub(r"[^A-Z0-9]+", " ", text)
+    return re.sub(r"\\s+", " ", text).strip()
+
+def money(value):
+    n = float(value or 0)
+    s = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return s + " EUR"
+
+def pct(value):
+    return f"{float(value or 0):.2f}%".replace(".", ",")
+
+def parse_date(value):
+    value = str(value or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return ""
+
+def dates_from_question(q):
+    raw = str(q or "")
+    found = re.findall(r"\\b\\d{1,2}[/-]\\d{1,2}[/-]\\d{4}\\b|\\b\\d{4}-\\d{1,2}-\\d{1,2}\\b", raw)
+    parsed = [parse_date(x) for x in found]
+    parsed = [x for x in parsed if x]
+    if len(parsed) >= 2:
+        return parsed[0], parsed[1]
+    years = re.findall(r"\\b(20\\d{2})\\b", raw)
+    if years:
+        return f"{years[0]}-01-01", f"{years[0]}-12-31"
+    return "", ""
+
+def response(answer, confidence=0.75, candidates=None, questions=None, facts=None):
+    return {
+        "handled": True,
+        "source": "local-db",
+        "confidence": confidence,
+        "action": "consulta",
+        "answer": answer,
+        "candidates": candidates or [],
+        "questions": questions or [],
+        "facts": facts or {},
+    }
+
+def not_handled():
+    return {"handled": False}
+
+def normalize_property_query(value):
+    q = norm(value)
+    replacements = {
+        "CONDOMINIO B": "CB",
+        "DERECHA": "DCH",
+        "DCHA": "DCH",
+        "IZQUIERDA": "IZQ",
+        "ATICO": "AT",
+        "ATC": "AT",
+        "PLAZA": "PLZ",
+        "GARAJE": "PLZ",
+    }
+    for old, new in replacements.items():
+        q = q.replace(old, new)
+    q = re.sub(r"\\bCB\\s*(\\d+)\\b", r"CB \\1", q)
+    return re.sub(r"\\s+", " ", q).strip()
+
+def rows(sql, params=()):
+    return [dict(r) for r in conn.execute(sql, params)]
+
+def first(sql, params=()):
+    r = conn.execute(sql, params).fetchone()
+    return dict(r) if r else None
+
+def score_tokens(query, value):
+    stop = {
+        "A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "QUE", "QUIEN", "CUAL", "CUANTO",
+        "CANTIDAD", "PERTENECE", "TIENE", "DEUDA", "MOROSIDAD", "PROPIETARIO", "PROPIEDAD",
+        "VIVIENDA", "GARAJE", "LOCAL", "ES", "EN", "POR", "PARA", "ACTUAL"
+    }
+    q_tokens = [t for t in norm(query).split() if t and t not in stop]
+    v_tokens = set(norm(value).split())
+    v = norm(value)
+    if not q_tokens:
+        return 0
+    score = sum(2 for t in q_tokens if t in v_tokens)
+    score += sum(1 for t in q_tokens if len(t) >= 4 and t not in v_tokens and t in v)
+    if norm(query) and norm(query) in v:
+        score += 4
+    return score
+
+def find_properties(query):
+    q = normalize_property_query(query)
+    base_match = re.match(r"^(CB|PLZ|17H|P1F1|P1F2|PM|EG|ALB|FG|SRC)\\s+(\\d+)", q)
+    props = rows("""
+        SELECT id_propiedad, codigo_propiedad, zona, subzona, coeficiente
+        FROM cf_propiedades
+        WHERE COALESCE(activa, 1) = 1
+    """)
+    scored = []
+    for p in props:
+        code_norm = normalize_property_query(p.get("codigo_propiedad") or "")
+        code_tokens = code_norm.split()
+        if base_match and not (len(code_tokens) >= 2 and code_tokens[0] == base_match.group(1) and code_tokens[1] == base_match.group(2)):
+            continue
+        hay = " ".join([p.get("codigo_propiedad") or "", p.get("zona") or "", p.get("subzona") or ""])
+        s = score_tokens(q, hay)
+        if s > 0:
+            scored.append((s, p))
+    scored.sort(key=lambda item: (-item[0], item[1]["codigo_propiedad"]))
+    best_score = scored[0][0] if scored else 0
+    return [p for s, p in scored if s >= max(1, best_score - 1)][:12]
+
+def find_owners(query):
+    q = norm(query)
+    owners = rows("""
+        SELECT id_propietario, codigo_netfincas, nombre, nif
+        FROM cf_propietarios
+        WHERE COALESCE(activo, 1) = 1
+    """)
+    scored = []
+    for owner in owners:
+        hay = " ".join([owner.get("nombre") or "", owner.get("nif") or "", owner.get("codigo_netfincas") or ""])
+        s = score_tokens(q, hay)
+        if s > 0:
+            scored.append((s, owner))
+    scored.sort(key=lambda item: (-item[0], item[1]["nombre"]))
+    best_score = scored[0][0] if scored else 0
+    return [p for s, p in scored if s >= max(1, best_score - 1)][:12]
+
+def extract_owner_query(q):
+    text = str(q or "")
+    patterns = [
+        r"propietario\\s+(.+?)\\s+tiene\\s+deuda",
+        r"(.+?)\\s+tiene\\s+deuda",
+        r"deuda\\s+de\\s+(.+)$",
+        r"morosidad\\s+de\\s+(.+)$",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.I)
+        if m:
+            return re.sub(r"[?¿]", "", m.group(1)).strip()
+    return re.sub(r"[?¿]", "", text).strip()
+
+def extract_property_query(q):
+    text = str(q or "")
+    m = re.search(r"\\bCB\\s*\\d+(?:\\s*[-/]\\s*\\d+)?(?:\\s*(?:DERECHA|DCHA|DCH|IZQUIERDA|IZQ|ATICO|AT))?\\b", text, re.I)
+    if m:
+        return m.group(0).strip()
+    m = re.search(r"\\b((?:CB|17H|PLZ|P1F1|P1F2|PM|EG|ALB|FG|SRC|VILLA|LOCAL|L\\d+)[A-Z0-9\\s\\-\\/\\.]*?(?:DERECHA|DCHA|IZQUIERDA|IZQ|ATICO|AT|\\d)?)\\b", text, re.I)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"(?:propiedad|vivienda|garaje|local|villa)\\s+(?:de\\s+)?(.+)$", text, re.I)
+    if m:
+        return re.sub(r"[?¿]", "", m.group(1)).strip()
+    return ""
+
+def owner_for_property(prop_id):
+    return rows("""
+        SELECT o.id_propietario, o.codigo_netfincas, o.nombre, o.nif,
+               p.codigo_propiedad, p.zona, p.coeficiente
+        FROM cf_propietario_propiedad pp
+        JOIN cf_propietarios o ON o.id_propietario = pp.id_propietario
+        JOIN cf_propiedades p ON p.id_propiedad = pp.id_propiedad
+        WHERE pp.id_propiedad = ? AND COALESCE(pp.activo, 1) = 1
+        ORDER BY o.nombre
+    """, (prop_id,))
+
+def debt_for_owner(owner_id):
+    total = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE id_propietario = ? AND COALESCE(deuda,0) > 0", (owner_id,))["total"]
+    by_year = rows("""
+        SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
+               COALESCE(SUM(deuda),0) AS deuda,
+               COUNT(*) AS recibos
+        FROM cf_recibos
+        WHERE id_propietario = ? AND COALESCE(deuda,0) > 0
+        GROUP BY COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER))
+        ORDER BY ejercicio
+    """, (owner_id,))
+    by_property = rows("""
+        SELECT COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
+               COALESCE(SUM(r.deuda),0) AS deuda,
+               COUNT(*) AS recibos
+        FROM cf_recibos r
+        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
+        WHERE r.id_propietario = ? AND COALESCE(r.deuda,0) > 0
+        GROUP BY COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad')
+        ORDER BY deuda DESC
+    """, (owner_id,))
+    return total, by_year, by_property
+
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+q_norm = norm(question)
+
+try:
+    is_finance_question = any(token in q_norm for token in ["BALANCE", "FINANCIERO", "TESORERIA", "RESULTADO ECONOMICO"])
+    is_budget_question = any(token in q_norm for token in ["PRESUPUEST", "PARTIDA", "DESVIACION"]) and not is_finance_question
+    is_debt_question = any(token in q_norm for token in ["DEUDA", "MOROS", "RECIBO PENDIENTE"])
+    is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
+    is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
+
+    if is_budget_question:
+        report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
+        if not report:
+            print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55), ensure_ascii=False))
+        else:
+            data = json.loads(report["resultado_json"] or "{}")
+            budget = data.get("presupuesto") or []
+            if not budget:
+                print(json.dumps(response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55), ensure_ascii=False))
+            else:
+                rows_text = []
+                for item in sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:8]:
+                    rows_text.append(f"- {item.get('codigo','')} {item.get('categoria','')}: real {money(item.get('real'))} / presupuesto periodo {money(item.get('presupuesto'))} / desviacion {money(item.get('variacion'))} ({pct(item.get('variacion_pct'))})")
+                answer = "\\n".join([
+                    f"Presupuesto segun ultimo informe: {report['titulo']} ({report['fecha_desde']} a {report['fecha_hasta']}).",
+                    "Principales partidas:",
+                    *rows_text,
+                    "Si quieres un periodo distinto, indicame fecha desde y fecha hasta."
+                ])
+                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}), ensure_ascii=False))
+
+    elif is_finance_question:
+        start, end = dates_from_question(question)
+        if not start or not end:
+            print(json.dumps(response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"]), ensure_ascii=False))
+        else:
+            ingresos_emitidos = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            cobros = first("SELECT COALESCE(SUM(-importe),0) AS total FROM cf_movimientos_deuda WHERE tipo_movimiento = 'Cobro' AND date(fecha) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            deuda_periodo = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?) AND COALESCE(deuda,0) > 0", (start, end))["total"]
+            gastos_devengados = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            mejoras = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') = '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            gastos_pagados = first("SELECT COALESCE(SUM(pagado),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_pago) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            pendientes = first("SELECT COALESCE(SUM(pendiente),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+            saldo_ini = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) < date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (start,))
+            saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
+            answer = "\\n".join([
+                f"Balance financiero provisional del {start} al {end}:",
+                f"- Ingresos/recibos emitidos: {money(ingresos_emitidos)}",
+                f"- Cobros registrados en deuda/recibos: {money(cobros)}",
+                f"- Deuda pendiente generada en el periodo: {money(deuda_periodo)}",
+                f"- Gastos devengados ordinarios: {money(gastos_devengados)}",
+                f"- Gastos pagados ordinarios: {money(gastos_pagados)}",
+                f"- Gastos ordinarios pendientes de pago: {money(pendientes)}",
+                f"- Mejoras/inversiones grupo 610: {money(mejoras)}",
+                f"- Saldo banco inicial disponible: {money(saldo_ini['saldo']) if saldo_ini else 'no disponible'}",
+                f"- Saldo banco final disponible: {money(saldo_fin['saldo']) if saldo_fin else 'no disponible'}",
+                "Nota: es una lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres."
+            ])
+            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}), ensure_ascii=False))
+
+    elif is_debt_question:
+        years = re.findall(r"\\b(20\\d{2})\\b", question)
+        asks_global_year = bool(years) and not any(token in q_norm for token in ["TIENE DEUDA", "DEUDA DE", "MOROSIDAD DE", "PROPIETARIO"])
+        if asks_global_year:
+            year = int(years[0])
+            total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
+            overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
+            answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}), ensure_ascii=False))
+            raise SystemExit
+        owner_query = extract_owner_query(question)
+        prop_query = extract_property_query(question)
+        owners = []
+        if prop_query:
+            props = find_properties(prop_query)
+            if len(props) == 1:
+                owners = owner_for_property(props[0]["id_propiedad"])
+            elif len(props) > 1 and "PROPIETARIO" in q_norm:
+                answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
+                print(json.dumps(response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"]), ensure_ascii=False))
+                raise SystemExit
+        if not owners and owner_query and "DEUDA" in q_norm:
+            owners = find_owners(owner_query)
+        if years and not owners:
+            year = int(years[0])
+            total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
+            overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
+            answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}), ensure_ascii=False))
+        elif len(owners) == 1:
+            owner = owners[0]
+            total, by_year, by_property = debt_for_owner(owner["id_propietario"])
+            if total <= 0:
+                answer = f"{owner['nombre']} no tiene deuda pendiente registrada actualmente."
+            else:
+                year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
+                prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
+                answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)}.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
+            print(json.dumps(response(answer, 0.86, facts={"id_propietario": owner["id_propietario"], "deuda": total}), ensure_ascii=False))
+        elif len(owners) > 1:
+            answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
+            print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"]), ensure_ascii=False))
+        else:
+            print(json.dumps(response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"]), ensure_ascii=False))
+
+    elif is_owner_question:
+        prop_query = extract_property_query(question)
+        props = find_properties(prop_query or question)
+        if len(props) == 1:
+            prop = props[0]
+            owners = owner_for_property(prop["id_propiedad"])
+            if owners:
+                answer = "\\n".join([
+                    f"Propiedad {prop['codigo_propiedad']} ({prop['zona']}).",
+                    f"Coeficiente: {prop['coeficiente']}.",
+                    "Propietario actual:",
+                    *[f"- {o['nombre']} (codigo Netfincas {o.get('codigo_netfincas') or 'sin codigo'}, NIF {o.get('nif') or 'sin dato'})" for o in owners],
+                ])
+            else:
+                answer = f"La propiedad {prop['codigo_propiedad']} existe, pero no tiene propietario activo vinculado."
+            print(json.dumps(response(answer, 0.88, facts={"id_propiedad": prop["id_propiedad"]}), ensure_ascii=False))
+        elif len(props) > 1:
+            answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:10]])
+            print(json.dumps(response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"]), ensure_ascii=False))
+        else:
+            print(json.dumps(response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"]), ensure_ascii=False))
+
+    elif is_work_question:
+        term = re.sub(r"(?i)\\b(como|va|van|estado|del|de|la|el|proyecto|tarea|quien|responsable|proximo|paso|lista|busca|pendientes?)\\b", " ", question)
+        term = re.sub(r"[?¿]", " ", term).strip()
+        like = "%" + norm(term).replace(" ", "%") + "%"
+        project_matches = rows("""
+            SELECT 'Proyecto' AS tipo, id_proyecto AS id, nombre AS titulo, estado_general AS estado,
+                   responsable_principal AS responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
+                   fecha_ultima_actualizacion, COALESCE(observaciones,'') AS contexto
+            FROM proyectos
+            WHERE COALESCE(activo,1)=1 AND (? = '%%' OR UPPER(nombre) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
+            ORDER BY fecha_ultima_actualizacion DESC LIMIT 6
+        """, (like, like, like))
+        task_matches = rows("""
+            SELECT 'Tarea' AS tipo, id_tarea AS id, titulo, estado,
+                   responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
+                   fecha_ultima_actualizacion, COALESCE(proximo_paso,'') AS contexto
+            FROM tareas
+            WHERE COALESCE(activa,1)=1 AND COALESCE(archivada,0)=0 AND (? = '%%' OR UPPER(titulo) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
+            ORDER BY fecha_ultima_actualizacion DESC LIMIT 6
+        """, (like, like, like))
+        matches = project_matches + task_matches
+        if matches:
+            answer = "He encontrado estos elementos operativos:\\n" + "\\n".join([f"- {m['tipo']} {m['id']}: {m['titulo']} | Estado: {m['estado'] or 'sin estado'} | Responsable: {m['responsable'] or 'sin responsable'} | Proximo: {m['responsable_proximo_paso'] or 'sin dato'} | Paso: {(m['contexto'] or 'sin proximo paso')[:220]}" for m in matches[:8]])
+            print(json.dumps(response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]]), ensure_ascii=False))
+        else:
+            print(json.dumps(response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"]), ensure_ascii=False))
+    else:
+        print(json.dumps(not_handled(), ensure_ascii=False))
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 async function analyzeWithAi(session, text) {
   const cleanText = String(text || "").trim();
   if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
+  const smart = await querySmartAssistant(session, cleanText);
+  if (smart?.handled) return smart;
   const context = await queryAiContext(session);
   const fallback = localAiProposal(cleanText, context);
   try {
@@ -1878,13 +2246,28 @@ function homePage() {
       const entityType = proposal.entity?.type || (proposal.action === "seguimiento_tarea" ? "task" : "project");
       const entityId = proposal.entity?.id || "";
       const states = entityType === "task" ? options.estados_tarea : options.estados_proyecto;
+      const candidateLabel = (type) => ({ task: "Tarea", project: "Proyecto", owner: "Propietario", property: "Propiedad" }[type] || "Elemento");
       const candidatesHtml = (proposal.candidates || []).length
-        ? '<div class="detailBox"><strong>Candidatos detectados</strong>' + proposal.candidates.map(c => '<div>' + html((c.type === "task" ? "Tarea" : "Proyecto") + " " + c.id + " - " + c.title + " | score " + c.score) + '</div>').join("") + '</div>'
+        ? '<div class="detailBox"><strong>Candidatos detectados</strong>' + proposal.candidates.map(c => '<div>' + html(candidateLabel(c.type) + " " + c.id + " - " + c.title + (c.score !== undefined ? " | score " + c.score : "")) + '</div>').join("") + '</div>'
         : "";
+      const questionsHtml = (proposal.questions || []).length
+        ? '<div class="detailBox"><strong>Necesito aclarar</strong>' + proposal.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>'
+        : "";
+      if (proposal.action === "consulta" && !payload.comentario && !payload.titulo) {
+        $("aiResult").innerHTML = '<div class="proposal">' +
+          '<div class="proposalHead"><h2>Respuesta de consulta</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
+          (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
+          (proposal.answer ? '<div class="detailBox"><strong>Respuesta</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
+          questionsHtml +
+          candidatesHtml +
+        '</div>';
+        return;
+      }
       $("aiResult").innerHTML = '<div class="proposal">' +
         '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
+        questionsHtml +
         candidatesHtml +
         '<div class="formGrid">' +
           '<div><label>Accion</label><select id="aiAction">' + proposalActionOptions(proposal.action || "revisar_manual") + '</select></div>' +
