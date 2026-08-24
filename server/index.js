@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,11 @@ for (const dir of [dataDir, logsDir, backupsDir]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+const sessionSecretPath = path.join(dataDir, "session_secret");
+const sessionSecret = loadOrCreateSessionSecret();
+const sessionCookieName = "organizador_web_session";
+const sessionMaxAgeSeconds = 8 * 60 * 60;
+
 function loadEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
@@ -34,6 +40,15 @@ function loadEnv(filePath) {
     const value = trimmed.slice(index + 1).trim().replace(/^["']|["']$/g, "");
     if (key && process.env[key] === undefined) process.env[key] = value;
   }
+}
+
+function loadOrCreateSessionSecret() {
+  if (fs.existsSync(sessionSecretPath)) {
+    return fs.readFileSync(sessionSecretPath, "utf8").trim();
+  }
+  const secret = crypto.randomBytes(48).toString("hex");
+  fs.writeFileSync(sessionSecretPath, secret, { mode: 0o600 });
+  return secret;
 }
 
 function sendJson(res, status, payload) {
@@ -52,75 +67,106 @@ function sendHtml(res, status, body) {
   res.end(body);
 }
 
-function queryOverview() {
+function readBody(req) {
   return new Promise((resolve, reject) => {
-    const script = `
-import json
-import sqlite3
-
-path = r'''${databasePath.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'''
-conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-conn.row_factory = sqlite3.Row
-
-def rows(sql, params=()):
-    return [dict(row) for row in conn.execute(sql, params).fetchall()]
-
-def one(sql, params=()):
-    row = conn.execute(sql, params).fetchone()
-    return dict(row) if row else {}
-
-counts = {
-    "usuarios": one("SELECT COUNT(*) AS total FROM usuarios").get("total", 0),
-    "comunidades": one("SELECT COUNT(*) AS total FROM comunidades WHERE COALESCE(activo, 1) = 1").get("total", 0),
-    "proyectos_activos": one("SELECT COUNT(*) AS total FROM proyectos WHERE COALESCE(activo, 1) = 1").get("total", 0),
-    "tareas_activas": one("SELECT COUNT(*) AS total FROM tareas WHERE COALESCE(activa, 1) = 1 AND COALESCE(archivada, 0) = 0").get("total", 0),
-    "asambleas": one("SELECT COUNT(*) AS total FROM asambleas").get("total", 0),
-    "propiedades_contabilidad": one("SELECT COUNT(*) AS total FROM cf_propiedades").get("total", 0),
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 200000) {
+        reject(new Error("Solicitud demasiado grande."));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      if (!body.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch {
+        reject(new Error("JSON no valido."));
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
-proyectos = rows("""
-    SELECT p.id_proyecto, p.nombre, p.categoria, p.estado_general, p.prioridad,
-           p.responsable_principal, p.responsable_proximo_paso,
-           p.fecha_objetivo_proximo_paso, p.fecha_ultima_actualizacion,
-           c.nombre AS comunidad
-    FROM proyectos p
-    LEFT JOIN comunidades c ON c.id_comunidad = p.id_comunidad
-    WHERE COALESCE(p.activo, 1) = 1
-    ORDER BY
-      CASE p.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
-      COALESCE(p.fecha_objetivo_proximo_paso, '') ASC,
-      p.nombre ASC
-    LIMIT 80
-""")
+function parseCookies(req) {
+  const header = req.headers.cookie || "";
+  const cookies = {};
+  for (const part of header.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const index = trimmed.indexOf("=");
+    if (index <= 0) continue;
+    cookies[trimmed.slice(0, index)] = decodeURIComponent(trimmed.slice(index + 1));
+  }
+  return cookies;
+}
 
-tareas = rows("""
-    SELECT t.id_tarea, t.titulo, t.categoria, t.estado, t.prioridad,
-           t.responsable, t.responsable_proximo_paso, t.proximo_paso,
-           t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso,
-           t.fecha_ultima_actualizacion, p.nombre AS proyecto, c.nombre AS comunidad
-    FROM tareas t
-    LEFT JOIN proyectos p ON p.id_proyecto = t.id_proyecto
-    LEFT JOIN comunidades c ON c.id_comunidad = t.id_comunidad
-    WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0
-    ORDER BY
-      CASE t.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
-      COALESCE(t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso, '') ASC,
-      t.titulo ASC
-    LIMIT 120
-""")
+function base64url(value) {
+  return Buffer.from(value).toString("base64url");
+}
 
-estados_tareas = rows("SELECT COALESCE(estado, 'Sin estado') AS estado, COUNT(*) AS total FROM tareas WHERE COALESCE(activa, 1) = 1 AND COALESCE(archivada, 0) = 0 GROUP BY COALESCE(estado, 'Sin estado') ORDER BY total DESC")
-estados_proyectos = rows("SELECT COALESCE(estado_general, 'Sin estado') AS estado, COUNT(*) AS total FROM proyectos WHERE COALESCE(activo, 1) = 1 GROUP BY COALESCE(estado_general, 'Sin estado') ORDER BY total DESC")
+function signPayload(payload) {
+  return crypto.createHmac("sha256", sessionSecret).update(payload).digest("base64url");
+}
 
-conn.close()
-print(json.dumps({
-    "counts": counts,
-    "proyectos": proyectos,
-    "tareas": tareas,
-    "estados_tareas": estados_tareas,
-    "estados_proyectos": estados_proyectos,
-}, ensure_ascii=False))
-`;
+function makeSessionCookie(user) {
+  const payload = base64url(
+    JSON.stringify({
+      id_usuario: user.id_usuario,
+      nombre: user.nombre,
+      rol: user.rol,
+      comunidades: user.comunidades,
+      exp: Math.floor(Date.now() / 1000) + sessionMaxAgeSeconds
+    })
+  );
+  return `${payload}.${signPayload(payload)}`;
+}
+
+function readSession(req) {
+  const cookie = parseCookies(req)[sessionCookieName];
+  if (!cookie || !cookie.includes(".")) return null;
+  const [payload, signature] = cookie.split(".", 2);
+  const expected = signPayload(payload);
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!data.exp || data.exp < Math.floor(Date.now() / 1000)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function setSessionCookie(res, user) {
+  const value = makeSessionCookie(user);
+  res.setHeader(
+    "Set-Cookie",
+    `${sessionCookieName}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionMaxAgeSeconds}`
+  );
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${sessionCookieName}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+}
+
+function verifyPassword(password, storedHash) {
+  const parts = String(storedHash || "").split("$");
+  if (parts.length !== 4 || parts[0] !== "pbkdf2_sha256") return false;
+  const iterations = Number(parts[1]);
+  const salt = parts[2];
+  const digest = parts[3];
+  if (!iterations || !salt || !digest) return false;
+  const expected = Buffer.from(digest, "hex");
+  const actual = crypto.pbkdf2Sync(String(password || ""), salt, iterations, expected.length, "sha256");
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function runPythonJson(script) {
+  return new Promise((resolve, reject) => {
     execFile(pythonBin, ["-c", script], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
@@ -133,6 +179,148 @@ print(json.dumps({
       }
     });
   });
+}
+
+function queryAuthUsers() {
+  const script = `
+import json
+import sqlite3
+path = ${JSON.stringify(databasePath)}
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+users = [dict(row) for row in conn.execute("""
+    SELECT id_usuario, nombre
+    FROM usuarios
+    WHERE COALESCE(activo, 1) = 1
+    ORDER BY nombre
+""")]
+conn.close()
+print(json.dumps({"usuarios": users}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function queryUserForLogin(userName) {
+  const script = `
+import json
+import sqlite3
+path = ${JSON.stringify(databasePath)}
+name = ${JSON.stringify(userName)}
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+user = conn.execute("""
+    SELECT id_usuario, nombre, rol, activo, password_hash, password_configurada,
+           requiere_cambio_password, bloqueado
+    FROM usuarios
+    WHERE nombre = ?
+""", (name,)).fetchone()
+payload = {"user": None, "comunidades": []}
+if user:
+    payload["user"] = dict(user)
+    payload["comunidades"] = [
+        dict(row)
+        for row in conn.execute("""
+            SELECT c.id_comunidad, c.nombre
+            FROM usuario_comunidad uc
+            JOIN comunidades c ON c.id_comunidad = uc.id_comunidad
+            WHERE uc.id_usuario = ? AND COALESCE(c.activo, 1) = 1
+            ORDER BY c.nombre
+        """, (user["id_usuario"],))
+    ]
+conn.close()
+print(json.dumps(payload, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function queryOverview(session) {
+  const script = `
+import json
+import sqlite3
+
+path = ${JSON.stringify(databasePath)}
+role = ${JSON.stringify(session?.rol || "")}
+user_name = ${JSON.stringify(session?.nombre || "")}
+allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+def rows(sql, params=()):
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+def one(sql, params=()):
+    row = conn.execute(sql, params).fetchone()
+    return dict(row) if row else {}
+
+def community_filter(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1 = 0", []
+    prefix = f"{alias}." if alias else ""
+    marks = ",".join("?" for _ in allowed_ids)
+    return f" AND {prefix}id_comunidad IN ({marks})", allowed_ids
+
+project_filter, project_params = community_filter("p")
+task_filter, task_params = community_filter("t")
+hide_tasks = role == "Presidente"
+
+counts = {
+    "usuarios": one("SELECT COUNT(*) AS total FROM usuarios WHERE COALESCE(activo, 1) = 1").get("total", 0),
+    "comunidades": len(allowed_ids) if role != "Superusuario" else one("SELECT COUNT(*) AS total FROM comunidades WHERE COALESCE(activo, 1) = 1").get("total", 0),
+    "proyectos_activos": one("SELECT COUNT(*) AS total FROM proyectos p WHERE COALESCE(p.activo, 1) = 1" + project_filter, project_params).get("total", 0),
+    "tareas_activas": 0 if hide_tasks else one("SELECT COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter, task_params).get("total", 0),
+    "asambleas": one("SELECT COUNT(*) AS total FROM asambleas").get("total", 0),
+    "propiedades_contabilidad": one("SELECT COUNT(*) AS total FROM cf_propiedades").get("total", 0),
+}
+
+proyectos = rows("""
+    SELECT p.id_proyecto, p.nombre, p.categoria, p.estado_general, p.prioridad,
+           p.responsable_principal, p.responsable_proximo_paso,
+           p.fecha_objetivo_proximo_paso, p.fecha_ultima_actualizacion,
+           c.nombre AS comunidad
+    FROM proyectos p
+    LEFT JOIN comunidades c ON c.id_comunidad = p.id_comunidad
+    WHERE COALESCE(p.activo, 1) = 1
+""" + project_filter + """
+    ORDER BY
+      CASE p.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
+      COALESCE(p.fecha_objetivo_proximo_paso, '') ASC,
+      p.nombre ASC
+    LIMIT 80
+""", project_params)
+
+tareas = [] if hide_tasks else rows("""
+    SELECT t.id_tarea, t.titulo, t.categoria, t.estado, t.prioridad,
+           t.responsable, t.responsable_proximo_paso, t.proximo_paso,
+           t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso,
+           t.fecha_ultima_actualizacion, p.nombre AS proyecto, c.nombre AS comunidad
+    FROM tareas t
+    LEFT JOIN proyectos p ON p.id_proyecto = t.id_proyecto
+    LEFT JOIN comunidades c ON c.id_comunidad = t.id_comunidad
+    WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0
+""" + task_filter + """
+    ORDER BY
+      CASE t.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
+      COALESCE(t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso, '') ASC,
+      t.titulo ASC
+    LIMIT 120
+""", task_params)
+
+estados_tareas = [] if hide_tasks else rows("SELECT COALESCE(estado, 'Sin estado') AS estado, COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter + " GROUP BY COALESCE(estado, 'Sin estado') ORDER BY total DESC", task_params)
+estados_proyectos = rows("SELECT COALESCE(estado_general, 'Sin estado') AS estado, COUNT(*) AS total FROM proyectos p WHERE COALESCE(p.activo, 1) = 1" + project_filter + " GROUP BY COALESCE(estado_general, 'Sin estado') ORDER BY total DESC", project_params)
+
+conn.close()
+print(json.dumps({
+    "usuario": {"nombre": user_name, "rol": role, "comunidades": ${JSON.stringify(session?.comunidades || [])}},
+    "counts": counts,
+    "proyectos": proyectos,
+    "tareas": tareas,
+    "estados_tareas": estados_tareas,
+    "estados_proyectos": estados_proyectos,
+}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
 }
 
 function homePage() {
@@ -151,6 +339,7 @@ function homePage() {
     main { max-width: 1440px; margin: 0 auto; padding: 18px; }
     section { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
     h2 { margin: 0 0 10px; font-size: 20px; }
+    label { display:block; font-weight:700; font-size:13px; color:#334155; margin:10px 0 4px; }
     .muted { color: var(--muted); }
     .grid { display:grid; gap:12px; }
     .counts { grid-template-columns: repeat(6, minmax(120px, 1fr)); margin-bottom:12px; }
@@ -176,6 +365,11 @@ function homePage() {
     .line { font-size:13px; color:#334155; margin-top:5px; }
     .empty { padding:16px; color:var(--muted); border:1px dashed #cbd5e1; border-radius:8px; }
     button { border:0; border-radius:6px; background:var(--blue); color:white; padding:10px 13px; font-weight:700; cursor:pointer; }
+    button.secondary { background:#64748b; }
+    .login { max-width:440px; margin:40px auto; }
+    .login h2 { font-size:24px; }
+    .login input, .login select, .login button { width:100%; margin-bottom:8px; }
+    .hidden { display:none !important; }
     @media (max-width: 1000px) { .split, .counts { grid-template-columns:1fr; } header { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
@@ -183,46 +377,60 @@ function homePage() {
   <header>
     <div>
       <h1>${appName}</h1>
-      <div class="muted" style="color:#cbd5e1">Paso 4 · lectura de datos reales · sin edicion</div>
+      <div class="muted" style="color:#cbd5e1">Paso 5 - acceso con usuario - solo lectura</div>
     </div>
-    <div id="status">Cargando...</div>
+    <div id="sessionStatus">Comprobando acceso...</div>
   </header>
   <main>
-    <div class="grid counts" id="counts"></div>
-    <div class="grid split">
-      <section>
-        <h2>Proyectos</h2>
-        <div class="toolbar">
-          <input id="projectSearch" placeholder="Buscar proyecto..." />
-          <select id="projectState"><option value="">Todos los estados</option></select>
-          <button id="reload">Actualizar</button>
-        </div>
-        <div class="cards" id="projects"></div>
-      </section>
-      <section>
-        <h2>Tareas</h2>
-        <div class="toolbar">
-          <input id="taskSearch" placeholder="Buscar tarea..." />
-          <select id="taskState"><option value="">Todos los estados</option></select>
-        </div>
-        <div class="cards" id="tasks"></div>
-      </section>
+    <section id="loginView" class="login hidden">
+      <h2>Acceso</h2>
+      <p class="muted">Usa el mismo usuario y contrasena del Organizador.</p>
+      <label>Usuario</label>
+      <select id="loginUser"></select>
+      <label>Contrasena</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" />
+      <button id="loginButton">Entrar</button>
+      <div id="loginMessage" class="muted"></div>
+    </section>
+    <div id="appView" class="hidden">
+      <div class="grid counts" id="counts"></div>
+      <div class="grid split">
+        <section>
+          <h2>Proyectos</h2>
+          <div class="toolbar">
+            <input id="projectSearch" placeholder="Buscar proyecto..." />
+            <select id="projectState"><option value="">Todos los estados</option></select>
+            <button id="reload">Actualizar</button>
+            <button class="secondary" id="logout">Salir</button>
+          </div>
+          <div class="cards" id="projects"></div>
+        </section>
+        <section id="tasksSection">
+          <h2>Tareas</h2>
+          <div class="toolbar">
+            <input id="taskSearch" placeholder="Buscar tarea..." />
+            <select id="taskState"><option value="">Todos los estados</option></select>
+          </div>
+          <div class="cards" id="tasks"></div>
+        </section>
+      </div>
     </div>
   </main>
   <script>
-    let state = { proyectos: [], tareas: [] };
+    let state = { usuario: null, proyectos: [], tareas: [] };
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
+    const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
     const slug = (value) => safe(value).replaceAll(" ", "-").replaceAll("/", "-");
 
     function countCard(label, value) {
-      return '<div class="count"><span class="muted">' + label + '</span><strong>' + value + '</strong></div>';
+      return '<div class="count"><span class="muted">' + html(label) + '</span><strong>' + html(value) + '</strong></div>';
     }
 
     function fillSelect(select, rows, field) {
       const current = select.value;
       const values = [...new Set(rows.map(row => safe(row[field])).filter(Boolean))].sort();
-      select.innerHTML = '<option value="">Todos los estados</option>' + values.map(value => '<option>' + value + '</option>').join('');
+      select.innerHTML = '<option value="">Todos los estados</option>' + values.map(value => '<option>' + html(value) + '</option>').join('');
       select.value = values.includes(current) ? current : "";
     }
 
@@ -233,19 +441,72 @@ function homePage() {
       const nextOwner = row.responsable_proximo_paso || "";
       const date = row.fecha_objetivo_proximo_paso || row.fecha_proxima_revision || "";
       const next = row.proximo_paso || "";
-      const project = type === "task" && row.proyecto ? '<div class="line"><strong>Proyecto:</strong> ' + row.proyecto + '</div>' : "";
+      const project = type === "task" && row.proyecto ? '<div class="line"><strong>Proyecto:</strong> ' + html(row.proyecto) + '</div>' : "";
       return '<article class="card prioridad-' + slug(row.prioridad) + '">' +
-        '<h3>' + title + '</h3>' +
+        '<h3>' + html(title) + '</h3>' +
         '<div class="meta">' +
-          '<span class="pill estado-' + slug(stateText) + '">' + stateText + '</span>' +
-          '<span class="pill">' + safe(row.prioridad || "Sin prioridad") + '</span>' +
-          '<span class="pill">' + safe(row.comunidad || "Sin comunidad") + '</span>' +
+          '<span class="pill estado-' + slug(stateText) + '">' + html(stateText) + '</span>' +
+          '<span class="pill">' + html(row.prioridad || "Sin prioridad") + '</span>' +
+          '<span class="pill">' + html(row.comunidad || "Sin comunidad") + '</span>' +
         '</div>' +
         project +
-        '<div class="line"><strong>Responsable:</strong> ' + safe(owner || "Sin responsable") + '</div>' +
-        '<div class="line"><strong>Proximo:</strong> ' + safe(nextOwner || "Sin asignar") + (date ? " · " + date : "") + '</div>' +
-        (next ? '<div class="line"><strong>Paso:</strong> ' + next + '</div>' : '') +
+        '<div class="line"><strong>Responsable:</strong> ' + html(owner || "Sin responsable") + '</div>' +
+        '<div class="line"><strong>Proximo:</strong> ' + html(nextOwner || "Sin asignar") + (date ? " - " + html(date) : "") + '</div>' +
+        (next ? '<div class="line"><strong>Paso:</strong> ' + html(next) + '</div>' : '') +
         '</article>';
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        cache: "no-store",
+        headers: options.body ? { "Content-Type": "application/json" } : {},
+        credentials: "same-origin",
+        ...options
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const error = new Error(data.error || "Error de servidor");
+        error.status = response.status;
+        throw error;
+      }
+      return data;
+    }
+
+    function showLogin(message = "") {
+      $("loginView").classList.remove("hidden");
+      $("appView").classList.add("hidden");
+      $("sessionStatus").textContent = "Sin sesion";
+      $("loginMessage").textContent = message;
+      loadUsers();
+    }
+
+    function showApp() {
+      $("loginView").classList.add("hidden");
+      $("appView").classList.remove("hidden");
+    }
+
+    async function loadUsers() {
+      const data = await api("/api/auth/users");
+      $("loginUser").innerHTML = data.usuarios.map(user => '<option>' + html(user.nombre) + '</option>').join("");
+    }
+
+    async function login() {
+      $("loginMessage").textContent = "Comprobando...";
+      try {
+        await api("/api/login", {
+          method: "POST",
+          body: JSON.stringify({ usuario: $("loginUser").value, password: $("loginPassword").value })
+        });
+        $("loginPassword").value = "";
+        await loadOverview();
+      } catch (error) {
+        $("loginMessage").textContent = error.message;
+      }
+    }
+
+    async function logout() {
+      await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+      showLogin("Sesion cerrada.");
     }
 
     function render() {
@@ -262,72 +523,120 @@ function homePage() {
         (!ts || [row.titulo, row.categoria, row.responsable, row.proyecto, row.proximo_paso, row.comunidad].join(" ").toLowerCase().includes(ts))
       );
       $("projects").innerHTML = projects.length ? projects.map(row => card(row, "project")).join("") : '<div class="empty">No hay proyectos con ese filtro.</div>';
-      $("tasks").innerHTML = tasks.length ? tasks.map(row => card(row, "task")).join("") : '<div class="empty">No hay tareas con ese filtro.</div>';
+      $("tasks").innerHTML = tasks.length ? tasks.map(row => card(row, "task")).join("") : '<div class="empty">No hay tareas visibles para este perfil.</div>';
     }
 
-    async function load() {
-      $("status").textContent = "Cargando datos...";
-      const response = await fetch("/api/overview", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "No se pudieron cargar datos.");
-      state = data;
-      $("counts").innerHTML =
-        countCard("Usuarios", data.counts.usuarios) +
-        countCard("Comunidades", data.counts.comunidades) +
-        countCard("Proyectos activos", data.counts.proyectos_activos) +
-        countCard("Tareas activas", data.counts.tareas_activas) +
-        countCard("Asambleas", data.counts.asambleas) +
-        countCard("Propiedades", data.counts.propiedades_contabilidad);
-      fillSelect($("projectState"), data.proyectos, "estado_general");
-      fillSelect($("taskState"), data.tareas, "estado");
-      $("status").textContent = "Solo lectura · " + new Date().toLocaleString();
-      render();
+    async function loadOverview() {
+      $("sessionStatus").textContent = "Cargando datos...";
+      try {
+        const data = await api("/api/overview");
+        state = data;
+        showApp();
+        const user = data.usuario || {};
+        $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - solo lectura";
+        $("tasksSection").classList.toggle("hidden", user.rol === "Presidente");
+        $("counts").innerHTML =
+          countCard("Usuarios", data.counts.usuarios) +
+          countCard("Comunidades", data.counts.comunidades) +
+          countCard("Proyectos activos", data.counts.proyectos_activos) +
+          countCard("Tareas activas", data.counts.tareas_activas) +
+          countCard("Asambleas", data.counts.asambleas) +
+          countCard("Propiedades", data.counts.propiedades_contabilidad);
+        fillSelect($("projectState"), data.proyectos, "estado_general");
+        fillSelect($("taskState"), data.tareas, "estado");
+        render();
+      } catch (error) {
+        if (error.status === 401) {
+          showLogin("Introduce tus credenciales.");
+        } else {
+          showLogin(error.message);
+        }
+      }
     }
 
     $("projectSearch").addEventListener("input", render);
     $("taskSearch").addEventListener("input", render);
     $("projectState").addEventListener("change", render);
     $("taskState").addEventListener("change", render);
-    $("reload").addEventListener("click", load);
-    load().catch(error => {
-      $("status").textContent = "Error";
-      $("counts").innerHTML = '<section class="empty">' + error.message + '</section>';
-    });
+    $("reload").addEventListener("click", loadOverview);
+    $("loginButton").addEventListener("click", login);
+    $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
+    $("logout").addEventListener("click", logout);
+    loadOverview();
   </script>
 </body>
 </html>`;
 }
 
-const server = http.createServer((req, res) => {
+async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (req.method === "GET" && url.pathname === "/") {
     return sendHtml(res, 200, homePage());
   }
-  if (req.method === "GET" && url.pathname === "/api/overview") {
-    if (!fs.existsSync(databasePath)) {
-      return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+  if (req.method === "GET" && url.pathname === "/api/auth/users") {
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await queryAuthUsers());
+  }
+  if (req.method === "GET" && url.pathname === "/api/me") {
+    const session = readSession(req);
+    return sendJson(res, session ? 200 : 401, session ? { authenticated: true, usuario: session } : { authenticated: false });
+  }
+  if (req.method === "POST" && url.pathname === "/api/login") {
+    const body = await readBody(req);
+    const usuario = String(body.usuario || "").trim();
+    const password = String(body.password || "");
+    const auth = await queryUserForLogin(usuario);
+    const user = auth.user;
+    if (!user || !user.activo || user.bloqueado) {
+      return sendJson(res, 401, { ok: false, error: "Usuario no disponible." });
     }
-    queryOverview()
-      .then((overview) => sendJson(res, 200, overview))
-      .catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
-    return;
+    if (!user.password_configurada || user.requiere_cambio_password) {
+      return sendJson(res, 401, { ok: false, error: "Este usuario debe configurar o cambiar la contrasena desde la app principal." });
+    }
+    if (!verifyPassword(password, user.password_hash)) {
+      return sendJson(res, 401, { ok: false, error: "Contrasena incorrecta." });
+    }
+    const publicUser = {
+      id_usuario: user.id_usuario,
+      nombre: user.nombre,
+      rol: user.rol,
+      comunidades: auth.comunidades || []
+    };
+    setSessionCookie(res, publicUser);
+    return sendJson(res, 200, { ok: true, usuario: publicUser });
+  }
+  if (req.method === "POST" && url.pathname === "/api/logout") {
+    clearSessionCookie(res);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (req.method === "GET" && url.pathname === "/api/overview") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await queryOverview(session));
   }
   if (req.method === "GET" && url.pathname === "/health") {
     const databaseExists = fs.existsSync(databasePath);
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 3 : 1,
+      step: databaseExists ? 5 : 1,
       port,
       dataDir,
       databasePath,
       databaseConfigured: databaseExists,
       databaseSize: databaseExists ? fs.statSync(databasePath).size : 0,
       migratedRealData: databaseExists,
+      authRequired: true,
+      readonly: true,
       timestamp: new Date().toISOString()
     });
   }
   return sendJson(res, 404, { ok: false, error: "Ruta no encontrada." });
+}
+
+const server = http.createServer((req, res) => {
+  handle(req, res).catch((error) => sendJson(res, 500, { ok: false, error: error.message }));
 });
 
 server.listen(port, host, () => {
