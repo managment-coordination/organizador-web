@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "docx": "9.7.1",
-    "mammoth": "^1.12.1"
+    "mammoth": "^1.12.1",
+    "pdf-parse": "^1.1.1",
+    "word-extractor": "^1.0.4"
   }
 }

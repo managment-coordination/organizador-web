@@ -35,6 +35,7 @@ La version web centraliza actualmente:
 - configuracion de la contrasena definitiva desde la propia web durante el primer acceso;
 - selector de contexto al entrar para usuarios con varias comunidades: una comunidad concreta o todas las asignadas;
 - cambio de comunidad durante la sesion sin cerrar el acceso, aplicado a paneles, mapa, revision, documentos e informes;
+- modulo de Seguridad con perfil restringido de carga, extraccion local de partes, deduplicacion, revision compartida y estadisticas;
 - datos y documentos persistentes en el servidor Ubuntu.
 
 Los datos reales siguen excluidos de GitHub:
@@ -80,6 +81,14 @@ El centro de informes permite abrir los informes ya generados y crear un Word co
 ## Interfaz web
 
 La version web utiliza una interfaz operativa comun para escritorio y movil: navegacion estable, tarjetas legibles, estados semanticos y formularios consistentes. La referencia visual de Marbella UNO se limita al lenguaje de diseno; ambos proyectos mantienen codigo, servicios y datos completamente independientes.
+
+## Seguridad
+
+El rol `Seguridad` solo puede subir partes PDF, DOC, DOCX o TXT. No puede consultar tareas, proyectos, usuarios, comunidades, estadisticas ni documentos anteriores. Los archivos se conservan en `data/security-documents` y quedan fuera de GitHub.
+
+Luis, Elena, el Superusuario y cualquier usuario con el permiso `Gestionar Seguridad` disponen de una bandeja de incidencias. La lectura local conserva la clasificacion original, propone categoria y gravedad normalizadas, separa rondas y relevos de las incidencias reales y evita duplicar un mismo reporte aunque aparezca en varios documentos.
+
+Al abrir una incidencia se reserva durante 30 minutos para el revisor. Otro gestor puede verla, pero no modificarla. Desde la ficha se puede confirmar, descartar, marcar informativa o resuelta, vincularla, crear una tarea/proyecto o añadir un seguimiento. Los documentos originales son protegidos y su apertura queda auditada; los datos personales no se copian a las fichas operativas.
 
 ## Estructura
 

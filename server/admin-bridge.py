@@ -15,7 +15,7 @@ SESSION = REQUEST.get("session") or {}
 ACTION = str(REQUEST.get("action") or "")
 DATA = REQUEST.get("data") or {}
 PC = str(REQUEST.get("pc") or "web")
-ROLES = ["Superusuario", "Administrador", "Usuario", "Consulta", "Presidente"]
+ROLES = ["Superusuario", "Administrador", "Usuario", "Consulta", "Presidente", "Seguridad"]
 
 
 def now_iso() -> str:
@@ -27,6 +27,16 @@ def connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS usuario_permisos (
+               id_usuario INTEGER PRIMARY KEY,
+               gestionar_seguridad INTEGER NOT NULL DEFAULT 0,
+               usuario_asignacion TEXT,
+               fecha_asignacion TEXT,
+               FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario)
+           )"""
+    )
+    conn.commit()
     return conn
 
 
@@ -83,9 +93,12 @@ def admin_list() -> dict:
     conn = connection()
     require_superuser(conn)
     users = dictionaries(conn.execute(
-        """SELECT id_usuario,nombre,rol,activo,password_configurada,requiere_cambio_password,
-                  ultimo_acceso,intentos_fallidos,bloqueado,fecha_creacion
-           FROM usuarios ORDER BY nombre COLLATE NOCASE"""
+        """SELECT u.id_usuario,u.nombre,u.rol,u.activo,u.password_configurada,
+                  u.requiere_cambio_password,u.ultimo_acceso,u.intentos_fallidos,u.bloqueado,
+                  u.fecha_creacion,COALESCE(p.gestionar_seguridad,0) AS gestionar_seguridad
+           FROM usuarios u
+           LEFT JOIN usuario_permisos p ON p.id_usuario=u.id_usuario
+           ORDER BY u.nombre COLLATE NOCASE"""
     ).fetchall())
     assignments = conn.execute(
         "SELECT id_usuario,id_comunidad FROM usuario_comunidad ORDER BY id_usuario,id_comunidad"
@@ -129,6 +142,7 @@ def save_user() -> dict:
     name = str(DATA.get("nombre") or "").strip()
     role = str(DATA.get("rol") or "Usuario").strip()
     active = 1 if DATA.get("activo", True) else 0
+    manage_security = 1 if DATA.get("gestionar_seguridad", False) else 0
     if not name:
         raise ValueError("El nombre del usuario es obligatorio.")
     if role not in ROLES:
@@ -173,7 +187,23 @@ def save_user() -> dict:
             "INSERT INTO usuario_comunidad (id_usuario,id_comunidad) VALUES (?,?)",
             [(user_id, community_id) for community_id in community_ids],
         )
-        audit(conn, action, "usuario", user_id, f"{name}; rol={role}; activo={active}; comunidades={community_ids}")
+        conn.execute(
+            """INSERT INTO usuario_permisos
+               (id_usuario,gestionar_seguridad,usuario_asignacion,fecha_asignacion)
+               VALUES (?,?,?,?)
+               ON CONFLICT(id_usuario) DO UPDATE SET
+                   gestionar_seguridad=excluded.gestionar_seguridad,
+                   usuario_asignacion=excluded.usuario_asignacion,
+                   fecha_asignacion=excluded.fecha_asignacion""",
+            (user_id, manage_security, str(SESSION.get("nombre") or "web"), now_iso()),
+        )
+        audit(
+            conn,
+            action,
+            "usuario",
+            user_id,
+            f"{name}; rol={role}; activo={active}; comunidades={community_ids}; gestionar_seguridad={manage_security}",
+        )
     conn.close()
     return {"ok": True, "id_usuario": user_id, "temporary_key": temp_key}
 

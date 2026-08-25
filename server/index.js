@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
+import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,11 +29,13 @@ const uploadsDir = path.join(dataDir, "uploads");
 const legacyAttachmentsDir = path.join(dataDir, "legacy-attachments");
 const reportsDir = path.join(dataDir, "reports");
 const assemblyDocumentsDir = path.join(dataDir, "assembly-documents");
+const securityDocumentsDir = path.join(dataDir, "security-documents");
 const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/organizador_tareas.db");
 const assemblyBridgePath = path.join(__dirname, "assembly-bridge.py");
 const adminBridgePath = path.join(__dirname, "admin-bridge.py");
+const securityBridgePath = path.join(__dirname, "security-bridge.py");
 
-for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir]) {
+for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir, securityDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -241,7 +244,7 @@ function verifyPassword(password, storedHash) {
 
 function runPythonJson(script) {
   return new Promise((resolve, reject) => {
-    execFile(pythonBin, ["-c", script], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(pythonBin, ["-c", script], { timeout: 15000, maxBuffer: 5 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
@@ -258,7 +261,7 @@ function runPythonJson(script) {
 function runAssemblyCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [assemblyBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 12 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(pythonBin, [assemblyBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -278,7 +281,7 @@ function runAssemblyCommand(session, action, data = {}, pc = "web") {
 function runAdminCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -293,6 +296,40 @@ function runAdminCommand(session, action, data = {}, pc = "web") {
       resolve(result);
     });
   });
+}
+
+function runSecurityCommand(session, action, data = {}, pc = "web") {
+  return new Promise((resolve, reject) => {
+    const request = JSON.stringify({ session, action, data, pc });
+    execFile(pythonBin, [securityBridgePath, databasePath, request], { timeout: 45000, maxBuffer: 18 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(String(stdout || "{}").trim() || "{}");
+      } catch {
+        reject(new Error(stderr || error?.message || "No se pudo leer la operacion de Seguridad."));
+        return;
+      }
+      if (error || result?.error) {
+        reject(new Error(`${result?.error_type || "ValueError"}: ${result?.error || stderr || error?.message}`));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+function securityOnlyForbidden(session) {
+  return session?.rol === "Seguridad";
+}
+
+function redactSecurityText(value) {
+  return String(value || "")
+    .replace(/\b(?:DNI|NIE)\s*[:.]?\s*[A-Z0-9 -]{6,16}\b/gi, "[identificacion protegida]")
+    .replace(/\b[XYZ]\s?\d{7,8}[A-Z]\b/gi, "[identificacion protegida]")
+    .replace(/\b\d{7,10}[A-Z]?\b/g, "[dato protegido]")
+    .replace(/\b\d{4}\s?[A-Z]{3}\b/gi, "[matricula protegida]")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function allowedCommunity(session, communityId) {
@@ -3531,6 +3568,34 @@ function homePage() {
     .communityCheck input { width:18px; min-height:18px; }
     .temporaryKey { border:2px solid #16a34a; background:#f0fdf4; border-radius:8px; padding:12px; display:grid; gap:7px; }
     .temporaryKey code { font-size:20px; font-weight:900; letter-spacing:1px; }
+    .securityShell { display:grid; gap:12px; }
+    .securityUploader { border:2px dashed #64748b; border-radius:8px; padding:16px; background:#f8fafc; display:grid; gap:10px; }
+    .securityUploader h3 { margin:0; font-size:18px; }
+    .securityUploader input { background:white; }
+    .securityReceipts { display:grid; gap:7px; }
+    .securityReceipt { border:1px solid #cbd5e1; border-left:5px solid #15803d; border-radius:7px; padding:9px; background:white; font-size:13px; }
+    .securityReceipt.error { border-left-color:#b91c1c; }
+    .securityMetrics { display:grid; grid-template-columns:repeat(5,minmax(125px,1fr)); gap:8px; }
+    .securityDashboard { display:grid; grid-template-columns:minmax(260px,.72fr) minmax(0,1.5fr); gap:12px; align-items:start; }
+    .securityCharts { display:grid; gap:12px; }
+    .securityChart { border:1px solid var(--line); border-radius:8px; padding:11px; background:white; }
+    .securityChart h3 { margin:0 0 9px; font-size:15px; }
+    .securityBarRow { display:grid; grid-template-columns:minmax(105px,.8fr) minmax(100px,1fr) 34px; gap:7px; align-items:center; margin:6px 0; font-size:12px; }
+    .securityBarTrack { height:9px; border-radius:4px; overflow:hidden; background:#e2e8f0; }
+    .securityBarFill { height:100%; background:#2563eb; }
+    .securityFilters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+    .securityIncidentList { display:grid; grid-template-columns:repeat(auto-fill,minmax(285px,1fr)); gap:9px; }
+    .securityIncident { border:1px solid var(--line); border-left:6px solid #64748b; border-radius:8px; background:white; padding:11px; display:grid; gap:7px; cursor:pointer; min-width:0; }
+    .securityIncident h3 { margin:0; font-size:16px; overflow-wrap:anywhere; }
+    .securityIncident.severity-Critica { border-left-color:#991b1b; }
+    .securityIncident.severity-Alta { border-left-color:#ea580c; }
+    .securityIncident.severity-Media { border-left-color:#ca8a04; }
+    .securityIncident.severity-Informativa { border-left-color:#64748b; }
+    .securitySourceBox { border:1px solid var(--line); border-radius:8px; padding:10px; background:#f8fafc; display:grid; gap:7px; }
+    .securityCandidate { border:1px solid var(--line); border-radius:7px; padding:9px; background:white; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
+    .securityOriginal { background:#f8fafc; border:1px solid #e2e8f0; border-radius:7px; padding:10px; white-space:pre-wrap; line-height:1.4; }
+    .security-only .workbench { grid-template-columns:1fr; }
+    .security-only .sidebar { display:none; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -3542,6 +3607,8 @@ function homePage() {
       .assemblyMetrics { grid-template-columns:repeat(3,minmax(115px,1fr)); }
       .assemblySplit { grid-template-columns:1fr; }
       .adminLayout { grid-template-columns:1fr; }
+      .securityDashboard { grid-template-columns:1fr; }
+      .securityMetrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
     }
     @media (max-width: 700px) {
       header { padding:14px; }
@@ -3561,6 +3628,9 @@ function homePage() {
       .detailGrid, .formGrid { grid-template-columns:1fr; }
       .workflowControls { grid-template-columns:1fr; }
       .reviewSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .securityMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .securityFilters { grid-template-columns:1fr; }
+      .securityIncidentList { grid-template-columns:1fr; }
       .homeHero { align-items:flex-start; flex-direction:column; }
       .homeActions { justify-content:flex-start; width:100%; }
       .homeActions button { flex:1 1 140px; }
@@ -3844,7 +3914,7 @@ function homePage() {
 
     @media (max-width:1100px) {
       main { padding:15px; }
-      .workbench { gap:13px; }
+      .workbench { grid-template-columns:1fr; gap:13px; }
       .sidebar { position:static; max-height:none; }
       .tabs { grid-template-columns:repeat(4,minmax(0,1fr)); }
       .filters { grid-template-columns:repeat(4,minmax(0,1fr)); }
@@ -3930,6 +4000,7 @@ function homePage() {
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
             <button class="tab" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
             <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
+            <button class="tab hidden" id="securityTab" data-view="security"><span>Seguridad</span><span class="tabBadge" id="securityTabCount">0</span></button>
             <div class="navDivider"></div>
             <button class="tab" id="mapTab" data-view="map"><span>Mapa de trabajo</span><span id="mapTabCount">0</span></button>
             <button class="tab" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
@@ -4172,6 +4243,15 @@ function homePage() {
         </div>
       </div>
     </div>
+    <div id="securityModal" class="modalBackdrop hidden">
+      <div class="modal" style="width:min(1080px,100%)">
+        <div class="modalHead">
+          <div><h2 id="securityModalTitle">Incidencia de Seguridad</h2><p class="muted" id="securityModalSubtitle"></p></div>
+          <button class="ghost" id="closeSecurityModal">Cerrar</button>
+        </div>
+        <div class="modalBody" id="securityModalBody"></div>
+      </div>
+    </div>
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
@@ -4214,6 +4294,7 @@ function homePage() {
     let selectedAdminUserId = 0;
     let selectedAdminCommunityId = 0;
     let lastTemporaryKey = null;
+    let securityData = { access:null, overview:null, receipts:[], selected:null, filters:{ status:"", severity:"", category:"", query:"" } };
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -4333,8 +4414,10 @@ function homePage() {
         $("loginPassword").value = "";
         const user = result.usuario || {};
         const assigned = user.comunidades_asignadas || user.comunidades || [];
-        if (user.rol !== "Superusuario" && assigned.length > 1) {
+        if (!["Superusuario", "Seguridad"].includes(user.rol) && assigned.length > 1) {
           openCommunityScope(user, true);
+        } else if (user.rol === "Seguridad") {
+          await loadSecurityOnly(user);
         } else {
           await loadOverview();
         }
@@ -4886,8 +4969,8 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["homeTab", "projectTab", "taskTab", "assemblyTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
     }
 
@@ -5300,7 +5383,7 @@ function homePage() {
       const roles = (adminData.roles || []).map(role => '<option value="' + html(role) + '"' + ((user?.rol || "Usuario") === role ? " selected" : "") + '>' + html(role) + '</option>').join("");
       const assigned = new Set((user?.community_ids || []).map(Number));
       const checks = (adminData.communities || []).map(community => '<label class="communityCheck"><input type="checkbox" data-admin-user-community="' + community.id_comunidad + '"' + (assigned.has(Number(community.id_comunidad)) ? " checked" : "") + ' /><span><strong>' + html(community.nombre) + '</strong>' + (community.activo ? '' : '<small class="dangerText" style="display:block">Inactiva</small>') + '</span></label>').join("");
-      return '<div class="assemblyPane"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El Superusuario puede ver todas las comunidades aunque no aparezcan marcadas. Los demas perfiles solo acceden a las seleccionadas.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
+      return '<div class="assemblyPane"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><label><input type="checkbox" id="adminUserSecurity"' + (user?.gestionar_seguridad ? " checked" : "") + ' /> Gestionar Seguridad: revisar partes, ver documentos protegidos y convertir incidencias</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El perfil Seguridad solo carga partes. El permiso Gestionar Seguridad se reserva para Luis, Elena y usuarios autorizados expresamente.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
     }
 
     function adminCommunityEditorHtml() {
@@ -5334,7 +5417,7 @@ function homePage() {
 
     async function saveAdminUser() {
       const communityIds = [...document.querySelectorAll("[data-admin-user-community]:checked")].map(row => Number(row.dataset.adminUserCommunity));
-      const data = { id_usuario:selectedAdminUserId || null, nombre:$("adminUserName").value, rol:$("adminUserRole").value, activo:$("adminUserActive").checked, community_ids:communityIds };
+      const data = { id_usuario:selectedAdminUserId || null, nombre:$("adminUserName").value, rol:$("adminUserRole").value, activo:$("adminUserActive").checked, gestionar_seguridad:$("adminUserSecurity").checked, community_ids:communityIds };
       if (!safe(data.nombre)) { $("adminUserMessage").textContent="El nombre es obligatorio."; return; }
       if (!confirm((selectedAdminUserId ? "Guardar los cambios del usuario" : "Crear el nuevo usuario") + "?")) return;
       try {
@@ -5814,8 +5897,176 @@ function homePage() {
       }
     }
 
+    function securityUploaderHtml() {
+      return '<section class="securityUploader"><h3>Cargar partes de Seguridad</h3><input id="securityFiles" type="file" multiple accept=".pdf,.doc,.docx,.txt" /><div class="toolbar"><button class="green" id="securityUploadButton">Subir documentos</button><span class="muted" id="securityUploadMessage"></span></div><div class="securityReceipts" id="securityReceipts">' + (securityData.receipts || []).map(row => '<div class="securityReceipt ' + (row.error ? 'error' : '') + '"><strong>' + html(row.name) + '</strong><div>' + html(row.message) + '</div></div>').join('') + '</div></section>';
+    }
+
+    function securityChartHtml(title, rows) {
+      const total = Math.max(1, ...(rows || []).map(row => Number(row.total || 0)));
+      return '<div class="securityChart"><h3>' + html(title) + '</h3>' + ((rows || []).map(row => '<div class="securityBarRow"><span title="' + html(row.label || '') + '">' + html(row.label || 'Sin determinar') + '</span><div class="securityBarTrack"><div class="securityBarFill" style="width:' + Math.max(3, Math.round(Number(row.total || 0) * 100 / total)) + '%"></div></div><strong>' + html(String(row.total || 0)) + '</strong></div>').join('') || '<div class="muted">Sin datos.</div>') + '</div>';
+    }
+
+    function filteredSecurityIncidents() {
+      const rows = (securityData.overview || {}).incidents || [];
+      const filters = securityData.filters || {};
+      const query = safe(filters.query).toLowerCase();
+      return rows.filter(row =>
+        (!filters.status || row.estado_revision === filters.status) &&
+        (!filters.severity || row.gravedad === filters.severity) &&
+        (!filters.category || row.categoria_normalizada === filters.category) &&
+        (!query || [row.titulo,row.descripcion,row.zona,row.ubicacion,row.numero_reporte,row.categoria_origen].join(' ').toLowerCase().includes(query))
+      );
+    }
+
+    function securityPanelHtml() {
+      const access = securityData.access || {};
+      if (!access.can_manage) return '<div class="securityShell">' + securityUploaderHtml() + '</div>';
+      const data = securityData.overview;
+      if (!data) return '<div class="empty">Cargando Seguridad...</div>';
+      const incidents = filteredSecurityIncidents();
+      const statusOptions = [...new Set((data.incidents || []).map(row => row.estado_revision).filter(Boolean))];
+      const categoryOptions = data.category_options || [];
+      const filters = securityData.filters || {};
+      const cards = incidents.map(row => '<article class="securityIncident severity-' + slug(row.gravedad) + '" data-security-incident="' + row.id_incidencia + '"><h3>' + html(row.titulo) + '</h3><div class="meta"><span class="pill">' + html(row.gravedad) + '</span><span class="pill">' + html(row.estado_revision) + '</span><span class="pill">' + html(row.categoria_normalizada) + '</span></div><div class="line"><strong>Zona:</strong> ' + html(row.zona || row.ubicacion || 'Sin determinar') + '</div><div class="line"><strong>Fecha:</strong> ' + html(row.fecha_hora_suceso || 'Sin fecha') + '</div>' + (row.numero_reporte ? '<div class="line"><strong>Reporte:</strong> #' + html(row.numero_reporte) + '</div>' : '') + (row.revisor ? '<div class="line"><strong>Revision:</strong> ' + html(row.revisor) + '</div>' : '') + '</article>').join('');
+      const documents = (data.documents || []).slice(0, 20).map(row => '<div class="reportRow"><div><h3>' + html(row.nombre_original) + '</h3><div class="muted">' + html(row.tipo_documento || 'Documento') + ' · ' + html(row.fecha_carga || '') + ' · ' + html(String(row.incidencias_nuevas || 0)) + ' nuevas / ' + html(String(row.incidencias_duplicadas || 0)) + ' repetidas</div></div><a href="/api/security/document?id=' + row.id_documento + '&inline=1" target="_blank"><button class="ghost">Abrir</button></a></div>').join('');
+      return '<div class="securityShell">' + securityUploaderHtml() + '<div class="securityMetrics">' + countCard('Pendientes',String(data.pending || 0)) + countCard('Críticas',String((data.severities.find(row => row.label === 'Critica') || {}).total || 0)) + countCard('Altas',String((data.severities.find(row => row.label === 'Alta') || {}).total || 0)) + countCard('Incidencias',String(data.total || 0)) + countCard('Documentos',String((data.documents || []).length)) + '</div><div class="securityDashboard"><div class="securityCharts">' + securityChartHtml('Por categoría',data.categories) + securityChartHtml('Por zona',data.zones) + securityChartHtml('Por gravedad',data.severities) + '</div><div><div class="securityFilters"><input id="securityQuery" placeholder="Buscar incidencia, zona o reporte" value="' + html(filters.query || '') + '" /><select id="securityStatus"><option value="">Todos los estados</option>' + statusOptions.map(value => '<option' + (value === filters.status ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select><select id="securitySeverity"><option value="">Todas las gravedades</option>' + (data.severity_options || []).map(value => '<option' + (value === filters.severity ? ' selected' : '') + '>' + html(value === 'Critica' ? 'Crítica' : value) + '</option>').join('') + '</select><select id="securityCategory"><option value="">Todas las categorías</option>' + categoryOptions.map(value => '<option' + (value === filters.category ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select></div><div class="securityIncidentList">' + (cards || '<div class="empty">No hay incidencias con estos filtros.</div>') + '</div></div></div><section><div class="contentHead"><div><h2>Partes protegidos</h2><p class="muted">Aperturas y descargas quedan auditadas.</p></div></div><div class="reportList">' + (documents || '<div class="empty">No hay documentos cargados.</div>') + '</div></section></div>';
+    }
+
+    function bindSecurityPanel() {
+      if ($('securityUploadButton')) $('securityUploadButton').addEventListener('click', uploadSecurityFiles);
+      ['securityStatus','securitySeverity','securityCategory'].forEach(id => {
+        if (!$(id)) return;
+        $(id).addEventListener('change', event => {
+          const key = ({securityQuery:'query',securityStatus:'status',securitySeverity:'severity',securityCategory:'category'})[id];
+          securityData.filters[key] = event.target.value;
+          render();
+        });
+      });
+      if ($('securityQuery')) {
+        $('securityQuery').addEventListener('change', event => { securityData.filters.query=event.target.value; render(); });
+        $('securityQuery').addEventListener('keydown', event => { if(event.key==='Enter'){securityData.filters.query=event.target.value;render();} });
+      }
+      document.querySelectorAll('[data-security-incident]').forEach(card => card.addEventListener('click', () => openSecurityIncident(Number(card.dataset.securityIncident))));
+    }
+
+    async function uploadSecurityFiles() {
+      const files = [...(($('securityFiles') || {}).files || [])];
+      if (!files.length) { $('securityUploadMessage').textContent = 'Selecciona al menos un documento.'; return; }
+      $('securityUploadButton').disabled = true;
+      for (let index=0; index<files.length; index++) {
+        const file = files[index];
+        $('securityUploadMessage').textContent = 'Procesando ' + (index + 1) + ' de ' + files.length + ': ' + file.name;
+        try {
+          const response = await fetch('/api/security/upload',{method:'POST',body:file,credentials:'same-origin',headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type || 'application/octet-stream'}});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'No se pudo cargar el documento.');
+          const message = result.duplicate_document ? 'Ya estaba cargado; no se ha duplicado.' : (result.new_incidents || 0) + ' incidencia(s) nueva(s), ' + (result.duplicate_incidents || 0) + ' repetida(s).';
+          securityData.receipts.unshift({name:file.name,message});
+        } catch (error) {
+          securityData.receipts.unshift({name:file.name,message:error.message,error:true});
+        }
+        render();
+      }
+      $('securityUploadButton').disabled = false;
+      $('securityUploadMessage').textContent = 'Carga finalizada.';
+      if ((securityData.access || {}).can_manage) await loadSecurityData(false);
+    }
+
+    async function loadSecurityData(renderAfter = true) {
+      securityData.overview = await api('/api/security/overview');
+      if ($('securityTabCount')) $('securityTabCount').textContent = securityData.overview.pending || 0;
+      if (renderAfter && currentView === 'security') render();
+    }
+
+    async function loadSecurityOnly(user) {
+      securityData.access = await api('/api/security/access');
+      state = { usuario:user, proyectos:[], tareas:[], workflow:{actions:[],notifications:[],president_requests:[],review:{items:[],summary:{},communities:[]}}, daily:{metrics:{},map:{items:[],counts:{}},documents:[],communities:[]} };
+      currentView = 'security';
+      showApp();
+      $("appView").classList.add("security-only");
+      $('counts').classList.add('hidden');
+      $('sessionStatus').textContent = (user.nombre || '') + ' - Seguridad';
+      $('changeCommunityTop').classList.add('hidden');
+      document.querySelectorAll('.tabs .tab').forEach(button => button.classList.add('hidden'));
+      $('securityTab').classList.remove('hidden');
+      $('securityTabCount').textContent = '';
+      render();
+    }
+
+    async function openSecurityIncident(id) {
+      let detail = await api('/api/security/incident?id=' + encodeURIComponent(id));
+      let lockMessage = '';
+      if (['Pendiente de revision','En revision'].includes(detail.incident.estado_revision)) {
+        try {
+          await api('/api/security/action',{method:'POST',body:JSON.stringify({action:'claim',data:{id}})});
+          detail = await api('/api/security/incident?id=' + encodeURIComponent(id));
+        } catch (error) { lockMessage = error.message; }
+      }
+      securityData.selected = detail;
+      renderSecurityModal(lockMessage);
+      $('securityModal').classList.remove('hidden');
+    }
+
+    function renderSecurityModal(lockMessage) {
+      const detail = securityData.selected || {};
+      const item = detail.incident || {};
+      const finalState = ['Confirmada','Informativa','Resuelta','Descartada','Vinculada'].includes(item.estado_revision);
+      const locked = Boolean(lockMessage) || (item.revisor && item.revisor !== (state.usuario || {}).nombre && item.estado_revision === 'En revision');
+      const readonly = finalState || locked;
+      $('securityModalTitle').textContent = item.titulo || 'Incidencia de Seguridad';
+      $('securityModalSubtitle').textContent = (item.numero_reporte ? '#' + item.numero_reporte + ' · ' : '') + (item.fecha_hora_suceso || 'Sin fecha') + (locked ? ' · En revision por ' + item.revisor : '');
+      const disabled = readonly ? ' disabled' : '';
+      const categories = ((securityData.overview || {}).category_options || []).map(value => '<option' + (value === item.categoria_normalizada ? ' selected' : '') + '>' + html(value) + '</option>').join('');
+      const severities = ((securityData.overview || {}).severity_options || ['Critica','Alta','Media','Informativa']).map(value => '<option' + (value === item.gravedad ? ' selected' : '') + '>' + html(value) + '</option>').join('');
+      const sources = (detail.sources || []).map(row => '<div class="securitySourceBox"><strong>' + html(row.nombre_original) + '</strong><div class="muted">' + html(row.tipo_documento || '') + ' · ' + html(row.fecha_carga || '') + '</div><div class="toolbar"><a href="/api/security/document?id=' + row.id_documento + '&inline=1" target="_blank"><button class="ghost">Abrir protegido</button></a></div></div>').join('');
+      const candidates = (detail.candidates || []).map(row => '<div class="securityCandidate"><div><strong>' + html(row.title) + '</strong><div class="muted">' + html(row.entity_type === 'task' ? 'Tarea' : 'Proyecto') + ' · coincidencia ' + Math.round(Number(row.score || 0) * 100) + '%</div></div><div class="toolbar"><button class="ghost" data-security-link="' + row.entity_type + ':' + row.entity_id + '">Vincular</button><button data-security-followup="' + row.entity_type + ':' + row.entity_id + '">Añadir seguimiento</button></div></div>').join('');
+      const projectOptions = (state.proyectos || []).map(row => '<option value="' + row.id_proyecto + '">' + html(row.nombre) + '</option>').join('');
+      $('securityModalBody').innerHTML = (lockMessage ? '<div class="answerNote">' + html(lockMessage) + ' Puedes consultar la ficha, pero no editarla.</div>' : '') + '<section><div class="formGrid"><div><label>Fecha y hora</label><input id="securityDate" value="' + html(item.fecha_hora_suceso || '') + '"' + disabled + ' /></div><div><label>Zona</label><input id="securityZone" value="' + html(item.zona || '') + '"' + disabled + ' /></div><div><label>Ubicacion</label><input id="securityLocation" value="' + html(item.ubicacion || '') + '"' + disabled + ' /></div><div><label>Categoria normalizada</label><select id="securityNormalizedCategory"' + disabled + '>' + categories + '</select></div><div><label>Gravedad</label><select id="securityIncidentSeverity"' + disabled + '>' + severities + '</select></div><div><label>Estado de revision</label><input value="' + html(item.estado_revision || '') + '" disabled /></div></div><label>Titulo</label><input id="securityIncidentTitle" value="' + html(item.titulo || '') + '"' + disabled + ' /><label>Descripcion</label><textarea id="securityDescription"' + disabled + '>' + html(item.descripcion || '') + '</textarea><label>Actuacion de Seguridad</label><textarea id="securityActionTaken"' + disabled + '>' + html(item.actuacion_seguridad || '') + '</textarea><label>Resultado</label><textarea id="securityResult"' + disabled + '>' + html(item.resultado || '') + '</textarea><label>Notas de revision</label><textarea id="securityReviewNotes"' + disabled + '>' + html(item.notas_revision || '') + '</textarea>' + (!readonly ? '<div class="toolbar"><button class="green" id="securitySaveIncident">Guardar cambios</button><button id="securityConfirmIncident">Confirmar</button><button class="secondary" id="securityInformationIncident">Informativa</button><button class="secondary" id="securityResolveIncident">Resuelta</button><button class="red" id="securityDiscardIncident">Descartar</button><span class="muted" id="securityIncidentMessage"></span></div>' : '') + '</section><section><h2>Clasificacion original</h2><div class="securityOriginal"><strong>Incidencia:</strong> ' + html(item.categoria_origen || 'No indicada') + '\\n<strong>Tipo:</strong> ' + html(item.tipo_origen || 'No indicado') + '\\n<strong>Situacion:</strong> ' + html(item.situacion_origen || 'No indicada') + '</div></section><section><h2>Documentos fuente</h2><div class="attachmentGrid">' + (sources || '<div class="empty">Sin documento asociado.</div>') + '</div></section>' + (!readonly ? '<section><h2>Relacion con el trabajo operativo</h2><div class="history">' + (candidates || '<div class="empty">No hay coincidencias claras. Puedes crear un elemento nuevo.</div>') + '</div><div class="formGrid"><div><label>Crear</label><select id="securityCreateType"><option value="project">Proyecto</option><option value="task">Tarea</option></select></div><div><label>Proyecto contenedor para tarea</label><select id="securityCreateProject"><option value="">Seleccionar...</option>' + projectOptions + '</select></div><div><label>Responsable</label><input id="securityCreateOwner" list="responsiblesList" value="' + html((state.usuario || {}).nombre || '') + '" /></div></div><label>Titulo</label><input id="securityCreateTitle" value="' + html(item.titulo || '') + '" /><label>Proximo paso</label><textarea id="securityCreateNextStep">Revisar la incidencia, determinar la actuacion necesaria y dejar constancia del resultado.</textarea><div class="toolbar"><button class="green" id="securityCreateWork">Crear y vincular</button><span class="muted" id="securityConvertMessage"></span></div></section>' : '');
+      if (!readonly) {
+        $('securitySaveIncident').addEventListener('click', saveSecurityIncident);
+        $('securityConfirmIncident').addEventListener('click', () => resolveSecurityIncident('Confirmada'));
+        $('securityInformationIncident').addEventListener('click', () => resolveSecurityIncident('Informativa'));
+        $('securityResolveIncident').addEventListener('click', () => resolveSecurityIncident('Resuelta'));
+        $('securityDiscardIncident').addEventListener('click', () => resolveSecurityIncident('Descartada'));
+        $('securityCreateWork').addEventListener('click', createSecurityWork);
+        document.querySelectorAll('[data-security-link]').forEach(button => button.addEventListener('click', () => securityConvert('link',button.dataset.securityLink)));
+        document.querySelectorAll('[data-security-followup]').forEach(button => button.addEventListener('click', () => securityConvert('followup',button.dataset.securityFollowup)));
+      }
+    }
+
+    function securityEditPayload() {
+      return { id:securityData.selected.incident.id_incidencia, fecha_hora_suceso:$('securityDate').value, zona:$('securityZone').value, ubicacion:$('securityLocation').value, categoria_normalizada:$('securityNormalizedCategory').value, gravedad:$('securityIncidentSeverity').value, titulo:$('securityIncidentTitle').value, descripcion:$('securityDescription').value, actuacion_seguridad:$('securityActionTaken').value, resultado:$('securityResult').value, notas_revision:$('securityReviewNotes').value };
+    }
+
+    async function saveSecurityIncident() {
+      $('securityIncidentMessage').textContent = 'Guardando...';
+      try { await api('/api/security/action',{method:'POST',body:JSON.stringify({action:'save',data:securityEditPayload()})}); await loadSecurityData(false); await openSecurityIncident(securityData.selected.incident.id_incidencia); }
+      catch(error){ $('securityIncidentMessage').innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function resolveSecurityIncident(status) {
+      if (!confirm('Marcar la incidencia como ' + status + '?')) return;
+      try { await api('/api/security/action',{method:'POST',body:JSON.stringify({action:'save',data:securityEditPayload()})}); await api('/api/security/action',{method:'POST',body:JSON.stringify({action:'resolve',data:{id:securityData.selected.incident.id_incidencia,status,notes:$('securityReviewNotes').value}})}); $('securityModal').classList.add('hidden'); await loadSecurityData(); }
+      catch(error){ $('securityIncidentMessage').innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function securityConvert(mode, encoded) {
+      const parts = encoded.split(':');
+      if (!confirm((mode === 'link' ? 'Vincular sin modificar' : 'Añadir un seguimiento resumido a') + ' este elemento?')) return;
+      try { const result=await api('/api/security/convert',{method:'POST',body:JSON.stringify({id_incidencia:securityData.selected.incident.id_incidencia,mode,type:parts[0],entity_id:Number(parts[1]),proximo_paso:$('securityCreateNextStep').value,responsable:$('securityCreateOwner').value})}); $('securityModal').classList.add('hidden'); await loadSecurityData(); if(result.id) await openEntity(result.type,result.id,false); }
+      catch(error){ $('securityConvertMessage').innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function createSecurityWork() {
+      const type = $('securityCreateType').value;
+      if (type === 'task' && !$('securityCreateProject').value) { $('securityConvertMessage').textContent='Selecciona el proyecto contenedor de la tarea.'; return; }
+      if (!confirm('Crear y vincular este ' + (type === 'task' ? 'tarea' : 'proyecto') + '?')) return;
+      try { const result=await api('/api/security/convert',{method:'POST',body:JSON.stringify({id_incidencia:securityData.selected.incident.id_incidencia,mode:'create',type,id_proyecto:Number($('securityCreateProject').value || 0),titulo:$('securityCreateTitle').value,proximo_paso:$('securityCreateNextStep').value,responsable:$('securityCreateOwner').value})}); $('securityModal').classList.add('hidden'); await loadSecurityData(); if(result.id) await openEntity(result.type,result.id,false); }
+      catch(error){ $('securityConvertMessage').innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
     function render() {
-      const specialView = ["home", "assemblies", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin"].includes(currentView);
+      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin"].includes(currentView);
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
@@ -5842,6 +6093,15 @@ function homePage() {
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = assembliesPanelHtml();
         bindAssembliesPanel();
+        return;
+      }
+      if (currentView === "security") {
+        $("contentTitle").textContent = (securityData.access || {}).can_manage ? "Seguridad" : "Carga de partes";
+        $("contentSubtitle").textContent = (securityData.access || {}).can_manage ? "Incidencias, revision compartida y documentos protegidos." : "Envio de partes al equipo de gestion.";
+        $("visibleCount").textContent = (securityData.access || {}).can_manage && securityData.overview ? securityData.overview.pending + " pendientes" : "";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = securityPanelHtml();
+        bindSecurityPanel();
         return;
       }
       if (currentView === "work") {
@@ -6150,12 +6410,22 @@ function homePage() {
     async function loadOverview() {
       $("sessionStatus").textContent = "Cargando datos...";
       try {
+        const sessionInfo = await api("/api/me");
+        if ((sessionInfo.usuario || {}).rol === "Seguridad") {
+          await loadSecurityOnly(sessionInfo.usuario);
+          return;
+        }
         const firstSessionLoad = !state.usuario;
-        const [data, workflow, daily] = await Promise.all([api("/api/overview"), api("/api/workflow"), api("/api/daily-operations")]);
+        const [data, workflow, daily, securityAccess] = await Promise.all([api("/api/overview"), api("/api/workflow"), api("/api/daily-operations"), api("/api/security/access")]);
         data.workflow = workflow;
         data.daily = daily;
         state = data;
+        securityData.access = securityAccess;
+        if (securityAccess.can_manage) await loadSecurityData(false);
         showApp();
+        $("appView").classList.remove("security-only");
+        $("counts").classList.remove("hidden");
+        ["homeTab","projectTab","taskTab","assemblyTab","mapTab","workTab","reviewTab","globalSearchTab","documentsTab","reportsTab","importTab","notificationTab","aiTab"].forEach(id => $(id).classList.remove("hidden"));
         const user = data.usuario || {};
         const assignedCommunities = user.comunidades_asignadas || user.comunidades || [];
         const activeCommunities = user.comunidades || [];
@@ -6171,6 +6441,8 @@ function homePage() {
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
         $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
+        $("securityTab").classList.toggle("hidden", !securityAccess.can_manage);
+        $("securityTabCount").textContent = securityAccess.can_manage ? ((securityData.overview || {}).pending || 0) : 0;
         $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
         $("counts").innerHTML =
           countCard(user.rol === "Presidente" ? "Decisiones pendientes" : "Acciones pendientes", user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length) +
@@ -6210,12 +6482,14 @@ function homePage() {
       if (view === "reports" && !reportsCenter.loaded) loadReportsCenter();
       if (view === "assemblies" && !assembliesData.loaded) loadAssemblies();
       if (view === "admin" && !adminData.loaded) loadAdmin();
+      if (view === "security" && (securityData.access || {}).can_manage && !securityData.overview) loadSecurityData();
     }
 
     $("homeTab").addEventListener("click", () => switchView("home"));
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
     $("assemblyTab").addEventListener("click", () => switchView("assemblies"));
+    $("securityTab").addEventListener("click", () => switchView("security"));
     $("mapTab").addEventListener("click", () => switchView("map"));
     $("workTab").addEventListener("click", () => switchView("work"));
     $("reviewTab").addEventListener("click", () => switchView("review"));
@@ -6343,6 +6617,8 @@ function homePage() {
     $("confirmCommunityScope").addEventListener("click", confirmCommunityScope);
     $("closeCommunityScope").addEventListener("click", closeCommunityScope);
     $("communityScopeModal").addEventListener("click", event => { if (event.target.id === "communityScopeModal") closeCommunityScope(); });
+    $("closeSecurityModal").addEventListener("click", () => $("securityModal").classList.add("hidden"));
+    $("securityModal").addEventListener("click", event => { if(event.target.id === "securityModal") $("securityModal").classList.add("hidden"); });
     $("logoutTop").addEventListener("click", logout);
     loadOverview();
   </script>
@@ -6430,6 +6706,142 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/api/logout") {
     clearSessionCookie(res);
     return sendJson(res, 200, { ok: true });
+  }
+  if (req.method === "GET" && url.pathname === "/api/security/access") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runSecurityCommand(session, "access", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/security/overview") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runSecurityCommand(session, "overview", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/security/incident") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runSecurityCommand(session, "detail", { id: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/security/upload") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const access = await runSecurityCommand(session, "access", {}, String(req.socket.remoteAddress || "web"));
+    if (!access.can_upload) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede subir partes de Seguridad." });
+    const fileName = safeUploadName(req.headers["x-file-name"] || "parte");
+    const bytes = await readRawBody(req);
+    if (!bytes.length) return sendJson(res, 400, { ok: false, error: "El archivo esta vacio." });
+    const fileHash = crypto.createHash("sha256").update(bytes).digest("hex");
+    const existing = await runSecurityCommand(session, "file_exists", { hash_archivo: fileHash }, String(req.socket.remoteAddress || "web"));
+    if (existing.exists) return sendJson(res, 200, { ok: true, duplicate_document: true, document: existing.document });
+    const extraction = await extractSecurityDocument(fileName, bytes);
+    const analysis = analyzeSecurityText(fileName, extraction.text);
+    const folder = path.join(securityDocumentsDir, new Date().toISOString().slice(0, 7));
+    fs.mkdirSync(folder, { recursive: true });
+    let target = path.join(folder, `${Date.now()}_${fileName}`);
+    let counter = 2;
+    while (fs.existsSync(target)) {
+      target = path.join(folder, `${Date.now()}_${counter}_${fileName}`);
+      counter += 1;
+    }
+    fs.writeFileSync(target, bytes, { flag: "wx" });
+    try {
+      const result = await runSecurityCommand(session, "register_upload", {
+        document: {
+          hash_archivo: fileHash,
+          nombre_original: fileName,
+          ruta_archivo: target,
+          tipo_mime: req.headers["content-type"] || contentTypeFor(fileName),
+          extension: extraction.extension,
+          tamano_bytes: bytes.length,
+          estado_procesamiento: "Procesado",
+          advertencias: analysis.warnings,
+          texto_extraido: extraction.text,
+          tipo_documento: analysis.tipo_documento,
+          inicio_turno: analysis.inicio_turno,
+          fin_turno: analysis.fin_turno,
+          operativos: analysis.operativos
+        },
+        incidents: analysis.incidents
+      }, String(req.socket.remoteAddress || "web"));
+      return sendJson(res, 200, result);
+    } catch (error) {
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+      throw error;
+    }
+  }
+  if (req.method === "POST" && url.pathname === "/api/security/action") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const allowedActions = new Set(["claim", "save", "resolve", "link"]);
+    if (!allowedActions.has(String(body.action || ""))) return sendJson(res, 400, { ok: false, error: "Accion de Seguridad no permitida." });
+    return sendJson(res, 200, await runSecurityCommand(session, body.action, body.data || {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/security/convert") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const incidentId = Number(body.id_incidencia || 0);
+    const mode = String(body.mode || "");
+    const type = String(body.type || "");
+    const entityId = Number(body.entity_id || 0);
+    if (!incidentId || !["link", "followup", "create"].includes(mode) || !["task", "project"].includes(type)) {
+      return sendJson(res, 400, { ok: false, error: "Operacion de vinculacion no valida." });
+    }
+    const pc = String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web");
+    const detail = await runSecurityCommand(session, "detail", { id: incidentId }, pc);
+    const incident = detail.incident || {};
+    let targetId = entityId;
+    const comment = incident.sensible
+      ? `${redactSecurityText(incident.titulo || "Incidencia de Seguridad")}. El parte contiene datos personales protegidos. El detalle y el documento original solo pueden consultarse desde el modulo de Seguridad. Resultado: ${redactSecurityText(incident.resultado || "Pendiente")}.`
+      : redactSecurityText(`${incident.titulo || "Incidencia de Seguridad"}. ${incident.descripcion || ""} Actuacion de Seguridad: ${incident.actuacion_seguridad || "No indicada"}. Resultado: ${incident.resultado || "Pendiente"}.`);
+    const nextStep = redactSecurityText(String(body.proximo_paso || "Revisar la incidencia, determinar la actuacion necesaria y dejar constancia del resultado."));
+    if (mode === "followup") {
+      if (!targetId) return sendJson(res, 400, { ok: false, error: "Selecciona una tarea o proyecto existente." });
+      await writeEntityRecord(session, type, targetId, {
+        tipo_registro: "Incidencia de Seguridad",
+        comentario: comment,
+        proximo_paso: nextStep,
+        responsable_nuevo: String(body.responsable || session.nombre || ""),
+        responsable_proximo_paso: String(body.responsable || session.nombre || "")
+      }, pc);
+    } else if (mode === "create") {
+      const severityPriority = { Critica: "Urgente", Alta: "Alta", Media: "Media", Informativa: "Baja" };
+      const result = await createEntity(session, type, {
+        id_comunidad: Number(incident.id_comunidad || 0),
+        id_proyecto: Number(body.id_proyecto || 0),
+        titulo: redactSecurityText(String(body.titulo || incident.titulo || "Incidencia de Seguridad")),
+        descripcion: comment,
+        categoria: `Seguridad - ${incident.categoria_normalizada || "Otros"}`,
+        estado_nuevo: "En curso",
+        prioridad_nueva: severityPriority[incident.gravedad] || "Media",
+        responsable_nuevo: String(body.responsable || session.nombre || ""),
+        responsable_proximo_paso: String(body.responsable || session.nombre || ""),
+        proximo_paso: nextStep
+      }, pc);
+      targetId = Number(result.id || 0);
+    }
+    await runSecurityCommand(session, "link", {
+      id: incidentId,
+      entity_type: type,
+      entity_id: targetId,
+      relation: mode === "link" ? "Solo contexto" : mode === "followup" ? "Seguimiento" : "Creacion"
+    }, pc);
+    return sendJson(res, 200, { ok: true, type, id: targetId, mode });
+  }
+  if (req.method === "GET" && url.pathname === "/api/security/document") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const info = await runSecurityCommand(session, "document_info", { id_documento: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web"));
+    const filePath = path.resolve(String(info.ruta_archivo || ""));
+    if (!fs.existsSync(filePath) || !pathInside(filePath, securityDocumentsDir)) throw new Error("El parte protegido no esta disponible en el servidor.");
+    return sendFile(res, filePath, info.nombre_original, url.searchParams.get("inline") === "1");
+  }
+  {
+    const session = readSession(req);
+    if (session && securityOnlyForbidden(session) && url.pathname.startsWith("/api/")) {
+      return sendJson(res, 403, { ok: false, error: "El perfil Seguridad solo puede cargar documentos." });
+    }
   }
   if (req.method === "GET" && url.pathname === "/api/overview") {
     const session = readSession(req);
