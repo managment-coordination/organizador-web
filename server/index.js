@@ -34,6 +34,7 @@ const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/
 const assemblyBridgePath = path.join(__dirname, "assembly-bridge.py");
 const adminBridgePath = path.join(__dirname, "admin-bridge.py");
 const securityBridgePath = path.join(__dirname, "security-bridge.py");
+const aiHistoryBridgePath = path.join(__dirname, "ai-history.py");
 
 for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir, securityDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -291,6 +292,26 @@ function runAdminCommand(session, action, data = {}, pc = "web") {
       }
       if (error || result?.error) {
         reject(new Error(`${result?.error_type || "ValueError"}: ${result?.error || stderr || error?.message}`));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+function runAiHistoryCommand(session, action, data = {}) {
+  return new Promise((resolve, reject) => {
+    const request = JSON.stringify({ session, action, data });
+    execFile(pythonBin, [aiHistoryBridgePath, databasePath, request], { timeout: 15000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(String(stdout || "{}").trim() || "{}");
+      } catch {
+        reject(new Error(stderr || error?.message || "No se pudo leer el historial de consultas."));
+        return;
+      }
+      if (error || result?.error) {
+        reject(new Error((result?.error_type || "ValueError") + ": " + (result?.error || stderr || error?.message)));
         return;
       }
       resolve(result);
@@ -2601,6 +2622,63 @@ async function analyzeWithAi(session, text, target = null) {
   }
 }
 
+async function answerAiQuery(session, text) {
+  const cleanText = String(text || "").trim();
+  if (!cleanText) throw new Error("Escribe una pregunta para consultar.");
+
+  let result = await querySmartAssistant(session, cleanText);
+  if (!result?.handled) {
+    const context = await queryAiContext(session);
+    const local = localAiProposal(cleanText, context);
+    if (local.action === "consulta") {
+      result = local;
+    } else {
+      result = {
+        handled: true,
+        source: "local",
+        confidence: 0.2,
+        action: "consulta",
+        answer: "No he podido identificar con seguridad los datos que necesitas. Formula la pregunta indicando el propietario, propiedad, tarea, proyecto, periodo o partida presupuestaria.",
+        candidates: local.candidates || [],
+        questions: ["Dato o elemento exacto que quieres consultar"],
+        display: {},
+      };
+    }
+
+    if (aiApiKey && aiProvider !== "local" && Number(result.confidence || 0) < 0.5) {
+      try {
+        const external = await externalAiProposal(cleanText, context);
+        if (external?.action === "consulta") {
+          result = { ...result, ...external, fallbackSource: result.source };
+        }
+      } catch (error) {
+        result.warning = error.message + ". Se ha mantenido la respuesta local.";
+      }
+    }
+  }
+
+  result = { ...result, handled: true, action: "consulta" };
+  try {
+    const saved = await runAiHistoryCommand(session, "save", { pregunta: cleanText, respuesta: result });
+    result.history_id = saved.id_consulta;
+    result.history_date = saved.fecha_creacion;
+  } catch (error) {
+    result.warning = [result.warning, "La respuesta se ha generado, pero no se pudo guardar en el historial: " + error.message].filter(Boolean).join(" ");
+  }
+  return result;
+}
+
+async function analyzeOperationalWithAi(session, text) {
+  const result = await analyzeWithAi(session, text);
+  if (result.action !== "consulta") return result;
+  return {
+    ...result,
+    action: "revisar_manual",
+    queryDetected: true,
+    answer: "Este texto parece una consulta y no se ha preparado ninguna creacion ni modificacion. Utiliza la caja Consultas IA para obtener y conservar la respuesta.",
+  };
+}
+
 function queryActionOptions(session) {
   const script = `
 import json
@@ -3464,8 +3542,27 @@ function homePage() {
     .specialPanel { display:block; min-width:0; }
     .decisionBox { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; }
     .dangerText { color:#991b1b; font-weight:700; }
-    .aiBox { display:grid; gap:12px; }
-    .aiInput { min-height:220px; }
+    .aiHub { display:grid; gap:16px; grid-column:1 / -1; }
+    .aiQueryLayout { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.65fr); gap:14px; align-items:start; }
+    .aiBox { display:grid; gap:12px; border:1px solid var(--line); border-radius:8px; padding:16px; background:var(--surface); }
+    .aiQueryBox { border-left:6px solid var(--blue); }
+    .aiOperationBox { border-left:6px solid var(--green); }
+    .aiSectionHead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+    .aiSectionHead h2 { margin:0; }
+    .aiSectionHead p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .aiInput { min-height:180px; resize:vertical; }
+    .aiQueryInput { min-height:105px; }
+    .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
+    .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
+    .aiHistoryHead h2 { margin:0; font-size:17px; }
+    .aiHistoryList { max-height:520px; overflow:auto; }
+    .aiHistoryRow { display:block; width:100%; padding:12px 14px; border:0; border-bottom:1px solid var(--line); border-radius:0; background:transparent; color:var(--ink); text-align:left; }
+    .aiHistoryRow:hover, .aiHistoryRow.active { background:#eef5f7; }
+    .aiHistoryQuestion { display:block; font-weight:800; line-height:1.3; overflow-wrap:anywhere; }
+    .aiHistoryMeta { display:flex; justify-content:space-between; gap:8px; margin-top:5px; color:var(--muted); font-size:11px; }
+    .aiHistoryEmpty { padding:18px 14px; color:var(--muted); }
+    .aiHistoryActions { display:flex; gap:6px; }
+    .aiHistoryActions button { padding:7px 9px; min-height:34px; }
     .proposal { border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:10px; }
     .proposalHead { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center; }
     .confidence { font-weight:800; color:#1d4ed8; }
@@ -3479,6 +3576,9 @@ function homePage() {
     .answerCard strong { display:block; margin-top:4px; font-size:20px; overflow-wrap:anywhere; }
     .answerTableWrap { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; overflow:auto; }
     .answerTableWrap h3 { margin:0 0 8px; font-size:16px; }
+    .answerTableWrap summary { cursor:pointer; display:flex; justify-content:space-between; gap:8px; align-items:center; font-weight:800; }
+    .answerTableWrap[open] summary { margin-bottom:9px; }
+    .answerTableWrap summary h3 { margin:0; }
     .answerTable { width:100%; border-collapse:collapse; font-size:13px; min-width:560px; }
     .answerTable th, .answerTable td { border-bottom:1px solid #e2e8f0; padding:8px; text-align:left; vertical-align:top; }
     .answerTable th { background:#f8fafc; color:#334155; font-size:12px; }
@@ -3941,6 +4041,8 @@ function homePage() {
       .filters { grid-template-columns:repeat(4,minmax(0,1fr)); }
       .sidebar .toolbar { justify-content:flex-end; }
       .sidebar .toolbar button { flex:0 1 150px; }
+      .aiQueryLayout { grid-template-columns:1fr; }
+      .aiHistoryList { max-height:300px; }
     }
     @media (max-width:700px) {
       html, body { max-width:100%; overflow-x:hidden; }
@@ -3953,6 +4055,13 @@ function homePage() {
       .session { width:auto; margin-left:auto; justify-content:flex-end; flex-wrap:nowrap; }
       .session > span { display:none; }
       button, input, select { min-height:44px; }
+      .aiHub { gap:10px; }
+      .aiBox { padding:12px; }
+      .aiInput { min-height:160px; }
+      .aiQueryInput { min-height:96px; }
+      .aiSectionHead { display:block; }
+      .aiHistoryPanel { border-radius:7px; }
+      .aiHistoryList { max-height:250px; }
       .session button { min-height:44px; padding:8px 10px; }
       main { padding:10px 9px 20px; }
       #appView:not([data-view="home"]) > .counts { display:none; }
@@ -4428,6 +4537,8 @@ function homePage() {
     let documentType = "all";
     let documentCommunity = "";
     let aiProposal = null;
+    let aiHistory = [];
+    let aiHistoryLoaded = false;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -6387,8 +6498,8 @@ function homePage() {
         return;
       }
       if (currentView === "ai") {
-        $("contentTitle").textContent = "IA operativa";
-        $("contentSubtitle").textContent = "Pega una llamada, reunion o consulta. La IA propone y tu confirmas antes de guardar.";
+        $("contentTitle").textContent = "Centro IA";
+        $("contentSubtitle").textContent = "Consulta informacion sin modificar datos o prepara acciones operativas con confirmacion.";
         $("visibleCount").textContent = "";
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = aiPanelHtml();
@@ -6426,26 +6537,150 @@ function homePage() {
     }
 
     function aiPanelHtml() {
-      return '<section class="aiBox">' +
-        '<h2>Entrada inteligente</h2>' +
-        '<textarea id="aiText" class="aiInput" placeholder="Pega aqui una transcripcion, resumen de llamada, correo o pregunta..."></textarea>' +
-        '<div class="toolbar">' +
-          '<button id="aiAnalyze">Analizar</button>' +
-          '<button class="ghost" id="aiClear">Limpiar</button>' +
-          '<span class="muted" id="aiMessage"></span>' +
+      return '<div class="aiHub">' +
+        '<div class="aiQueryLayout">' +
+          '<section class="aiBox aiQueryBox">' +
+            '<div class="aiSectionHead"><div><h2>Consultas IA</h2><p>Pregunta sobre propietarios, deuda, contabilidad, presupuestos, tareas o proyectos.</p></div><span class="pill">Solo lectura</span></div>' +
+            '<textarea id="aiQueryText" class="aiInput aiQueryInput" placeholder="Ejemplo: ¿Cuanto debe PROMAGA?"></textarea>' +
+            '<div class="toolbar">' +
+              '<button id="aiAsk">Consultar</button>' +
+              '<button class="ghost" id="aiQueryClear">Nueva consulta</button>' +
+              '<span class="muted" id="aiQueryMessage"></span>' +
+            '</div>' +
+            '<div id="aiQueryResult"></div>' +
+          '</section>' +
+          '<aside class="aiHistoryPanel">' +
+            '<div class="aiHistoryHead"><h2>Historial</h2><div class="aiHistoryActions"><button class="ghost" id="aiHistoryRefresh" title="Actualizar historial">Actualizar</button><button class="ghost" id="aiHistoryClear" title="Eliminar mi historial">Vaciar</button></div></div>' +
+            '<div class="aiHistoryList" id="aiHistoryList"><div class="aiHistoryEmpty">Cargando consultas...</div></div>' +
+          '</aside>' +
         '</div>' +
-        '<div id="aiResult"></div>' +
-      '</section>';
+        '<section class="aiBox aiOperationBox">' +
+          '<div class="aiSectionHead"><div><h2>Entrada inteligente</h2><p>Crea o actualiza trabajo a partir de una llamada, reunion, correo o nota. Nada se guarda sin confirmacion.</p></div><span class="pill">Accion revisable</span></div>' +
+          '<textarea id="aiText" class="aiInput" placeholder="Pega aqui una transcripcion, resumen de llamada, correo o nota operativa..."></textarea>' +
+          '<div class="toolbar">' +
+            '<button class="green" id="aiAnalyze">Preparar accion</button>' +
+            '<button class="ghost" id="aiClear">Limpiar</button>' +
+            '<span class="muted" id="aiMessage"></span>' +
+          '</div>' +
+          '<div id="aiOperationResult"></div>' +
+        '</section>' +
+      '</div>';
     }
 
     function bindAiPanel() {
+      $("aiAsk").addEventListener("click", askAiQuery);
+      $("aiQueryText").addEventListener("keydown", event => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          askAiQuery();
+        }
+      });
+      $("aiQueryClear").addEventListener("click", () => {
+        $("aiQueryText").value = "";
+        $("aiQueryResult").innerHTML = "";
+        $("aiQueryMessage").textContent = "";
+        document.querySelectorAll(".aiHistoryRow").forEach(row => row.classList.remove("active"));
+        $("aiQueryText").focus();
+      });
+      $("aiHistoryRefresh").addEventListener("click", () => loadAiHistory(true));
+      $("aiHistoryClear").addEventListener("click", clearAiHistory);
       $("aiAnalyze").addEventListener("click", analyzeAiText);
       $("aiClear").addEventListener("click", () => {
         $("aiText").value = "";
-        $("aiResult").innerHTML = "";
+        $("aiOperationResult").innerHTML = "";
         $("aiMessage").textContent = "";
         aiProposal = null;
       });
+      loadAiHistory();
+    }
+
+    function aiHistoryDate(value) {
+      if (!value) return "";
+      const date = new Date(String(value).replace(" ", "T"));
+      return Number.isNaN(date.getTime())
+        ? String(value)
+        : date.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
+    }
+
+    function renderAiHistory(activeId = 0) {
+      if (!$("aiHistoryList")) return;
+      if (!aiHistory.length) {
+        $("aiHistoryList").innerHTML = '<div class="aiHistoryEmpty">Todavia no has realizado consultas.</div>';
+        return;
+      }
+      $("aiHistoryList").innerHTML = aiHistory.map(item => {
+        const answer = safe(item.respuesta?.answer || "");
+        const summary = answer.length > 105 ? answer.slice(0, 102) + "..." : answer;
+        return '<button class="aiHistoryRow' + (Number(activeId) === Number(item.id_consulta) ? " active" : "") + '" type="button" data-ai-history="' + html(item.id_consulta) + '">' +
+          '<span class="aiHistoryQuestion">' + html(item.pregunta || "Consulta") + '</span>' +
+          '<span class="line muted">' + html(summary || "Respuesta estructurada") + '</span>' +
+          '<span class="aiHistoryMeta"><span>' + html(aiHistoryDate(item.fecha_creacion)) + '</span><span>Ver respuesta</span></span>' +
+        '</button>';
+      }).join("");
+      document.querySelectorAll("[data-ai-history]").forEach(button => button.addEventListener("click", () => openAiHistory(Number(button.dataset.aiHistory))));
+    }
+
+    async function loadAiHistory(force = false, activeId = 0) {
+      if (aiHistoryLoaded && !force) {
+        renderAiHistory(activeId);
+        return;
+      }
+      if ($("aiHistoryList")) $("aiHistoryList").innerHTML = '<div class="aiHistoryEmpty">Cargando consultas...</div>';
+      try {
+        const data = await api("/api/ai/history?limit=40");
+        aiHistory = data.history || [];
+        aiHistoryLoaded = true;
+        renderAiHistory(activeId);
+      } catch (error) {
+        if ($("aiHistoryList")) $("aiHistoryList").innerHTML = '<div class="aiHistoryEmpty dangerText">' + html(error.message) + '</div>';
+      }
+    }
+
+    function openAiHistory(id) {
+      const item = aiHistory.find(row => Number(row.id_consulta) === Number(id));
+      if (!item) return;
+      $("aiQueryText").value = item.pregunta || "";
+      $("aiQueryMessage").textContent = "Consulta del " + aiHistoryDate(item.fecha_creacion);
+      renderAiProposal(item.respuesta || {}, "aiQueryResult");
+      renderAiHistory(id);
+      $("aiQueryResult").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+
+    async function clearAiHistory() {
+      if (!aiHistory.length) return;
+      if (!confirm("Se eliminara tu historial personal de consultas IA. ¿Continuar?")) return;
+      try {
+        await api("/api/ai/history/action", { method: "POST", body: JSON.stringify({ action: "clear" }) });
+        aiHistory = [];
+        aiHistoryLoaded = true;
+        renderAiHistory();
+        $("aiQueryResult").innerHTML = "";
+        $("aiQueryMessage").textContent = "Historial eliminado.";
+      } catch (error) {
+        $("aiQueryMessage").textContent = error.message;
+      }
+    }
+
+    async function askAiQuery() {
+      const text = $("aiQueryText").value;
+      if (!safe(text)) {
+        $("aiQueryMessage").textContent = "Escribe primero una pregunta.";
+        return;
+      }
+      $("aiAsk").disabled = true;
+      $("aiQueryMessage").textContent = "Consultando datos...";
+      $("aiQueryResult").innerHTML = "";
+      try {
+        const response = await api("/api/ai/query", { method: "POST", body: JSON.stringify({ text }) });
+        $("aiQueryMessage").textContent = "Respuesta generada y guardada en tu historial.";
+        renderAiProposal(response, "aiQueryResult");
+        aiHistoryLoaded = false;
+        await loadAiHistory(true, response.history_id || 0);
+      } catch (error) {
+        $("aiQueryMessage").textContent = error.message;
+      } finally {
+        $("aiAsk").disabled = false;
+      }
     }
 
     function entityOptionsHtml(kind, selectedId) {
@@ -6487,11 +6722,13 @@ function homePage() {
       const tables = (display.tables || []).map(table => {
         const columns = table.columns || [];
         const rows = table.rows || [];
-        return '<div class="answerTableWrap">' +
-          '<h3>' + html(table.title || "Detalle") + '</h3>' +
-          '<table class="answerTable"><thead><tr>' + columns.map(col => '<th>' + html(col) + '</th>').join("") + '</tr></thead>' +
+        const tableHtml = '<table class="answerTable"><thead><tr>' + columns.map(col => '<th>' + html(col) + '</th>').join("") + '</tr></thead>' +
           '<tbody>' + rows.map(row => '<tr>' + columns.map(col => '<td data-label="' + html(col) + '">' + html(row[col] || "") + '</td>').join("") + '</tr>').join("") + '</tbody></table>' +
-        '</div>';
+        '';
+        if (rows.length > 12) {
+          return '<details class="answerTableWrap"><summary><h3>' + html(table.title || "Detalle") + '</h3><span class="pill">' + html(rows.length) + ' filas</span></summary>' + tableHtml + '</details>';
+        }
+        return '<div class="answerTableWrap"><h3>' + html(table.title || "Detalle") + '</h3>' + tableHtml + '</div>';
       }).join("");
       return '<div class="answerView">' +
         ((display.title || display.subtitle) ? '<div class="answerHero"><h3>' + html(display.title || "Respuesta") + '</h3>' + (display.subtitle ? '<p>' + html(display.subtitle) + '</p>' : '') + '</div>' : '') +
@@ -6501,7 +6738,9 @@ function homePage() {
       '</div>';
     }
 
-    function renderAiProposal(proposal) {
+    function renderAiProposal(proposal, resultId = "aiOperationResult") {
+      const resultContainer = $(resultId);
+      if (!resultContainer) return;
       const payload = proposal.payload || {};
       const entityType = proposal.entity?.type || (proposal.action === "seguimiento_tarea" ? "task" : "project");
       const entityId = proposal.entity?.id || "";
@@ -6513,30 +6752,48 @@ function homePage() {
       const questionsHtml = (proposal.questions || []).length
         ? '<div class="detailBox"><strong>Necesito aclarar</strong>' + proposal.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>'
         : "";
+      if (proposal.queryDetected) {
+        resultContainer.innerHTML = '<div class="proposal">' +
+          '<div class="proposalHead"><h2>Esto parece una consulta</h2><span class="pill">Sin cambios</span></div>' +
+          '<p>' + html(proposal.answer || "Utiliza la caja Consultas IA.") + '</p>' +
+          '<div class="toolbar"><button id="moveToAiQuery">Mover a Consultas IA</button></div>' +
+        '</div>';
+        $("moveToAiQuery").addEventListener("click", () => {
+          $("aiQueryText").value = $("aiText").value;
+          $("aiText").value = "";
+          resultContainer.innerHTML = "";
+          $("aiMessage").textContent = "";
+          $("aiQueryText").focus();
+          $("aiQueryText").scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        return;
+      }
       if (proposal.action === "consulta" && !payload.comentario && !payload.titulo) {
         const displayHtml = renderDisplay(proposal.display || {});
-        $("aiResult").innerHTML = '<div class="proposal">' +
+        const copyButtonId = resultId + "CopyAnswer";
+        const copyMessageId = resultId + "CopyMessage";
+        resultContainer.innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Respuesta de consulta</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
           (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
           displayHtml +
           (proposal.answer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.answer) + '</pre></details>' : '') +
           questionsHtml +
           candidatesHtml +
-          (proposal.answer ? '<div class="toolbar"><button class="ghost" id="copyAiAnswer">Copiar respuesta</button><span class="muted" id="copyAiMessage"></span></div>' : '') +
+          (proposal.answer ? '<div class="toolbar"><button class="ghost" id="' + copyButtonId + '">Copiar respuesta</button><span class="muted" id="' + copyMessageId + '"></span></div>' : '') +
         '</div>';
-        if ($("copyAiAnswer")) {
-          $("copyAiAnswer").addEventListener("click", async () => {
+        if ($(copyButtonId)) {
+          $(copyButtonId).addEventListener("click", async () => {
             try {
               await navigator.clipboard.writeText(proposal.answer || "");
-              $("copyAiMessage").textContent = "Copiado.";
+              $(copyMessageId).textContent = "Copiado.";
             } catch {
-              $("copyAiMessage").textContent = "No se pudo copiar automaticamente.";
+              $(copyMessageId).textContent = "No se pudo copiar automaticamente.";
             }
           });
         }
         return;
       }
-      $("aiResult").innerHTML = '<div class="proposal">' +
+      resultContainer.innerHTML = '<div class="proposal">' +
         '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
@@ -6574,14 +6831,19 @@ function homePage() {
         return;
       }
       $("aiMessage").textContent = "Analizando...";
-      $("aiResult").innerHTML = "";
+      $("aiOperationResult").innerHTML = "";
+      $("aiAnalyze").disabled = true;
       try {
         if (!options.responsables.length) await loadOptions();
-        aiProposal = await api("/api/ai/analyze", { method: "POST", body: JSON.stringify({ text }) });
-        $("aiMessage").textContent = "Propuesta generada. Revisala antes de aplicar.";
-        renderAiProposal(aiProposal);
+        aiProposal = await api("/api/ai/operate", { method: "POST", body: JSON.stringify({ text }) });
+        $("aiMessage").textContent = aiProposal.queryDetected
+          ? "No se ha preparado ningun cambio."
+          : "Propuesta generada. Revisala antes de aplicar.";
+        renderAiProposal(aiProposal, "aiOperationResult");
       } catch (error) {
         $("aiMessage").textContent = error.message;
+      } finally {
+        $("aiAnalyze").disabled = false;
       }
     }
 
@@ -7349,6 +7611,35 @@ async function handle(req, res) {
     const report = await queryReportFile(session, id);
     const inline = url.searchParams.get("inline") === "1";
     return sendFile(res, report.filePath, report.filename, inline);
+  }
+  if (req.method === "GET" && url.pathname === "/api/ai/history") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await runAiHistoryCommand(session, "list", { limit: Number(url.searchParams.get("limit") || 40) }));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/history/action") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const action = String(body.action || "");
+    if (!["delete", "clear"].includes(action)) return sendJson(res, 400, { ok: false, error: "Accion de historial no permitida." });
+    return sendJson(res, 200, await runAiHistoryCommand(session, action, { id_consulta: body.id_consulta }));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/query") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await answerAiQuery(session, body.text || ""));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/operate") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede preparar cambios operativos." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await analyzeOperationalWithAi(session, body.text || ""));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);
