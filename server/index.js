@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { buildEntityReport } from "./report-generator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,9 +23,12 @@ const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "meta/llama-3
 const dataDir = path.join(rootDir, "data");
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
+const uploadsDir = path.join(dataDir, "uploads");
+const legacyAttachmentsDir = path.join(dataDir, "legacy-attachments");
+const reportsDir = path.join(dataDir, "reports");
 const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/organizador_tareas.db");
 
-for (const dir of [dataDir, logsDir, backupsDir]) {
+for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -71,6 +75,36 @@ function sendHtml(res, status, body) {
   res.end(body);
 }
 
+function contentTypeFor(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  return {
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".txt": "text/plain; charset=utf-8"
+  }[extension] || "application/octet-stream";
+}
+
+function sendFile(res, filePath, displayName, inline = false) {
+  const name = String(displayName || path.basename(filePath)).replace(/[\r\n"]/g, "_");
+  const stat = fs.statSync(filePath);
+  res.writeHead(200, {
+    "Content-Type": contentTypeFor(filePath),
+    "Content-Length": stat.size,
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff"
+  });
+  fs.createReadStream(filePath).pipe(res);
+}
+
 function sendError(res, error) {
   const raw = String(error?.message || error || "Error de servidor");
   const permission = raw.match(/PermissionError:\s*([^\r\n]+)/);
@@ -101,6 +135,24 @@ function readBody(req) {
         reject(new Error("JSON no valido."));
       }
     });
+    req.on("error", reject);
+  });
+}
+
+function readRawBody(req, maxBytes = 25 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error("El archivo supera el limite de 25 MB."));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -192,6 +244,189 @@ function runPythonJson(script) {
       }
     });
   });
+}
+
+function allowedCommunity(session, communityId) {
+  if (session?.rol === "Superusuario") return true;
+  const allowed = (session?.comunidades || []).map((row) => Number(row.id_comunidad)).filter(Boolean);
+  return allowed.includes(Number(communityId));
+}
+
+function safeUploadName(value) {
+  const decoded = (() => {
+    try { return decodeURIComponent(String(value || "")); } catch { return String(value || ""); }
+  })();
+  const base = path.basename(decoded.replaceAll("\\", "/"));
+  return base.replace(/[^A-Za-z0-9._() -]/g, "_").replace(/\s+/g, " ").trim().slice(0, 150) || "archivo";
+}
+
+function legacyPathFromStored(storedPath) {
+  const normalized = String(storedPath || "").replaceAll("\\", "/");
+  const marker = "/Organizador_Tareas/anexos/";
+  const index = normalized.toLowerCase().indexOf(marker.toLowerCase());
+  if (index < 0) return null;
+  const relative = normalized.slice(index + marker.length).split("/").filter(Boolean);
+  return path.join(legacyAttachmentsDir, ...relative);
+}
+
+function pathInside(candidate, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function resolveAttachmentPath(storedPath) {
+  const direct = path.resolve(String(storedPath || ""));
+  if (fs.existsSync(direct) && pathInside(direct, dataDir)) return direct;
+  const legacy = legacyPathFromStored(storedPath);
+  if (legacy && fs.existsSync(legacy) && pathInside(legacy, legacyAttachmentsDir)) return legacy;
+  return null;
+}
+
+async function generateEntityReport(session, type, id, pc) {
+  const detail = await queryEntityDetail(session, type, id);
+  if (detail?.error || !detail?.item) throw new Error(detail?.error || "Elemento no encontrado.");
+  const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
+  fs.mkdirSync(folder, { recursive: true });
+  const attachments = (detail.attachments || []).map((row) => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }));
+  const report = await buildEntityReport({ type, item: detail.item, history: [...(detail.history || [])].reverse(), attachments });
+  const outputPath = path.join(folder, report.filename);
+  fs.writeFileSync(outputPath, report.buffer, { flag: "wx" });
+  try {
+    const projectId = type === "task" ? Number(detail.item.id_proyecto || 0) : Number(id);
+    const communityId = Number(detail.item.id_comunidad || 0);
+    const script = `
+import json
+import sqlite3
+from datetime import datetime
+path = ${JSON.stringify(databasePath)}
+entity_type = ${JSON.stringify(type)}
+entity_id = int(${JSON.stringify(id)})
+project_id = int(${JSON.stringify(projectId)})
+community_id = int(${JSON.stringify(communityId)})
+output_path = ${JSON.stringify(outputPath)}
+filename = ${JSON.stringify(report.filename)}
+user = ${JSON.stringify(session?.nombre || "web")}
+pc = ${JSON.stringify(pc || "web")}
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+details = json.dumps({"tipo_entidad": entity_type, "id_entidad": entity_id, "anexos": ${JSON.stringify(attachments.length)}}, ensure_ascii=False)
+conn = sqlite3.connect(path)
+with conn:
+    cursor = conn.execute("""
+        INSERT INTO informes
+        (fecha_generacion, tipo_informe, periodo_desde, periodo_hasta, id_proyecto,
+         archivo_word, observaciones, usuario, pc, id_comunidad)
+        VALUES (?, ?, '', '', ?, ?, ?, ?, ?, ?)
+    """, (now, "Tarea" if entity_type == "task" else "Proyecto", project_id or None,
+          output_path, details, user, pc, community_id))
+    report_id = int(cursor.lastrowid)
+    conn.execute("INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (now, user, pc, "Generar informe Word web", "tarea" if entity_type == "task" else "proyecto", entity_id, filename))
+conn.close()
+print(json.dumps({"ok": True, "report_id": report_id, "filename": filename}, ensure_ascii=False))
+`;
+    return await runPythonJson(script);
+  } catch (error) {
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    throw error;
+  }
+}
+
+function queryReportFile(session, reportId) {
+  const script = `
+import json
+import sqlite3
+path = ${JSON.stringify(databasePath)}
+report_id = int(${JSON.stringify(reportId)})
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+row = conn.execute("SELECT id_informe, archivo_word, tipo_informe, id_comunidad FROM informes WHERE id_informe=?", (report_id,)).fetchone()
+conn.close()
+print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
+`;
+  return runPythonJson(script).then((row) => {
+    if (!row?.id_informe || !allowedCommunity(session, row.id_comunidad)) throw new Error("Informe no encontrado o sin permiso.");
+    const filePath = path.resolve(String(row.archivo_word || ""));
+    if (!fs.existsSync(filePath) || !pathInside(filePath, reportsDir)) throw new Error("El archivo del informe no esta disponible.");
+    return { ...row, filePath, filename: path.basename(filePath) };
+  });
+}
+
+function queryAttachmentFile(session, attachmentId) {
+  const script = `
+import json
+import sqlite3
+path = ${JSON.stringify(databasePath)}
+attachment_id = int(${JSON.stringify(attachmentId)})
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+row = conn.execute("""
+    SELECT a.*, COALESCE(a.id_comunidad, t.id_comunidad, p.id_comunidad) AS comunidad_real
+    FROM anexos_registros a
+    LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
+    LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
+    WHERE a.id_anexo=?
+""", (attachment_id,)).fetchone()
+conn.close()
+print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
+`;
+  return runPythonJson(script).then((row) => {
+    if (!row?.id_anexo || !allowedCommunity(session, row.comunidad_real)) throw new Error("Anexo no encontrado o sin permiso.");
+    const filePath = resolveAttachmentPath(row.ruta_archivo);
+    if (!filePath) throw new Error("Este anexo historico aun no esta disponible en el servidor.");
+    return { ...row, filePath };
+  });
+}
+
+async function saveEntityAttachment(session, type, id, fileName, mimeType, bytes, pc) {
+  if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) {
+    throw new Error("Tu perfil no tiene permiso para adjuntar archivos.");
+  }
+  if (!bytes?.length) throw new Error("El archivo esta vacio.");
+  const detail = await queryEntityDetail(session, type, id);
+  if (detail?.error || !detail?.item) throw new Error(detail?.error || "Elemento no encontrado.");
+  const cleanName = safeUploadName(fileName);
+  const blocked = new Set([".exe", ".bat", ".cmd", ".com", ".msi", ".ps1", ".scr", ".js", ".vbs"]);
+  if (blocked.has(path.extname(cleanName).toLowerCase())) throw new Error("Este tipo de archivo no esta permitido.");
+  const communityId = Number(detail.item.id_comunidad || 0);
+  const entityFolder = path.join(uploadsDir, String(communityId || "sin-comunidad"), type, String(id));
+  fs.mkdirSync(entityFolder, { recursive: true });
+  const storedName = `${Date.now()}_${crypto.randomBytes(5).toString("hex")}_${cleanName}`;
+  const storedPath = path.join(entityFolder, storedName);
+  fs.writeFileSync(storedPath, bytes, { flag: "wx" });
+  try {
+    const script = `
+import json
+import sqlite3
+from datetime import datetime
+path = ${JSON.stringify(databasePath)}
+entity_type = ${JSON.stringify(type === "task" ? "tarea" : "proyecto")}
+entity_id = int(${JSON.stringify(id)})
+community_id = int(${JSON.stringify(communityId)})
+name = ${JSON.stringify(cleanName)}
+stored_path = ${JSON.stringify(storedPath)}
+user = ${JSON.stringify(session?.nombre || "web")}
+pc = ${JSON.stringify(pc || "web")}
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn = sqlite3.connect(path)
+with conn:
+    cursor = conn.execute("""
+        INSERT INTO anexos_registros
+        (id_comunidad, tipo_entidad, id_registro, id_tarea, id_proyecto,
+         nombre_archivo, ruta_archivo, fecha_adjuntado, usuario, pc)
+        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+    """, (community_id, entity_type, entity_id if entity_type == "tarea" else None,
+          entity_id if entity_type == "proyecto" else None, name, stored_path, now, user, pc))
+    attachment_id = int(cursor.lastrowid)
+    conn.execute("INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (now, user, pc, "Adjuntar archivo web", entity_type, entity_id, name))
+conn.close()
+print(json.dumps({"ok": True, "attachment_id": attachment_id, "name": name}, ensure_ascii=False))
+`;
+    return await runPythonJson(script);
+  } catch (error) {
+    if (fs.existsSync(storedPath)) fs.unlinkSync(storedPath);
+    throw error;
+  }
 }
 
 function queryAuthUsers() {
@@ -1255,7 +1490,7 @@ print(json.dumps({
   return runPythonJson(script);
 }
 
-function queryEntityDetail(session, type, id) {
+async function queryEntityDetail(session, type, id) {
   const script = `
 import json
 import sqlite3
@@ -1326,7 +1561,17 @@ else:
 conn.close()
 print(json.dumps({"item": dict(item), "history": history, "attachments": attachments}, ensure_ascii=False))
 `;
-  return runPythonJson(script);
+  const result = await runPythonJson(script);
+  result.attachments = (result.attachments || []).map((row) => {
+    const filePath = resolveAttachmentPath(row.ruta_archivo);
+    const extension = path.extname(row.nombre_archivo || row.ruta_archivo || "").toLowerCase();
+    return {
+      ...row,
+      available: Boolean(filePath),
+      previewable: [".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".txt"].includes(extension)
+    };
+  });
+  return result;
 }
 
 function writeEntityRecord(session, type, id, payload, pc) {
@@ -2023,6 +2268,14 @@ function homePage() {
     .historyItem { border:1px solid #e2e8f0; border-left:5px solid #94a3b8; border-radius:8px; padding:10px; background:#fff; }
     .historyItem h4 { margin:0 0 6px; font-size:14px; }
     .historyItem p { margin:5px 0 0; white-space:pre-wrap; line-height:1.35; }
+    .attachmentGrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:9px; }
+    .attachmentCard { border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:white; display:grid; gap:8px; min-width:0; }
+    .attachmentCard h4 { margin:0; font-size:14px; overflow-wrap:anywhere; }
+    .attachmentPreview { width:100%; height:128px; object-fit:cover; border-radius:6px; background:#f1f5f9; border:1px solid #e2e8f0; }
+    .attachmentIcon { height:86px; display:grid; place-items:center; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; color:#475569; font-weight:800; font-size:13px; }
+    .uploadBox { border:2px dashed #94a3b8; border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:9px; }
+    .uploadBox input { width:100%; }
+    .reportMessage { min-height:20px; }
     .dangerText { color:#991b1b; font-weight:700; }
     .aiBox { display:grid; gap:12px; }
     .aiInput { min-height:220px; }
@@ -2076,7 +2329,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 8 - IA con propuesta editable y confirmacion</p>
+        <p>Paso 9 - Operativa web, informes y anexos centralizados</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -2154,6 +2407,7 @@ function homePage() {
             <p class="muted" id="modalSubtitle"></p>
           </div>
           <div class="modalActions">
+            <button id="generateReportButton">Generar informe</button>
             <button class="ghost" id="toggleEditEntity">Editar ficha</button>
             <button class="red" id="archiveEntityButton">Archivar</button>
             <button class="ghost" id="closeModal">Cerrar</button>
@@ -2245,7 +2499,24 @@ function homePage() {
           </section>
           <section>
             <h2>Anexos</h2>
-            <div class="history" id="attachmentsList"></div>
+            <div id="attachmentUploadBox" class="uploadBox">
+              <strong>Anadir archivos a la ficha</strong>
+              <span class="muted">Puedes seleccionar varios. Se guardaran en el servidor y estaran disponibles desde PC y movil.</span>
+              <input id="attachmentFiles" type="file" multiple />
+              <div class="toolbar">
+                <button class="green" id="uploadAttachmentsButton">Subir seleccionados</button>
+                <span class="muted" id="attachmentMessage"></span>
+              </div>
+            </div>
+            <div class="attachmentGrid" id="attachmentsList"></div>
+          </section>
+          <section>
+            <h2>Informe Word</h2>
+            <p class="muted">Incluye resumen ejecutivo, situacion actual, actuaciones cronologicas, proximos pasos, conclusion y relacion de anexos.</p>
+            <div class="toolbar">
+              <button id="generateReportBottom">Generar y abrir informe</button>
+              <span class="muted reportMessage" id="reportMessage"></span>
+            </div>
           </section>
         </div>
       </div>
@@ -2354,6 +2625,7 @@ function homePage() {
         '<div class="cardActions">' +
           '<button class="ghost" data-action="detail" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Abrir ficha</button>' +
           '<button class="green" data-action="record" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Seguimiento</button>' +
+          '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' +
         '</div>' +
         '</article>';
     }
@@ -2489,9 +2761,84 @@ function homePage() {
     }
 
     function renderAttachments(attachments) {
-      $("attachmentsList").innerHTML = attachments.length ? attachments.map(row =>
-        '<article class="historyItem"><h4>' + html(row.nombre_archivo) + '</h4><p class="muted">' + html(row.fecha_adjuntado || "") + '</p><p>' + html(row.ruta_archivo || "") + '</p></article>'
-      ).join("") : '<div class="empty">No hay anexos.</div>';
+      $("attachmentsList").innerHTML = attachments.length ? attachments.map(row => {
+        const name = row.nombre_archivo || "Anexo";
+        const extension = name.includes(".") ? name.split(".").pop().toUpperCase() : "ARCHIVO";
+        const url = "/api/attachment?id=" + encodeURIComponent(row.id_anexo);
+        const isImage = /\.(png|jpe?g|gif|webp)$/i.test(name);
+        const preview = row.available && isImage
+          ? '<img class="attachmentPreview" loading="lazy" src="' + url + '&inline=1" alt="' + html(name) + '" />'
+          : '<div class="attachmentIcon">' + html(extension) + '</div>';
+        const actions = row.available
+          ? '<div class="cardActions"><a href="' + url + '&inline=1" target="_blank" rel="noopener"><button class="ghost">Abrir</button></a><a href="' + url + '&download=1"><button>Descargar</button></a></div>'
+          : '<span class="dangerText">Pendiente de migrar al servidor</span>';
+        return '<article class="attachmentCard">' + preview + '<h4>' + html(name) + '</h4><span class="muted">' + html(row.fecha_adjuntado || "") + '</span>' + actions + '</article>';
+      }).join("") : '<div class="empty">No hay anexos.</div>';
+    }
+
+    async function uploadSelectedAttachments() {
+      if (!selectedEntity) return;
+      const files = [...$("attachmentFiles").files];
+      if (!files.length) {
+        $("attachmentMessage").textContent = "Selecciona al menos un archivo.";
+        return;
+      }
+      $("uploadAttachmentsButton").disabled = true;
+      let uploaded = 0;
+      try {
+        for (const file of files) {
+          $("attachmentMessage").textContent = "Subiendo " + (uploaded + 1) + " de " + files.length + ": " + file.name;
+          const response = await fetch(
+            "/api/entity/attachment?type=" + encodeURIComponent(selectedEntity.type) + "&id=" + encodeURIComponent(selectedEntity.id),
+            {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "X-File-Name": encodeURIComponent(file.name), "Content-Type": file.type || "application/octet-stream" },
+              body: file
+            }
+          );
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "No se pudo subir " + file.name);
+          uploaded += 1;
+        }
+        $("attachmentFiles").value = "";
+        $("attachmentMessage").textContent = uploaded + " archivo(s) guardado(s).";
+        await openEntity(selectedEntity.type, selectedEntity.id, false);
+        $("attachmentMessage").textContent = uploaded + " archivo(s) guardado(s).";
+      } catch (error) {
+        $("attachmentMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      } finally {
+        $("uploadAttachmentsButton").disabled = false;
+      }
+    }
+
+    async function generateReport(type, id, targetWindow = null) {
+      const reportWindow = targetWindow || window.open("", "_blank");
+      if (reportWindow) reportWindow.opener = null;
+      $("reportMessage").textContent = "Generando informe...";
+      $("generateReportButton").disabled = true;
+      $("generateReportBottom").disabled = true;
+      try {
+        const result = await api("/api/report/generate", {
+          method: "POST",
+          body: JSON.stringify({ type, id })
+        });
+        const url = "/api/report/download?id=" + encodeURIComponent(result.report_id) + "&inline=1";
+        $("reportMessage").innerHTML = 'Informe creado. <a href="' + url + '" target="_blank" rel="noopener">Abrir o descargar</a>';
+        if (reportWindow) reportWindow.location.href = url;
+      } catch (error) {
+        if (reportWindow && !reportWindow.closed) reportWindow.close();
+        $("reportMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+        throw error;
+      } finally {
+        $("generateReportButton").disabled = false;
+        $("generateReportBottom").disabled = false;
+      }
+    }
+
+    function generateSelectedReport() {
+      if (!selectedEntity) return;
+      generateReport(selectedEntity.type, selectedEntity.id, window.open("", "_blank")).catch(() => {});
     }
 
     async function openEntity(type, id, focusRecord = false) {
@@ -2516,6 +2863,10 @@ function homePage() {
       const writable = canWrite();
       $("toggleEditEntity").classList.toggle("hidden", !writable);
       $("archiveEntityButton").classList.toggle("hidden", !writable);
+      $("attachmentUploadBox").classList.toggle("hidden", !writable);
+      $("attachmentFiles").value = "";
+      $("attachmentMessage").textContent = "";
+      $("reportMessage").textContent = "";
       $("editSection").classList.add("hidden");
       $("editMessage").textContent = "";
       $("editTitle").value = itemTitle(item, type) || "";
@@ -3090,6 +3441,11 @@ function homePage() {
     $("cards").addEventListener("click", event => {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
+      if (button.dataset.action === "report") {
+        const reportWindow = window.open("", "_blank");
+        generateReport(button.dataset.type, button.dataset.id, reportWindow).catch(error => alert(error.message));
+        return;
+      }
       openEntity(button.dataset.type, button.dataset.id, button.dataset.action === "record").catch(error => alert(error.message));
     });
     $("closeModal").addEventListener("click", closeModal);
@@ -3098,6 +3454,9 @@ function homePage() {
     $("cancelEntityEdit").addEventListener("click", () => toggleEditSection(false));
     $("saveEntityEdit").addEventListener("click", saveEntityEdit);
     $("archiveEntityButton").addEventListener("click", archiveSelectedEntity);
+    $("generateReportButton").addEventListener("click", generateSelectedReport);
+    $("generateReportBottom").addEventListener("click", generateSelectedReport);
+    $("uploadAttachmentsButton").addEventListener("click", uploadSelectedAttachments);
     $("newProjectButton").addEventListener("click", () => openCreateModal("project").catch(error => alert(error.message)));
     $("newTaskButton").addEventListener("click", () => openCreateModal("task").catch(error => alert(error.message)));
     $("closeCreateModal").addEventListener("click", closeCreateModal);
@@ -3228,6 +3587,46 @@ async function handle(req, res) {
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await updateEntity(session, type, id, {}, String(pc), true));
   }
+  if (req.method === "POST" && url.pathname === "/api/entity/attachment") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const type = String(url.searchParams.get("type") || "").trim();
+    const id = Number(url.searchParams.get("id") || 0);
+    if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
+    const fileName = String(req.headers["x-file-name"] || "").trim();
+    if (!fileName) return sendJson(res, 400, { ok: false, error: "Falta el nombre del archivo." });
+    const bytes = await readRawBody(req);
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await saveEntityAttachment(session, type, id, fileName, req.headers["content-type"], bytes, String(pc)));
+  }
+  if (req.method === "GET" && url.pathname === "/api/attachment") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const id = Number(url.searchParams.get("id") || 0);
+    if (!id) return sendJson(res, 400, { ok: false, error: "Anexo no valido." });
+    const attachment = await queryAttachmentFile(session, id);
+    const inline = url.searchParams.get("inline") === "1" && url.searchParams.get("download") !== "1";
+    return sendFile(res, attachment.filePath, attachment.nombre_archivo, inline);
+  }
+  if (req.method === "POST" && url.pathname === "/api/report/generate") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const type = String(body.type || "").trim();
+    const id = Number(body.id || 0);
+    if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await generateEntityReport(session, type, id, String(pc)));
+  }
+  if (req.method === "GET" && url.pathname === "/api/report/download") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const id = Number(url.searchParams.get("id") || 0);
+    if (!id) return sendJson(res, 400, { ok: false, error: "Informe no valido." });
+    const report = await queryReportFile(session, id);
+    const inline = url.searchParams.get("inline") === "1";
+    return sendFile(res, report.filePath, report.filename, inline);
+  }
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -3240,7 +3639,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 8 : 1,
+      step: databaseExists ? 9 : 1,
       port,
       dataDir,
       databasePath,

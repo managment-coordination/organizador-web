@@ -1,6 +1,8 @@
 # Dependencies
 node_modules/
 server/node_modules/
+.venv/
+server/.venv/
 
 # Environment and secrets
 .env
@@ -34,6 +36,8 @@ dist/
 build/
 .cache/
 coverage/
+__pycache__/
+*.pyc
 *.log
 *.pid
 

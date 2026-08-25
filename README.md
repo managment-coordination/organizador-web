@@ -6,23 +6,24 @@ Version web centralizada del Organizador de tareas, proyectos y gestion operativ
 
 Convertir progresivamente la app local de Windows en una app web accesible desde PC y movil, con datos centralizados en el servidor Ubuntu y con IA integrada de forma controlada.
 
-## Alcance del paso 1
+## Estado actual
 
-Este repositorio contiene solo la base tecnica inicial:
+La version web centraliza actualmente:
 
-- estructura de carpetas;
-- servidor minimo;
-- documentacion de seguridad;
-- configuracion base;
-- proteccion para no subir datos sensibles.
+- acceso con los usuarios y permisos de la app;
+- consulta, alta, edicion y archivo de tareas y proyectos;
+- seguimientos manuales e inteligentes con confirmacion;
+- centro IA para consultas estructuradas y propuestas operativas;
+- informes Word individuales de tareas y proyectos;
+- subida multiple, vista previa y descarga protegida de anexos;
+- datos y documentos persistentes en el servidor Ubuntu.
 
-No contiene:
+Los datos reales siguen excluidos de GitHub:
 
-- base de datos real;
-- adjuntos reales;
-- API keys;
-- backups reales;
-- logs reales;
+- base SQLite;
+- anexos e informes;
+- claves y sesiones;
+- copias de seguridad y logs.
 - datos personales.
 
 ## Estructura
@@ -43,7 +44,7 @@ organizador-web
 ```text
 Ruta: /home/coordinador/apps/organizador-web
 Puerto: 8771
-URL futura: http://100.108.29.39:8771
+URL Tailscale: http://100.108.29.39:8771
 ```
 
 ## Regla principal
