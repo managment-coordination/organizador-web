@@ -27,6 +27,9 @@ La version web centraliza actualmente:
 - importador inteligente de DOCX, TXT, MD o texto pegado, con vista previa editable de varias actuaciones;
 - alta de un proyecto o tarea anterior con reconstruccion de seguimientos historicos por fecha;
 - subida multiple, vista previa y descarga protegida de anexos;
+- modulo web de asambleas con ficha, orden del dia, registro, quorum legal, votaciones, documentos, proxys e historial;
+- agrupacion de votos por representante, voto individual o conjunto y proteccion de instrucciones de proxy;
+- control de asistentes sin derecho a voto y calculo de mayorias simple, tres quintos, dos tercios y unanimidad;
 - datos y documentos persistentes en el servidor Ubuntu.
 
 Los datos reales siguen excluidos de GitHub:
@@ -42,6 +45,14 @@ Los datos reales siguen excluidos de GitHub:
 El importador funciona primero en modo de propuesta: leer o analizar un documento no modifica datos. El usuario debe revisar cada tarjeta, elegir si crea o actualiza, seleccionar el elemento correcto y confirmar expresamente las propuestas incluidas. La comunidad es obligatoria y se valida contra los permisos de la sesion.
 
 Los perfiles `Presidente` y `Consulta` no pueden utilizar el importador. La importacion aplicada queda registrada en documentos importados, detecciones y auditoria.
+
+## Asambleas
+
+La primera version web operativa permite consultar y editar la ficha de cada asamblea, configurar y ordenar los puntos, registrar presentes y representados, controlar morosos y personas sin derecho a voto, votar por propietario o por representante y consultar documentos, proxys e historial. Los votos con instrucciones recibidas por proxy quedan bloqueados para que una votacion conjunta del representante no los altere.
+
+El perfil `Presidente` no accede a la gestion general de asambleas. El resto de perfiles respeta las comunidades permitidas y los permisos de escritura de la sesion.
+
+Quedan para el siguiente bloque especifico de Asambleas la importacion web de censo, morosos y PDF de proxy, el generador del formulario para Google Sites, la exportacion del acta y el sistema opcional de votacion movil por QR y PIN.
 
 ## Informes conjuntos
 

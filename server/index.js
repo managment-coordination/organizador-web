@@ -27,9 +27,11 @@ const backupsDir = path.join(rootDir, "backups");
 const uploadsDir = path.join(dataDir, "uploads");
 const legacyAttachmentsDir = path.join(dataDir, "legacy-attachments");
 const reportsDir = path.join(dataDir, "reports");
+const assemblyDocumentsDir = path.join(dataDir, "assembly-documents");
 const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/organizador_tareas.db");
+const assemblyBridgePath = path.join(__dirname, "assembly-bridge.py");
 
-for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir]) {
+for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -243,6 +245,26 @@ function runPythonJson(script) {
       } catch (parseError) {
         reject(new Error(`No se pudo leer la respuesta de la base: ${parseError.message}`));
       }
+    });
+  });
+}
+
+function runAssemblyCommand(session, action, data = {}, pc = "web") {
+  return new Promise((resolve, reject) => {
+    const request = JSON.stringify({ session, action, data, pc });
+    execFile(pythonBin, [assemblyBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 12 * 1024 * 1024 }, (error, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(String(stdout || "{}").trim() || "{}");
+      } catch {
+        reject(new Error(stderr || error?.message || "No se pudo leer la operacion de asamblea."));
+        return;
+      }
+      if (error || result?.error) {
+        reject(new Error(`${result?.error_type || "ValueError"}: ${result?.error || stderr || error?.message}`));
+        return;
+      }
+      resolve(result);
     });
   });
 }
@@ -3429,6 +3451,43 @@ function homePage() {
     .entityChoice { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; display:grid; grid-template-columns:auto 1fr; gap:9px; align-items:start; cursor:pointer; }
     .entityChoice.selected { border-color:#2563eb; background:#eff6ff; }
     .entityChoice input { width:18px; min-height:18px; margin:2px 0 0; }
+    .assemblyList { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:10px; }
+    .assemblyCard { border:1px solid var(--line); border-left:6px solid #0f766e; border-radius:8px; padding:12px; background:white; cursor:pointer; display:grid; gap:8px; }
+    .assemblyCard h3 { margin:0; font-size:17px; }
+    .assemblyShell { display:grid; gap:12px; }
+    .assemblyHeader { border:1px solid #a7f3d0; border-left:6px solid #047857; border-radius:8px; padding:14px; background:#f0fdf4; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .assemblyHeader h2 { margin:0; font-size:22px; }
+    .assemblyTabs { display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:9px; }
+    .assemblyTabs button { background:#e2e8f0; color:#334155; }
+    .assemblyTabs button.active { background:#0f766e; color:white; }
+    .assemblyMetrics { display:grid; grid-template-columns:repeat(6,minmax(115px,1fr)); gap:8px; }
+    .assemblyMetrics .count { min-height:78px; }
+    .assemblySplit { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(0,1.4fr); gap:12px; align-items:start; }
+    .assemblyPane { border:1px solid var(--line); border-radius:8px; padding:12px; background:white; min-width:0; }
+    .assemblyPane h3 { margin:0 0 10px; }
+    .agendaList, .attendanceList, .voteGroups { display:grid; gap:8px; }
+    .agendaItem { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:10px; align-items:start; }
+    .agendaNumber { width:30px; height:30px; border-radius:50%; background:#0f766e; color:white; display:grid; place-items:center; font-weight:900; }
+    .attendanceRow { border-bottom:1px solid #e2e8f0; padding:9px 0; display:grid; grid-template-columns:minmax(190px,1.2fr) minmax(120px,.6fr) minmax(150px,.8fr) auto; gap:8px; align-items:center; }
+    .attendanceRow:last-child { border-bottom:0; }
+    .ownerResults { max-height:340px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+    .ownerChoice { display:flex; gap:8px; align-items:flex-start; padding:8px; border-bottom:1px solid #e2e8f0; }
+    .ownerChoice:last-child { border-bottom:0; }
+    .ownerChoice input { width:18px; min-height:18px; }
+    .votePointSelect { display:grid; grid-template-columns:minmax(260px,1fr) auto; gap:10px; align-items:end; }
+    .voteSummary { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)); gap:8px; }
+    .voteSummary .answerCard strong { font-size:18px; }
+    .voteGroup { border:1px solid var(--line); border-radius:8px; background:white; overflow:hidden; }
+    .voteGroupHead { padding:10px; background:#f8fafc; display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .voteMember { display:grid; grid-template-columns:minmax(200px,1fr) 110px minmax(280px,auto); gap:10px; align-items:center; padding:9px 10px; border-top:1px solid #e2e8f0; }
+    .voteActions { display:flex; gap:5px; flex-wrap:wrap; }
+    .voteActions button { min-width:56px; padding:7px 9px; background:#e2e8f0; color:#334155; }
+    .voteActions button.active-si { background:#15803d; color:white; }
+    .voteActions button.active-no { background:#b91c1c; color:white; }
+    .voteActions button.active-abs { background:#a16207; color:white; }
+    .voteActions button.active-sin { background:#64748b; color:white; }
+    .lockedVote { color:#7c3aed; font-weight:800; font-size:12px; }
+    .pointEditor { display:grid; grid-template-columns:42px minmax(240px,1fr) 170px auto; gap:8px; align-items:end; border-bottom:1px solid #e2e8f0; padding:8px 0; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -3437,6 +3496,8 @@ function homePage() {
       .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .mapSectionBody { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .assemblyMetrics { grid-template-columns:repeat(3,minmax(115px,1fr)); }
+      .assemblySplit { grid-template-columns:1fr; }
     }
     @media (max-width: 700px) {
       header { padding:14px; }
@@ -3444,7 +3505,12 @@ function homePage() {
       main { padding:10px; }
       section { padding:12px; }
       .counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .filters, .tabs { grid-template-columns:1fr; }
+      .filters { grid-template-columns:1fr; }
+      .sidebar > h2 { display:none; }
+      .tabs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); max-height:108px; overflow-y:auto; overflow-x:hidden; gap:6px; padding:2px 4px 2px 0; scrollbar-width:thin; }
+      .tabs .tab { min-height:46px; padding:7px; gap:4px; font-size:12px; }
+      #homeTab span:last-child, #globalSearchTab span:last-child, #importTab span:last-child, #aiTab span:last-child { display:none; }
+      .navDivider { display:none; }
       .cards { grid-template-columns:1fr; }
       .contentHead { flex-direction:column; }
       .toolbar button { flex:1 1 auto; }
@@ -3461,6 +3527,9 @@ function homePage() {
       .resultCard { grid-template-columns:1fr; }
       .importControls, .importProposalGrid, .historicalRow, .reportControls { grid-template-columns:1fr; }
       .reportRow { grid-template-columns:1fr; }
+      .assemblyHeader { flex-direction:column; }
+      .assemblyMetrics, .voteSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .attendanceRow, .voteMember, .pointEditor, .votePointSelect { grid-template-columns:1fr; }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
       .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
@@ -3475,7 +3544,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 12 - Importacion inteligente e informes</p>
+        <p>Paso 13 - Asambleas web</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -3503,6 +3572,7 @@ function homePage() {
             <button class="tab active" id="homeTab" data-view="home"><span>Inicio</span><span>Resumen</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
             <button class="tab" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
+            <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
             <div class="navDivider"></div>
             <button class="tab" id="mapTab" data-view="map"><span>Mapa de trabajo</span><span id="mapTabCount">0</span></button>
             <button class="tab" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
@@ -3762,6 +3832,12 @@ function homePage() {
     let reportEntityType = "all";
     let reportEntityCommunity = "";
     let collectionReportTitle = "";
+    let assembliesData = { assemblies: [], loaded: false };
+    let selectedAssemblyId = 0;
+    let assemblyDetail = null;
+    let assemblySection = "summary";
+    let assemblyOwnerQuery = "";
+    let selectedAssemblyPoint = 0;
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -3891,6 +3967,9 @@ function homePage() {
       importCommunity = "";
       reportsCenter = { reports: [], entities: [], communities: [], loaded: false };
       selectedReportEntities = new Set();
+      assembliesData = { assemblies: [], loaded: false };
+      selectedAssemblyId = 0;
+      assemblyDetail = null;
       currentView = "home";
       showLogin("Sesion cerrada.");
     }
@@ -4357,8 +4436,8 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["homeTab", "projectTab", "taskTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "assemblyTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab" })[view];
       if (target) $(target).classList.add("active");
     }
 
@@ -4506,6 +4585,235 @@ function homePage() {
       $("documentCommunity").addEventListener("change", event => { documentCommunity = event.target.value; renderDocumentResults(); });
       renderDocumentResults();
     }
+
+    function assemblyStatusClass(value) {
+      return safe(value).toLowerCase().includes("celebr") ? "state-En-curso" : safe(value).toLowerCase().includes("cerr") ? "state-Finalizado" : "state-Pendiente";
+    }
+
+    function assemblyCardHtml(row) {
+      return '<article class="assemblyCard" data-assembly-open="' + html(row.id_asamblea) + '">' +
+        '<div class="meta"><span class="pill ' + assemblyStatusClass(row.estado) + '">' + html(row.estado || "Preparacion") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
+        '<h3>' + html(row.nombre || row.codigo) + '</h3>' +
+        '<div class="line"><strong>Fecha:</strong> ' + html(row.fecha || "Sin fecha") + ' | <strong>Convocatoria:</strong> ' + html(row.convocatoria || "") + '</div>' +
+        '<div class="meta"><span class="pill">' + html(String(row.total_puntos ?? 0)) + ' puntos</span><span class="pill">' + html(String(row.total_asistencia ?? 0)) + ' asistentes</span><span class="pill">' + html(String(row.total_proxys ?? 0)) + ' proxys</span></div>' +
+      '</article>';
+    }
+
+    function newAssemblyFormHtml() {
+      if (!canWrite()) return "";
+      const communities = ((state.daily || {}).communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '">' + html(row.nombre) + '</option>').join("");
+      return '<details class="assemblyPane"><summary><strong>Nueva asamblea</strong></summary><div class="formGrid" style="margin-top:10px">' +
+        '<div><label>Comunidad</label><select id="newAssemblyCommunity">' + communities + '</select></div><div><label>Codigo</label><input id="newAssemblyCode" placeholder="JGO-2026" /></div>' +
+        '<div><label>Nombre</label><input id="newAssemblyName" placeholder="Junta General Ordinaria 2026" /></div><div><label>Fecha</label><input id="newAssemblyDate" type="date" /></div>' +
+        '<div><label>Convocatoria</label><select id="newAssemblyCall"><option value="segunda">Segunda</option><option value="primera">Primera</option></select></div>' +
+        '<div><label>Estado</label><select id="newAssemblyState"><option>Preparacion</option><option>Convocada</option><option>En celebracion</option><option>Cerrada</option><option>Archivada</option></select></div></div>' +
+        '<div class="toolbar"><button class="green" id="createAssemblyButton">Crear asamblea</button><span class="muted" id="createAssemblyMessage"></span></div></details>';
+    }
+
+    function assemblyListHtml() {
+      const rows = assembliesData.assemblies || [];
+      return '<div class="assemblyShell">' + newAssemblyFormHtml() + '<div class="assemblyList">' + (rows.length ? rows.map(assemblyCardHtml).join("") : '<div class="empty">No hay asambleas visibles.</div>') + '</div></div>';
+    }
+
+    function assemblyTabsHtml() {
+      const tabs = [["summary","Resumen"],["registration","Registro"],["voting","Votacion"],["documents","Documentos y proxys"],["history","Historial"]];
+      return '<div class="assemblyTabs">' + tabs.map(row => '<button data-assembly-section="' + row[0] + '" class="' + (assemblySection === row[0] ? "active" : "") + '">' + row[1] + '</button>').join("") + '</div>';
+    }
+
+    function assemblyMetricsHtml(detail) {
+      const totals = detail.totals || {};
+      return '<div class="assemblyMetrics">' + countCard("Censo", (totals.owners || 0) + " votos") + countCard("Propiedades", totals.properties || 0) +
+        countCard("Total asistencia", totals.attended_owners || 0) + countCard("Coef. asistencia", Number(totals.attended_coef || 0).toFixed(4)) +
+        countCard("Quorum legal", (totals.eligible_votes || 0) + " votos") + countCard("Coef. quorum", Number(totals.eligible_coef || 0).toFixed(4)) + '</div>';
+    }
+
+    function resultLabel(result) {
+      if (!result || !result.base_votes) return "Sin votacion";
+      return result.approved ? "Aprobado" : "No aprobado";
+    }
+
+    function agendaItemHtml(point, index) {
+      const result = point.result || {};
+      return '<article class="agendaItem"><div class="agendaNumber">' + (index + 1) + '</div><div><strong>' + html(point.titulo) + '</strong><div class="muted">Mayoria: ' + html(point.tipo_mayoria || "simple") + '</div></div>' +
+        '<span class="pill ' + (result.approved ? "state-Finalizado" : "state-Pendiente") + '">' + resultLabel(result) + '</span></article>';
+    }
+
+    function assemblyEditHtml(detail) {
+      if (!canWrite()) return "";
+      const item = detail.assembly || {};
+      const communities = ((state.daily || {}).communities || []).map(row => { const id = row.id || row.id_comunidad; return '<option value="' + html(id) + '"' + (String(id) === String(item.id_comunidad) ? " selected" : "") + '>' + html(row.nombre) + '</option>'; }).join("");
+      const states = ["Preparacion","Convocada","En celebracion","Cerrada","Archivada"];
+      return '<details class="assemblyPane"><summary><strong>Editar datos y orden del dia</strong></summary><div class="formGrid" style="margin-top:10px">' +
+        '<div><label>Comunidad</label><select id="assemblyEditCommunity">' + communities + '</select></div><div><label>Codigo</label><input id="assemblyEditCode" value="' + html(item.codigo) + '" /></div>' +
+        '<div><label>Nombre</label><input id="assemblyEditName" value="' + html(item.nombre) + '" /></div><div><label>Fecha</label><input id="assemblyEditDate" type="date" value="' + html((item.fecha || "").slice(0,10)) + '" /></div>' +
+        '<div><label>Convocatoria</label><select id="assemblyEditCall"><option value="primera"' + (item.convocatoria === "primera" ? " selected" : "") + '>Primera</option><option value="segunda"' + (item.convocatoria !== "primera" ? " selected" : "") + '>Segunda</option></select></div>' +
+        '<div><label>Estado</label><select id="assemblyEditState">' + states.map(value => '<option' + (value === item.estado ? " selected" : "") + '>' + value + '</option>').join("") + '</select></div>' +
+        '<div><label>Presidente</label><input id="assemblyEditPresident" value="' + html(item.presidente) + '" /></div><div><label>Administrador</label><input id="assemblyEditAdministrator" value="' + html(item.administrador) + '" /></div>' +
+        '<div><label>Hora de inicio</label><input id="assemblyEditTime" type="time" value="' + html(item.hora_inicio) + '" /></div><div><label>Lugar</label><input id="assemblyEditPlace" value="' + html(item.lugar_celebracion || item.ubicacion) + '" /></div></div>' +
+        '<label>Junta directiva</label><textarea id="assemblyEditBoard">' + html(item.junta_directiva) + '</textarea><label>Observaciones</label><textarea id="assemblyEditNotes">' + html(item.observaciones) + '</textarea>' +
+        '<div class="toolbar"><button class="green" id="saveAssemblyEdit">Guardar datos</button><span class="muted" id="assemblyEditMessage"></span></div>' +
+        '<h3>Orden del dia</h3><div id="assemblyPointEditors">' + (detail.points || []).map((point,index) => pointEditorHtml(point,index)).join("") + '</div>' +
+        '<div class="toolbar"><button class="ghost" id="addAssemblyPoint">Anadir punto</button><button id="saveAssemblyPoints">Guardar orden y mayorias</button><span class="muted" id="assemblyPointsMessage"></span></div></details>';
+    }
+
+    function pointEditorHtml(point, index) {
+      const majorities = [["simple","Simple"],["3/5","3/5"],["2/3","2/3"],["unanimidad","Unanimidad"]];
+      return '<div class="pointEditor" data-point-index="' + index + '" data-point-id="' + html(point.id_punto || "") + '"><strong>P' + (index + 1) + '</strong><div><label>Texto del punto</label><input data-point-title value="' + html(point.titulo || "") + '" /></div>' +
+        '<div><label>Mayoria</label><select data-point-majority>' + majorities.map(row => '<option value="' + row[0] + '"' + (row[0] === point.tipo_mayoria ? " selected" : "") + '>' + row[1] + '</option>').join("") + '</select></div>' +
+        '<div class="toolbar"><button class="ghost" data-point-move="up" title="Subir">&#8593;</button><button class="ghost" data-point-move="down" title="Bajar">&#8595;</button><button class="red" data-point-remove title="Eliminar">X</button></div></div>';
+    }
+
+    function assemblySummaryHtml(detail) {
+      const item = detail.assembly || {};
+      return assemblyMetricsHtml(detail) + '<div class="assemblySplit"><div class="assemblyPane"><h3>Datos de celebracion</h3>' +
+        detailValue("Presidente", item.presidente) + detailValue("Administrador", item.administrador) + detailValue("Junta directiva", item.junta_directiva) + detailValue("Inicio", [item.fecha,item.hora_inicio].filter(Boolean).join(" ")) + detailValue("Lugar", item.lugar_celebracion || item.ubicacion) + '</div>' +
+        '<div class="assemblyPane"><h3>Orden del dia y situacion</h3><div class="agendaList">' + ((detail.points || []).length ? detail.points.map(agendaItemHtml).join("") : '<div class="empty">No hay puntos configurados.</div>') + '</div></div></div>' + assemblyEditHtml(detail);
+    }
+
+    function filteredAssemblyOwners(detail) {
+      const query = safe(assemblyOwnerQuery).toLowerCase();
+      const registered = new Set((detail.attendance || []).map(row => row.propietario));
+      return (detail.owners || []).filter(row => !registered.has(row.propietario) && (!query || [row.propietario,row.propiedad_ids].join(" ").toLowerCase().includes(query))).slice(0, 120);
+    }
+
+    function assemblyRegistrationHtml(detail) {
+      const owners = filteredAssemblyOwners(detail);
+      const picker = owners.length ? owners.map(row => '<label class="ownerChoice"><input type="checkbox" data-owner-select="' + html(row.propietario) + '" /><span><strong>' + html(row.propietario) + '</strong><span class="muted" style="display:block">' + html(row.propiedades + " propiedades | coef. " + Number(row.coeficiente || 0).toFixed(4)) + '</span><small>' + html(row.propiedad_ids || "") + '</small></span></label>').join("") : '<div class="empty">No hay coincidencias sin registrar.</div>';
+      const rows = (detail.attendance || []).map(row => '<div class="attendanceRow"><div><strong>' + html(row.propietario) + '</strong><div class="muted">' + html(row.propiedad_ids || "") + '</div></div><div><span class="pill">' + html(row.tipo) + '</span>' + ((row.sin_voto || row.moroso) ? '<span class="pill state-Bloqueado">Sin voto</span>' : '') + '</div><div>' + (row.tipo === "representado" ? 'Representa: <strong>' + html(row.representante) + '</strong>' : 'Coef. ' + Number(row.coeficiente || 0).toFixed(4)) + '</div>' +
+        (canWrite() ? '<div class="toolbar"><button class="ghost" data-attendance-moroso="' + html(row.propietario) + '" data-moroso="' + (row.moroso ? "0" : "1") + '">' + (row.moroso ? "Dar voto" : "Sin voto") + '</button><button class="red" data-attendance-remove="' + html(row.propietario) + '">Quitar</button></div>' : '') + '</div>').join("");
+      return assemblyMetricsHtml(detail) + '<div class="assemblySplit"><div class="assemblyPane"><h3>Registrar asistencia</h3><label>Buscar por propietario o propiedad</label><input id="assemblyOwnerSearch" value="' + html(assemblyOwnerQuery) + '" placeholder="Nombre, CB, villa, plaza..." />' +
+        '<div class="ownerResults" id="assemblyOwnerResults">' + picker + '</div><div class="formGrid" style="margin-top:10px"><div><label>Tipo</label><select id="attendanceType"><option value="presente">Presente</option><option value="representado">Representado</option></select></div><div><label>Representante</label><input id="attendanceRepresentative" placeholder="Nombre del representante" /></div></div>' +
+        '<label><input id="attendanceWithoutVote" type="checkbox" /> Sin derecho a voto por otra causa</label><div class="toolbar"><button class="green" id="saveAssemblyAttendance">Registrar seleccionados</button><span class="muted" id="attendanceMessage"></span></div></div>' +
+        '<div class="assemblyPane"><h3>Presentes y representados (' + (detail.attendance || []).length + ')</h3><div class="attendanceList">' + (rows || '<div class="empty">No hay asistencia registrada.</div>') + '</div></div></div>';
+    }
+
+    function voteButton(owner, vote, current, disabled) {
+      const label = {si:"SI",no:"NO",abs:"ABS",sin:"SIN"}[vote];
+      return '<button data-vote-owner="' + html(owner) + '" data-vote="' + vote + '" class="' + (current === vote ? "active-" + vote : "") + '"' + (disabled ? " disabled" : "") + '>' + label + '</button>';
+    }
+
+    function assemblyVotingHtml(detail) {
+      const points = detail.points || [];
+      if (!points.length) return '<div class="empty">Configura primero los puntos del orden del dia.</div>';
+      if (!selectedAssemblyPoint || !points.some(row => Number(row.id_punto) === Number(selectedAssemblyPoint))) selectedAssemblyPoint = Number(points[0].id_punto);
+      const point = points.find(row => Number(row.id_punto) === Number(selectedAssemblyPoint));
+      const result = point.result || {};
+      const summary = '<div class="voteSummary">' + ["si","no","abs","sin"].map(vote => '<div class="answerCard"><span>' + ({si:"A favor",no:"En contra",abs:"Abstencion",sin:"Sin emitir"}[vote]) + '</span><strong>' + html((result[vote]?.votes || 0) + " votos") + '</strong><small>Coef. ' + Number(result[vote]?.coef || 0).toFixed(4) + '</small></div>').join("") + '</div>';
+      const groups = (detail.groups || []).map(group => {
+        const members = group.members || [];
+        const bulk = canWrite() && members.length > 1 ? '<div class="voteActions"><span class="muted">Todos:</span>' + ["si","no","abs"].map(vote => '<button data-vote-group="' + html(group.representante) + '" data-vote="' + vote + '">' + ({si:"SI",no:"NO",abs:"ABS"}[vote]) + '</button>').join("") + '</div>' : '';
+        const memberRows = members.map(member => {
+          const meta = member.votes?.[String(point.id_punto)] || { voto:"sin", bloqueado:false };
+          const disabled = !canWrite() || meta.bloqueado || member.sin_voto || member.moroso;
+          return '<div class="voteMember"><div><strong>' + html(member.propietario) + '</strong><div class="muted">' + html(member.tipo === "representado" ? "Representado por " + member.representante : "Voto propio") + '</div></div><div>' + (meta.bloqueado ? '<span class="lockedVote">Proxy instruido</span>' : (member.sin_voto || member.moroso) ? '<span class="dangerText">Sin derecho</span>' : '<span class="pill">' + html((meta.voto || "sin").toUpperCase()) + '</span>') + '</div><div class="voteActions">' + ["si","no","abs","sin"].map(vote => voteButton(member.propietario,vote,meta.voto,disabled)).join("") + '</div></div>';
+        }).join("");
+        return '<article class="voteGroup"><div class="voteGroupHead"><div><strong>' + html(group.representante) + '</strong><div class="muted">' + members.length + ' voto(s) agrupados</div></div>' + bulk + '</div>' + memberRows + '</article>';
+      }).join("");
+      return '<div class="votePointSelect"><div><label>Punto en votacion</label><select id="assemblyVotePoint">' + points.map((row,index) => '<option value="' + row.id_punto + '"' + (Number(row.id_punto) === Number(selectedAssemblyPoint) ? " selected" : "") + '>P' + (index + 1) + ' - ' + html(row.titulo) + '</option>').join("") + '</select></div><div><span class="pill ' + (result.approved ? "state-Finalizado" : "state-Pendiente") + '">' + resultLabel(result) + ' | Mayoria ' + html(point.tipo_mayoria) + '</span></div></div>' + summary + '<div class="muted" id="assemblyVoteMessage"></div><div class="voteGroups">' + (groups || '<div class="empty">No hay asistentes registrados.</div>') + '</div>';
+    }
+
+    function assemblyDocumentsHtml(detail) {
+      const documents = detail.documents || [];
+      const proxys = detail.proxys || [];
+      const documentRows = documents.length ? documents.map(row => '<article class="reportRow"><div><h3>' + html(row.nombre_archivo) + '</h3><div class="meta"><span class="pill">' + html(row.carpeta || "General") + '</span><span class="pill">' + html(row.fecha_adjuntado || "") + '</span></div><div class="muted">' + html(row.descripcion || "") + '</div></div><div class="toolbar"><button data-assembly-document-open="' + row.id_documento_asamblea + '">Abrir</button>' + (canWrite() ? '<button class="red" data-assembly-document-delete="' + row.id_documento_asamblea + '">Eliminar</button>' : '') + '</div></article>').join("") : '<div class="empty">No hay documentos cargados en el servidor.</div>';
+      const proxyRows = proxys.length ? proxys.map(row => '<article class="reportRow"><div><h3>' + html(row.propietario || "Proxy") + '</h3><div class="line"><strong>Representante:</strong> ' + html(row.representante || "") + '</div><div class="muted">' + html(row.fecha_importacion || "") + ' | ' + html(row.nombre_archivo || "") + '</div></div><span class="pill">' + html(row.estado || "Importado") + '</span></article>').join("") : '<div class="empty">No hay proxys importados.</div>';
+      return '<div class="assemblySplit"><div class="assemblyPane"><h3>Anadir documentos</h3><label>Carpeta</label><input id="assemblyDocumentFolder" value="General" /><label>Descripcion</label><input id="assemblyDocumentDescription" /><label>Archivos</label><input id="assemblyDocumentFiles" type="file" multiple /><div class="toolbar"><button class="green" id="uploadAssemblyDocuments">Subir seleccionados</button><span class="muted" id="assemblyDocumentMessage"></span></div><h3 style="margin-top:16px">Documentos</h3><div class="reportList">' + documentRows + '</div></div><div class="assemblyPane"><h3>Proxys recibidos (' + proxys.length + ')</h3><p class="muted">Las instrucciones de voto importadas permanecen bloqueadas durante la votacion.</p><div class="reportList">' + proxyRows + '</div></div></div>';
+    }
+
+    function assemblyHistoryHtml(detail) {
+      const rows = detail.updates || [];
+      const content = rows.length ? rows.map(row => '<article class="historyItem"><h4>' + html(row.fecha_hora) + ' - ' + html(row.tipo) + '</h4><p>' + html(row.comentario) + '</p><div class="muted">' + html(row.usuario || "") + '</div></article>').join("") : '<div class="empty">No hay actualizaciones.</div>';
+      return (canWrite() ? '<div class="assemblyPane"><h3>Anadir seguimiento de asamblea</h3><div class="formGrid"><div><label>Tipo</label><input id="assemblyUpdateType" value="Seguimiento" /></div></div><label>Comentario</label><textarea id="assemblyUpdateComment"></textarea><div class="toolbar"><button class="green" id="saveAssemblyUpdate">Guardar seguimiento</button><span class="muted" id="assemblyUpdateMessage"></span></div></div>' : '') + '<div class="history">' + content + '</div>';
+    }
+
+    function assemblyDetailHtml(detail) {
+      const item = detail.assembly || {};
+      const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySummaryHtml(detail);
+      return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button><button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
+    }
+
+    function assembliesPanelHtml() {
+      if (!assembliesData.loaded) return '<div class="empty">Cargando asambleas...</div>';
+      if (!selectedAssemblyId) return assemblyListHtml();
+      if (!assemblyDetail) return '<div class="empty">Cargando ficha de asamblea...</div>';
+      return assemblyDetailHtml(assemblyDetail);
+    }
+
+    async function assemblyApi(action, data) {
+      return api("/api/assembly/action", { method:"POST", body:JSON.stringify({ action, data }) });
+    }
+
+    async function loadAssemblies() {
+      try {
+        assembliesData = { ...(await api("/api/assemblies")), loaded:true };
+        $("assemblyTabCount").textContent = assembliesData.assemblies.length;
+        if (currentView === "assemblies") render();
+      } catch (error) { assembliesData = { assemblies:[], loaded:true, error:error.message }; if (currentView === "assemblies") { render(); alert(error.message); } }
+    }
+
+    async function loadAssemblyDetail(id = selectedAssemblyId) {
+      selectedAssemblyId = Number(id || 0);
+      assemblyDetail = null;
+      render();
+      try {
+        assemblyDetail = await api("/api/assembly/detail?id=" + encodeURIComponent(selectedAssemblyId));
+        if (!selectedAssemblyPoint && assemblyDetail.points?.length) selectedAssemblyPoint = Number(assemblyDetail.points[0].id_punto);
+        render();
+      } catch (error) { selectedAssemblyId = 0; render(); alert(error.message); }
+    }
+
+    function collectPointEditors() {
+      return [...document.querySelectorAll("[data-point-index]")].map(row => ({ id_punto:Number(row.dataset.pointId || 0) || null, titulo:row.querySelector("[data-point-title]").value, tipo_mayoria:row.querySelector("[data-point-majority]").value }));
+    }
+
+    function bindAssembliesPanel() {
+      document.querySelectorAll("[data-assembly-open]").forEach(card => card.addEventListener("click", () => { assemblySection="summary"; selectedAssemblyPoint=0; loadAssemblyDetail(card.dataset.assemblyOpen); }));
+      if ($("createAssemblyButton")) $("createAssemblyButton").addEventListener("click", createAssemblyFromForm);
+      if (!selectedAssemblyId || !assemblyDetail) return;
+      $("backAssemblies").addEventListener("click", () => { selectedAssemblyId=0; assemblyDetail=null; assemblySection="summary"; render(); });
+      $("reloadAssembly").addEventListener("click", () => loadAssemblyDetail());
+      document.querySelectorAll("[data-assembly-section]").forEach(button => button.addEventListener("click", () => { assemblySection=button.dataset.assemblySection; render(); }));
+      if ($("saveAssemblyEdit")) $("saveAssemblyEdit").addEventListener("click", saveAssemblyEdit);
+      if ($("addAssemblyPoint")) $("addAssemblyPoint").addEventListener("click", () => { assemblyDetail.points.push({ titulo:"", tipo_mayoria:"simple" }); render(); });
+      if ($("saveAssemblyPoints")) $("saveAssemblyPoints").addEventListener("click", saveAssemblyPoints);
+      document.querySelectorAll("[data-point-move]").forEach(button => button.addEventListener("click", () => moveAssemblyPoint(button)));
+      document.querySelectorAll("[data-point-remove]").forEach(button => button.addEventListener("click", () => { const points=collectPointEditors(); points.splice(Number(button.closest("[data-point-index]").dataset.pointIndex),1); assemblyDetail.points=points; render(); }));
+      if ($("assemblyOwnerSearch")) { $("assemblyOwnerSearch").addEventListener("change", event => { assemblyOwnerQuery=event.target.value; render(); }); $("assemblyOwnerSearch").addEventListener("keydown", event => { if(event.key==="Enter"){assemblyOwnerQuery=event.target.value;render();} }); }
+      if ($("saveAssemblyAttendance")) $("saveAssemblyAttendance").addEventListener("click", saveAssemblyAttendance);
+      document.querySelectorAll("[data-attendance-remove]").forEach(button => button.addEventListener("click", () => removeAssemblyAttendance(button.dataset.attendanceRemove)));
+      document.querySelectorAll("[data-attendance-moroso]").forEach(button => button.addEventListener("click", () => toggleAssemblyMoroso(button.dataset.attendanceMoroso, button.dataset.moroso === "1")));
+      if ($("assemblyVotePoint")) $("assemblyVotePoint").addEventListener("change", event => { selectedAssemblyPoint=Number(event.target.value); render(); });
+      document.querySelectorAll("[data-vote-owner]").forEach(button => button.addEventListener("click", () => saveAssemblyVote(button.dataset.voteOwner,button.dataset.vote)));
+      document.querySelectorAll("[data-vote-group]").forEach(button => button.addEventListener("click", () => saveAssemblyGroupVote(button.dataset.voteGroup,button.dataset.vote)));
+      if ($("uploadAssemblyDocuments")) $("uploadAssemblyDocuments").addEventListener("click", uploadAssemblyDocuments);
+      document.querySelectorAll("[data-assembly-document-open]").forEach(button => button.addEventListener("click", () => window.open("/api/assembly/document?id=" + encodeURIComponent(button.dataset.assemblyDocumentOpen) + "&inline=1","_blank")));
+      document.querySelectorAll("[data-assembly-document-delete]").forEach(button => button.addEventListener("click", () => deleteAssemblyDocument(button.dataset.assemblyDocumentDelete)));
+      if ($("saveAssemblyUpdate")) $("saveAssemblyUpdate").addEventListener("click", saveAssemblyUpdate);
+    }
+
+    async function createAssemblyFromForm() {
+      $("createAssemblyMessage").textContent="Creando...";
+      try { const result=await assemblyApi("create",{id_comunidad:$("newAssemblyCommunity").value,codigo:$("newAssemblyCode").value,nombre:$("newAssemblyName").value,fecha:$("newAssemblyDate").value,convocatoria:$("newAssemblyCall").value,estado:$("newAssemblyState").value}); await loadAssemblies(); await loadAssemblyDetail(result.id); }
+      catch(error){$("createAssemblyMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}
+    }
+
+    async function saveAssemblyEdit() {
+      const data={id:selectedAssemblyId,id_comunidad:$("assemblyEditCommunity").value,codigo:$("assemblyEditCode").value,nombre:$("assemblyEditName").value,fecha:$("assemblyEditDate").value,convocatoria:$("assemblyEditCall").value,estado:$("assemblyEditState").value,presidente:$("assemblyEditPresident").value,administrador:$("assemblyEditAdministrator").value,junta_directiva:$("assemblyEditBoard").value,hora_inicio:$("assemblyEditTime").value,lugar_celebracion:$("assemblyEditPlace").value,observaciones:$("assemblyEditNotes").value};
+      try{$("assemblyEditMessage").textContent="Guardando...";await assemblyApi("update",data);await loadAssemblies();await loadAssemblyDetail();}catch(error){$("assemblyEditMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}
+    }
+
+    function moveAssemblyPoint(button) { const points=collectPointEditors(); const index=Number(button.closest("[data-point-index]").dataset.pointIndex); const target=button.dataset.pointMove==="up"?index-1:index+1; if(target<0||target>=points.length)return; [points[index],points[target]]=[points[target],points[index]]; assemblyDetail.points=points; render(); }
+    async function saveAssemblyPoints(){try{$("assemblyPointsMessage").textContent="Guardando...";await assemblyApi("save_points",{id:selectedAssemblyId,points:collectPointEditors()});selectedAssemblyPoint=0;await loadAssemblyDetail();}catch(error){$("assemblyPointsMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
+
+    async function saveAssemblyAttendance(){const owners=[...document.querySelectorAll("[data-owner-select]:checked")].map(row=>row.dataset.ownerSelect);if(!owners.length){$("attendanceMessage").textContent="Selecciona propietarios.";return;}try{$("attendanceMessage").textContent="Registrando...";await assemblyApi(owners.length>1?"attendance_batch":"attendance_set",{id:selectedAssemblyId,propietarios:owners,propietario:owners[0],tipo:$("attendanceType").value,representante:$("attendanceRepresentative").value,sin_voto:$("attendanceWithoutVote").checked});assemblyOwnerQuery="";await loadAssemblyDetail();}catch(error){$("attendanceMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
+    async function removeAssemblyAttendance(owner){if(!confirm("Quitar del registro a "+owner+"?"))return;try{await assemblyApi("attendance_remove",{id:selectedAssemblyId,propietario:owner});await loadAssemblyDetail();}catch(error){alert(error.message);}}
+    async function toggleAssemblyMoroso(owner,moroso){const reason=prompt(moroso?"Motivo para dejarlo sin derecho a voto:":"Motivo para devolverle el derecho a voto:");if(!safe(reason))return;try{await assemblyApi("moroso_set",{id:selectedAssemblyId,propietario:owner,moroso,motivo:reason});await loadAssemblyDetail();}catch(error){alert(error.message);}}
+    async function saveAssemblyVote(owner,vote){try{$("assemblyVoteMessage").textContent="Guardando voto...";const result=await assemblyApi("vote_set",{id:selectedAssemblyId,id_punto:selectedAssemblyPoint,propietario:owner,voto:vote});if(result.locked)alert("El voto tiene instruccion de proxy y permanece bloqueado.");await loadAssemblyDetail();}catch(error){alert(error.message);}}
+    async function saveAssemblyGroupVote(representative,vote){try{$("assemblyVoteMessage").textContent="Aplicando al grupo...";const result=await assemblyApi("vote_bulk",{id:selectedAssemblyId,id_punto:selectedAssemblyPoint,representante,voto:vote});await loadAssemblyDetail();if(result.locked)alert(result.locked+" voto(s) con instruccion de proxy no se han modificado.");}catch(error){alert(error.message);}}
+
+    async function uploadAssemblyDocuments(){const files=[...($("assemblyDocumentFiles").files||[])];if(!files.length){$("assemblyDocumentMessage").textContent="Selecciona archivos.";return;}$("assemblyDocumentMessage").textContent="Subiendo 0 de "+files.length+"...";try{for(let index=0;index<files.length;index++){const query=new URLSearchParams({id:selectedAssemblyId,folder:$("assemblyDocumentFolder").value||"General",description:$("assemblyDocumentDescription").value||""});const response=await fetch("/api/assembly/document/upload?"+query.toString(),{method:"POST",body:files[index],credentials:"same-origin",headers:{"x-file-name":encodeURIComponent(files[index].name)}});const body=await response.json();if(!response.ok)throw new Error(body.error||"Error subiendo archivo.");$("assemblyDocumentMessage").textContent="Subiendo "+(index+1)+" de "+files.length+"...";}await loadAssemblyDetail();}catch(error){$("assemblyDocumentMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
+    async function deleteAssemblyDocument(id){if(!confirm("Eliminar este documento de la asamblea?"))return;try{await api("/api/assembly/document/delete",{method:"POST",body:JSON.stringify({id})});await loadAssemblyDetail();}catch(error){alert(error.message);}}
+    async function saveAssemblyUpdate(){try{$("assemblyUpdateMessage").textContent="Guardando...";await assemblyApi("add_update",{id:selectedAssemblyId,tipo:$("assemblyUpdateType").value,comentario:$("assemblyUpdateComment").value});await loadAssemblyDetail();}catch(error){$("assemblyUpdateMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
 
     function importCommunityOptions() {
       const communities = (state.daily || {}).communities || [];
@@ -4946,7 +5254,7 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["home", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai"].includes(currentView);
+      const specialView = ["home", "assemblies", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai"].includes(currentView);
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
@@ -4964,6 +5272,15 @@ function homePage() {
         $("visibleCount").textContent = (((state.daily || {}).map || {}).items || []).length + " elementos";
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = mapPanelHtml();
+        return;
+      }
+      if (currentView === "assemblies") {
+        $("contentTitle").textContent = selectedAssemblyId ? "Ficha de asamblea" : "Asambleas";
+        $("contentSubtitle").textContent = selectedAssemblyId ? "Registro, quorum y votaciones con la misma logica de la aplicacion de escritorio." : "Preparacion y operativa de las asambleas de tus comunidades.";
+        $("visibleCount").textContent = assembliesData.loaded ? assembliesData.assemblies.length + " asambleas" : "Cargando...";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = assembliesPanelHtml();
+        bindAssembliesPanel();
         return;
       }
       if (currentView === "work") {
@@ -5271,9 +5588,10 @@ function homePage() {
         showApp();
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
-        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "review", "imports", "ai"].includes(currentView))) currentView = "work";
+        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai"].includes(currentView))) currentView = "work";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("assemblyTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
@@ -5287,6 +5605,7 @@ function homePage() {
           countCard("Bloqueados / riesgo", (daily.map.counts || {})["Bloqueado / riesgo"] || 0);
         $("projectTabCount").textContent = data.proyectos.length;
         $("taskTabCount").textContent = data.tareas.length;
+        $("assemblyTabCount").textContent = assembliesData.loaded ? assembliesData.assemblies.length : 0;
         $("workTabCount").textContent = user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length;
         $("mapTabCount").textContent = (daily.map.items || []).length;
         $("reviewTabCount").textContent = (workflow.review.summary || {}).total || 0;
@@ -5313,11 +5632,13 @@ function homePage() {
       refreshFilterOptions();
       render();
       if (view === "reports" && !reportsCenter.loaded) loadReportsCenter();
+      if (view === "assemblies" && !assembliesData.loaded) loadAssemblies();
     }
 
     $("homeTab").addEventListener("click", () => switchView("home"));
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
+    $("assemblyTab").addEventListener("click", () => switchView("assemblies"));
     $("mapTab").addEventListener("click", () => switchView("map"));
     $("workTab").addEventListener("click", () => switchView("work"));
     $("reviewTab").addEventListener("click", () => switchView("review"));
@@ -5504,6 +5825,71 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await queryDailyOperations(session));
   }
+  if (req.method === "GET" && url.pathname === "/api/assemblies") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runAssemblyCommand(session, "list", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/assembly/detail") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runAssemblyCommand(session, "detail", { id: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/assembly/action") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const allowedActions = new Set(["create", "update", "save_points", "add_update", "attendance_set", "attendance_batch", "attendance_remove", "moroso_set", "vote_set", "vote_bulk"]);
+    if (!allowedActions.has(String(body.action || ""))) return sendJson(res, 400, { ok: false, error: "Accion de asamblea no permitida." });
+    return sendJson(res, 200, await runAssemblyCommand(session, body.action, body.data || {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/assembly/document/upload") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede anadir documentos." });
+    const assemblyId = Number(url.searchParams.get("id") || 0);
+    await runAssemblyCommand(session, "detail", { id: assemblyId }, String(req.socket.remoteAddress || "web"));
+    const fileName = safeUploadName(req.headers["x-file-name"] || "documento");
+    const folderName = safeUploadName(url.searchParams.get("folder") || "General").replace(/^\.+$/, "General");
+    const bytes = await readRawBody(req);
+    if (!bytes.length) return sendJson(res, 400, { ok: false, error: "El archivo esta vacio." });
+    const folder = path.join(assemblyDocumentsDir, String(assemblyId), folderName);
+    fs.mkdirSync(folder, { recursive: true });
+    let target = path.join(folder, fileName);
+    let counter = 2;
+    while (fs.existsSync(target)) {
+      target = path.join(folder, `${counter}_${fileName}`);
+      counter += 1;
+    }
+    fs.writeFileSync(target, bytes, { flag: "wx" });
+    try {
+      const result = await runAssemblyCommand(session, "document_add", {
+        id: assemblyId, ruta_archivo: target, nombre_archivo: path.basename(target),
+        carpeta: folderName, descripcion: url.searchParams.get("description") || ""
+      }, String(req.socket.remoteAddress || "web"));
+      return sendJson(res, 200, result);
+    } catch (error) {
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+      throw error;
+    }
+  }
+  if (req.method === "GET" && url.pathname === "/api/assembly/document") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const info = await runAssemblyCommand(session, "document_info", { id_documento: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web"));
+    const filePath = path.resolve(String(info.ruta_archivo || ""));
+    if (!fs.existsSync(filePath) || !pathInside(filePath, assemblyDocumentsDir)) throw new Error("El documento historico aun no esta disponible en el servidor.");
+    return sendFile(res, filePath, info.nombre_archivo, url.searchParams.get("inline") === "1");
+  }
+  if (req.method === "POST" && url.pathname === "/api/assembly/document/delete") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const result = await runAssemblyCommand(session, "document_delete", { id_documento: body.id }, String(req.socket.remoteAddress || "web"));
+    const filePath = path.resolve(String(result.ruta_archivo || ""));
+    if (fs.existsSync(filePath) && pathInside(filePath, assemblyDocumentsDir)) fs.unlinkSync(filePath);
+    return sendJson(res, 200, { ok: true });
+  }
   if (req.method === "GET" && url.pathname === "/api/global-search") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -5687,7 +6073,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 12 : 1,
+      step: databaseExists ? 13 : 1,
       port,
       dataDir,
       databasePath,
