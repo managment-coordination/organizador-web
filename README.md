@@ -18,6 +18,10 @@ La version web centraliza actualmente:
 - revision diaria ejecutiva con filtros por comunidad y tipo de elemento;
 - centro de notificaciones con lectura individual o conjunta;
 - decisiones de Presidencia con comentario obligatorio, historial y devolucion automatica de responsabilidad;
+- inicio ejecutivo con prioridades y accesos directos;
+- mapa de trabajo clasificado en necesita accion, terceros, seguimiento y bloqueo/riesgo;
+- buscador global sobre fichas, seguimientos, acciones, informes y anexos;
+- centro documental con filtros, vista previa, descarga y acceso a la ficha relacionada;
 - informes Word individuales de tareas y proyectos;
 - subida multiple, vista previa y descarga protegida de anexos;
 - datos y documentos persistentes en el servidor Ubuntu.

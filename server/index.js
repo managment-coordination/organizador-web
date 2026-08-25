@@ -345,6 +345,9 @@ print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 `;
   return runPythonJson(script).then((row) => {
     if (!row?.id_informe || !allowedCommunity(session, row.id_comunidad)) throw new Error("Informe no encontrado o sin permiso.");
+    if (session?.rol === "Presidente" && String(row.tipo_informe || "").toLowerCase().includes("tarea")) {
+      throw new Error("El perfil Presidente no tiene acceso general a informes de tareas.");
+    }
     const filePath = path.resolve(String(row.archivo_word || ""));
     if (!fs.existsSync(filePath) || !pathInside(filePath, reportsDir)) throw new Error("El archivo del informe no esta disponible.");
     return { ...row, filePath, filename: path.basename(filePath) };
@@ -724,6 +727,302 @@ print(json.dumps({
     "president_requests": president_requests,
     "review": {"items": review_items, "summary": summary, "communities": communities},
 }, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function queryDailyOperations(session) {
+  const script = `
+import json
+import sqlite3
+from datetime import date, datetime, timedelta
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+role = str(session.get("rol") or "")
+user_name = str(session.get("nombre") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+def rows(sql, params=()):
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+def community_filter(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1=0", []
+    marks = ",".join("?" for _ in allowed_ids)
+    return f" AND {alias}.id_comunidad IN ({marks})", allowed_ids
+
+aliases = [user_name]
+if user_name.lower() == "luis gallardo": aliases.append("Luis")
+if user_name.lower() == "elena cuenca": aliases.append("Elena")
+aliases = list(dict.fromkeys([a for a in aliases if a]))
+alias_lower = {a.lower() for a in aliases}
+alias_marks = ",".join("?" for _ in aliases) or "?"
+responsible_types = {str(r["nombre"] or "").strip().lower(): str(r["tipo"] or "Otro") for r in rows("SELECT nombre,tipo FROM responsables WHERE COALESCE(activo,1)=1")}
+active_users = {str(r["nombre"] or "").strip().lower() for r in rows("SELECT nombre FROM usuarios WHERE COALESCE(activo,1)=1")}
+
+def owner_group(owner):
+    name = str(owner or "").strip()
+    normalized = name.lower()
+    if not name: return "Sin responsable"
+    if normalized in alias_lower: return "Usuario activo"
+    kind = responsible_types.get(normalized, "")
+    if kind == "Tercero / Institución": return "Tercero"
+    if kind: return kind
+    if normalized in active_users: return "Usuario interno"
+    if "president" in normalized: return "Presidente"
+    if normalized in {"proveedor", "proveedores", "costilla", "securitas", "licuas", "administracion", "administración"}: return "Proveedor"
+    if normalized in {"ayuntamiento", "junta", "endesa", "arcgisa"}: return "Tercero"
+    return "Otro"
+
+today = date.today()
+stale_limit = today - timedelta(days=7)
+week_start = today - timedelta(days=today.weekday())
+
+def parse_day(value):
+    text = str(value or "").strip()[:10]
+    try: return date.fromisoformat(text)
+    except ValueError: return None
+
+def classify(state, priority, owner, target_date, updated_at, has_action):
+    target = parse_day(target_date)
+    updated = parse_day(updated_at)
+    group = owner_group(owner)
+    if str(state or "") in {"Bloqueada", "Bloqueado"}: return "Bloqueado / riesgo", 0
+    if has_action or group == "Usuario activo":
+        return ("Necesita acción", 0 if target and target < today else 1)
+    if group in {"Presidente", "Proveedor", "Tercero", "Otro"}:
+        return ("Bloqueado / riesgo", 2) if target and target < today else ("Pendiente de terceros", 3)
+    if str(priority or "") == "Urgente": return "Necesita acción", 4
+    if updated and updated < stale_limit: return "Bloqueado / riesgo", 5
+    return "En seguimiento", 6
+
+task_filter, task_params = community_filter("t")
+project_filter, project_params = community_filter("p")
+action_user_sql = "" if role == "Superusuario" else f" AND a.usuario_destino IN ({alias_marks})"
+action_user_params = [] if role == "Superusuario" else aliases
+tasks = []
+if role != "Presidente":
+    tasks = rows("""
+        SELECT t.id_tarea AS entity_id, 'task' AS entity_type, t.id_comunidad,
+               t.titulo, t.descripcion, t.categoria, t.estado, t.prioridad,
+               t.responsable, t.responsable_proximo_paso,
+               COALESCE(t.fecha_objetivo_proximo_paso,t.fecha_proxima_revision,'') AS fecha_objetivo,
+               t.fecha_ultima_actualizacion, t.proximo_paso, c.nombre AS comunidad,
+               (SELECT r.comentario FROM registros r WHERE r.id_tarea=t.id_tarea ORDER BY r.fecha_hora DESC,r.id_registro DESC LIMIT 1) AS ultimo_comentario,
+               EXISTS(SELECT 1 FROM acciones_pendientes a WHERE a.id_tarea=t.id_tarea AND a.estado='Pendiente'""" + action_user_sql + """) AS has_action
+        FROM tareas t
+        LEFT JOIN comunidades c ON c.id_comunidad=t.id_comunidad
+        WHERE COALESCE(t.activa,1)=1 AND COALESCE(t.archivada,0)=0
+          AND COALESCE(t.estado,'') NOT IN ('Terminada','Finalizada','Archivada','Cancelada')
+    """ + task_filter, tuple(action_user_params + task_params))
+
+projects = rows("""
+    SELECT p.id_proyecto AS entity_id, 'project' AS entity_type, p.id_comunidad,
+           p.nombre AS titulo, p.descripcion, p.categoria, p.estado_general AS estado, p.prioridad,
+           p.responsable_principal AS responsable, p.responsable_proximo_paso,
+           COALESCE(p.fecha_objetivo_proximo_paso,p.fecha_prevista_finalizacion,'') AS fecha_objetivo,
+           p.fecha_ultima_actualizacion, p.observaciones AS proximo_paso, c.nombre AS comunidad,
+           (SELECT r.comentario FROM registros_proyectos r WHERE r.id_proyecto=p.id_proyecto ORDER BY r.fecha_hora DESC,r.id_registro_proyecto DESC LIMIT 1) AS ultimo_comentario,
+           EXISTS(SELECT 1 FROM acciones_pendientes a WHERE a.id_proyecto=p.id_proyecto AND a.estado='Pendiente'""" + action_user_sql + """) AS has_action
+    FROM proyectos p
+    LEFT JOIN comunidades c ON c.id_comunidad=p.id_comunidad
+    WHERE COALESCE(p.activo,1)=1 AND COALESCE(p.estado_general,'') NOT IN ('Finalizado','Finalizada','Archivado','Cancelado')
+""" + project_filter, tuple(action_user_params + project_params))
+
+items = []
+for item in tasks + projects:
+    owner = item.get("responsable_proximo_paso") or item.get("responsable") or ""
+    section, order = classify(item.get("estado"), item.get("prioridad"), owner, item.get("fecha_objetivo"), item.get("fecha_ultima_actualizacion"), bool(item.get("has_action")))
+    item["seccion"] = section
+    item["orden"] = order
+    item["grupo_responsable"] = owner_group(owner)
+    item["detalle"] = item.get("proximo_paso") or item.get("ultimo_comentario") or item.get("descripcion") or ""
+    items.append(item)
+
+priority_order = {"Urgente":0,"Alta":1,"Media":2,"Baja":3}
+items.sort(key=lambda x: (x.get("orden",9), priority_order.get(x.get("prioridad"),9), x.get("fecha_objetivo") or "9999-99-99", x.get("titulo") or ""))
+all_items = tasks + projects
+metrics = {
+    "activos": len(all_items),
+    "tareas_activas": len(tasks),
+    "proyectos_activos": len(projects),
+    "urgentes": sum(str(x.get("prioridad") or "") == "Urgente" for x in all_items),
+    "bloqueados": sum(str(x.get("estado") or "") in {"Bloqueada","Bloqueado"} for x in all_items),
+    "terceros": sum("tercero" in str(x.get("estado") or "").lower() or owner_group(x.get("responsable_proximo_paso") or x.get("responsable")) in {"Presidente","Proveedor","Tercero","Otro"} for x in all_items),
+    "sin_revisar": sum(not parse_day(x.get("fecha_ultima_actualizacion")) or parse_day(x.get("fecha_ultima_actualizacion")) < stale_limit for x in all_items),
+}
+section_counts = {name: sum(x.get("seccion") == name for x in items) for name in ["Necesita acción","Pendiente de terceros","En seguimiento","Bloqueado / riesgo"]}
+
+attachment_filter, attachment_params = community_filter("a")
+attachment_extra = " AND a.id_tarea IS NULL" if role == "Presidente" else ""
+attachments = rows("""
+    SELECT a.id_anexo AS id, 'attachment' AS document_type, a.id_comunidad,
+           a.nombre_archivo AS nombre, a.ruta_archivo AS ruta, a.fecha_adjuntado AS fecha,
+           a.id_tarea, a.id_proyecto, c.nombre AS comunidad,
+           t.titulo AS tarea, p.nombre AS proyecto,
+           CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+           COALESCE(a.id_tarea,a.id_proyecto) AS entity_id
+    FROM anexos_registros a
+    LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+    LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
+    LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
+    WHERE 1=1
+""" + attachment_extra + attachment_filter + " ORDER BY a.fecha_adjuntado DESC,a.id_anexo DESC LIMIT 160", tuple(attachment_params))
+
+report_filter, report_params = community_filter("i")
+report_extra = " AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role == "Presidente" else ""
+reports = rows("""
+    SELECT i.id_informe AS id, 'report' AS document_type, i.id_comunidad,
+           COALESCE(NULLIF(i.tipo_informe,''),'Informe') AS nombre, i.archivo_word AS ruta,
+           i.fecha_generacion AS fecha, NULL AS id_tarea, i.id_proyecto,
+           c.nombre AS comunidad, '' AS tarea, p.nombre AS proyecto,
+           'project' AS entity_type, i.id_proyecto AS entity_id, i.observaciones, i.tipo_informe
+    FROM informes i
+    LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad
+    LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
+    WHERE COALESCE(i.archivo_word,'')<>''
+""" + report_extra + report_filter + " ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 100", tuple(report_params))
+
+for report in reports:
+    stored_name = str(report.get("ruta") or "").replace("\\\\", "/").split("/")[-1]
+    if stored_name: report["nombre"] = stored_name
+    try:
+        metadata = json.loads(report.get("observaciones") or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    if metadata.get("tipo_entidad") in {"task", "tarea"} and metadata.get("id_entidad"):
+        report["entity_type"] = "task"
+        report["entity_id"] = int(metadata["id_entidad"])
+        report["id_tarea"] = int(metadata["id_entidad"])
+    report.pop("observaciones", None)
+    report.pop("tipo_informe", None)
+    report.pop("ruta", None)
+
+documents = attachments + reports
+documents.sort(key=lambda x: str(x.get("fecha") or ""), reverse=True)
+for document in documents:
+    document.pop("ruta", None)
+communities = rows("SELECT id_comunidad AS id,nombre FROM comunidades WHERE COALESCE(activo,1)=1 ORDER BY nombre") if role == "Superusuario" else list(session.get("comunidades") or [])
+conn.close()
+print(json.dumps({"metrics":metrics,"map":{"items":items,"counts":section_counts},"documents":documents[:220],"communities":communities}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function queryGlobalSearch(session, term, typeFilter, communityId) {
+  const cleanTerm = String(term || "").trim().slice(0, 160);
+  if (!cleanTerm) return Promise.resolve({ results: [], term: "" });
+  const script = `
+import json
+import sqlite3
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+term = ${JSON.stringify(cleanTerm)}
+type_filter = ${JSON.stringify(typeFilter || "all")}
+requested_community = int(${JSON.stringify(Number(communityId) || 0)})
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+if requested_community and role != "Superusuario" and requested_community not in allowed_ids:
+    raise PermissionError("No tienes permiso para buscar en esa comunidad.")
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+like = f"%{term}%"
+results = []
+
+def rows(sql, params=()): return [dict(r) for r in conn.execute(sql, params).fetchall()]
+def scope(alias):
+    ids = [requested_community] if requested_community else allowed_ids
+    if role == "Superusuario" and not requested_community: return "", []
+    if not ids: return " AND 1=0", []
+    return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in ids)})", ids
+def include(*kinds): return type_filter in {"", "all", *kinds}
+
+project_scope, project_params = scope("p")
+if include("project", "entity"):
+    for r in rows("""SELECT p.id_proyecto AS id,'project' AS entity_type,p.id_comunidad,p.nombre AS titulo,
+                    COALESCE((SELECT rp.comentario FROM registros_proyectos rp WHERE rp.id_proyecto=p.id_proyecto ORDER BY rp.fecha_hora DESC,rp.id_registro_proyecto DESC LIMIT 1),p.descripcion,'') AS detalle,
+                    c.nombre AS comunidad,p.estado_general AS estado,p.prioridad
+                    FROM proyectos p LEFT JOIN comunidades c ON c.id_comunidad=p.id_comunidad
+                    WHERE (p.nombre LIKE ? OR p.descripcion LIKE ? OR p.categoria LIKE ? OR p.responsable_principal LIKE ? OR p.responsable_proximo_paso LIKE ?)""" + project_scope + " ORDER BY p.fecha_ultima_actualizacion DESC LIMIT 60", tuple([like]*5 + project_params)):
+        r["tipo"]="Proyecto"; r["result_type"]="entity"; results.append(r)
+
+task_scope, task_params = scope("t")
+if role != "Presidente" and include("task", "entity"):
+    for r in rows("""SELECT t.id_tarea AS id,'task' AS entity_type,t.id_comunidad,t.titulo,
+                    COALESCE((SELECT rr.comentario FROM registros rr WHERE rr.id_tarea=t.id_tarea ORDER BY rr.fecha_hora DESC,rr.id_registro DESC LIMIT 1),t.proximo_paso,t.descripcion,'') AS detalle,
+                    c.nombre AS comunidad,t.estado,t.prioridad
+                    FROM tareas t LEFT JOIN comunidades c ON c.id_comunidad=t.id_comunidad
+                    WHERE (t.titulo LIKE ? OR t.descripcion LIKE ? OR t.categoria LIKE ? OR t.responsable LIKE ? OR t.responsable_proximo_paso LIKE ? OR t.proximo_paso LIKE ?)""" + task_scope + " ORDER BY t.fecha_ultima_actualizacion DESC LIMIT 60", tuple([like]*6 + task_params)):
+        r["tipo"]="Tarea"; r["result_type"]="entity"; results.append(r)
+
+record_project_scope, record_project_params = scope("rp")
+if include("record", "project_record"):
+    for r in rows("""SELECT rp.id_proyecto AS id,'project' AS entity_type,rp.id_comunidad,p.nombre AS titulo,
+                    COALESCE(rp.comentario,rp.proximo_paso,'') AS detalle,c.nombre AS comunidad,rp.fecha_hora AS fecha
+                    FROM registros_proyectos rp JOIN proyectos p ON p.id_proyecto=rp.id_proyecto
+                    LEFT JOIN comunidades c ON c.id_comunidad=rp.id_comunidad
+                    WHERE (rp.comentario LIKE ? OR rp.proximo_paso LIKE ? OR rp.usuario LIKE ?)""" + record_project_scope + " ORDER BY rp.fecha_hora DESC LIMIT 60", tuple([like]*3 + record_project_params)):
+        r["tipo"]="Seguimiento de proyecto"; r["result_type"]="entity"; results.append(r)
+
+record_task_scope, record_task_params = scope("r")
+if role != "Presidente" and include("record", "task_record"):
+    for r in rows("""SELECT r.id_tarea AS id,'task' AS entity_type,r.id_comunidad,t.titulo,
+                    COALESCE(r.comentario,r.proximo_paso,'') AS detalle,c.nombre AS comunidad,r.fecha_hora AS fecha
+                    FROM registros r JOIN tareas t ON t.id_tarea=r.id_tarea
+                    LEFT JOIN comunidades c ON c.id_comunidad=r.id_comunidad
+                    WHERE (r.comentario LIKE ? OR r.proximo_paso LIKE ? OR r.usuario LIKE ?)""" + record_task_scope + " ORDER BY r.fecha_hora DESC LIMIT 60", tuple([like]*3 + record_task_params)):
+        r["tipo"]="Seguimiento de tarea"; r["result_type"]="entity"; results.append(r)
+
+attachment_scope, attachment_params = scope("a")
+attachment_extra = " AND a.id_tarea IS NULL" if role == "Presidente" else ""
+if include("attachment", "document"):
+    for r in rows("""SELECT a.id_anexo AS id,a.id_comunidad,a.nombre_archivo AS titulo,
+                    COALESCE(t.titulo,p.nombre,'Archivo adjunto') AS detalle,
+                    c.nombre AS comunidad,CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+                    COALESCE(a.id_tarea,a.id_proyecto) AS entity_id,a.fecha_adjuntado AS fecha
+                    FROM anexos_registros a LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+                    LEFT JOIN tareas t ON t.id_tarea=a.id_tarea LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
+                    WHERE (a.nombre_archivo LIKE ? OR a.ruta_archivo LIKE ?)""" + attachment_extra + attachment_scope + " ORDER BY a.fecha_adjuntado DESC LIMIT 60", tuple([like,like] + attachment_params)):
+        r["tipo"]="Anexo"; r["result_type"]="attachment"; results.append(r)
+
+report_scope, report_params = scope("i")
+report_extra = " AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role == "Presidente" else ""
+if include("report", "document"):
+    for r in rows("""SELECT i.id_informe AS id,i.id_comunidad,COALESCE(NULLIF(i.tipo_informe,''),'Informe') AS titulo,
+                    COALESCE(p.nombre,'Informe generado') AS detalle,c.nombre AS comunidad,'project' AS entity_type,
+                    i.id_proyecto AS entity_id,i.fecha_generacion AS fecha,i.archivo_word,i.observaciones
+                    FROM informes i LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad
+                    LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
+                    WHERE (i.tipo_informe LIKE ? OR i.archivo_word LIKE ? OR p.nombre LIKE ?)""" + report_extra + report_scope + " ORDER BY i.fecha_generacion DESC LIMIT 60", tuple([like,like,like] + report_params)):
+        stored_name = str(r.get("archivo_word") or "").replace("\\\\", "/").split("/")[-1]
+        if stored_name: r["titulo"] = stored_name
+        try: metadata = json.loads(r.get("observaciones") or "{}")
+        except (TypeError, ValueError): metadata = {}
+        if metadata.get("tipo_entidad") in {"task", "tarea"} and metadata.get("id_entidad"):
+            r["entity_type"] = "task"; r["entity_id"] = int(metadata["id_entidad"])
+        r.pop("archivo_word", None); r.pop("observaciones", None)
+        r["tipo"]="Informe"; r["result_type"]="report"; results.append(r)
+
+action_scope, action_params = scope("a")
+if role != "Presidente" and include("action"):
+    for r in rows("""SELECT a.id_accion AS id,a.id_comunidad,COALESCE(t.titulo,p.nombre,a.titulo) AS titulo,
+                    COALESCE(a.detalle,'') AS detalle,c.nombre AS comunidad,
+                    CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+                    COALESCE(a.id_tarea,a.id_proyecto) AS entity_id,a.fecha_creacion AS fecha,a.estado
+                    FROM acciones_pendientes a LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
+                    LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+                    WHERE (a.titulo LIKE ? OR a.detalle LIKE ? OR a.usuario_destino LIKE ? OR a.solicitante LIKE ?)""" + action_scope + " ORDER BY a.fecha_creacion DESC LIMIT 50", tuple([like]*4 + action_params)):
+        r["tipo"]="Acción pendiente"; r["result_type"]="entity"; results.append(r)
+
+results.sort(key=lambda r: str(r.get("fecha") or ""), reverse=True)
+conn.close()
+print(json.dumps({"term":term,"results":results[:200]}, ensure_ascii=False))
 `;
   return runPythonJson(script);
 }
@@ -2639,6 +2938,35 @@ function homePage() {
     .answerTable th, .answerTable td { border-bottom:1px solid #e2e8f0; padding:8px; text-align:left; vertical-align:top; }
     .answerTable th { background:#f8fafc; color:#334155; font-size:12px; }
     .answerNote { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:10px; color:#7c2d12; }
+    .navDivider { height:1px; background:#dbe3ee; margin:3px 0; grid-column:1 / -1; }
+    .homeHero { border:1px solid #bfdbfe; border-left:6px solid var(--blue); background:#f8fbff; border-radius:8px; padding:16px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    .homeHero h2 { font-size:23px; }
+    .homeHero p { margin:5px 0 0; color:var(--muted); }
+    .homeActions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .homeMetrics { grid-template-columns:repeat(4,minmax(130px,1fr)); margin-bottom:14px; }
+    .attentionList { display:grid; gap:8px; }
+    .attentionRow { display:grid; grid-template-columns:minmax(190px,1.4fr) minmax(140px,.8fr) minmax(130px,.7fr) auto; gap:10px; align-items:center; border-bottom:1px solid #e2e8f0; padding:10px 2px; }
+    .attentionRow:last-child { border-bottom:0; }
+    .attentionTitle { font-weight:800; overflow-wrap:anywhere; }
+    .mapBoard { display:grid; gap:13px; }
+    .mapSection { border:1px solid var(--line); border-radius:8px; background:#f8fafc; overflow:hidden; }
+    .mapSectionHead { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:11px 13px; background:white; border-bottom:1px solid var(--line); }
+    .mapSectionHead h3 { margin:0; font-size:17px; }
+    .mapSectionBody { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:10px; }
+    .mapCard { min-height:0; cursor:pointer; }
+    .mapCard.selected { border-color:#2563eb; box-shadow:0 0 0 2px #bfdbfe; }
+    .mapCardActions { display:none; padding-top:8px; border-top:1px solid #e2e8f0; }
+    .mapCard.selected .mapCardActions { display:flex; }
+    .searchControls { display:grid; grid-template-columns:minmax(260px,1fr) 190px 230px auto; gap:9px; align-items:end; margin-bottom:12px; }
+    .resultList { display:grid; gap:9px; }
+    .resultCard { min-height:0; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; }
+    .resultCard h3 { margin:0 0 6px; }
+    .documentControls { display:grid; grid-template-columns:minmax(220px,1fr) 190px 230px; gap:9px; margin-bottom:12px; }
+    .documentGrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(255px,1fr)); gap:10px; }
+    .documentCard { border:1px solid var(--line); border-radius:8px; background:white; padding:10px; display:grid; gap:8px; min-width:0; }
+    .documentCard h3 { margin:0; font-size:15px; overflow-wrap:anywhere; }
+    .documentPreview { width:100%; height:145px; object-fit:cover; border:1px solid #e2e8f0; border-radius:6px; background:#f8fafc; }
+    .documentFileIcon { height:104px; display:grid; place-items:center; border:1px solid #e2e8f0; border-radius:6px; background:#f8fafc; font-weight:900; font-size:18px; color:#475569; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2646,6 +2974,7 @@ function homePage() {
       .sidebar { position:static; }
       .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mapSectionBody { grid-template-columns:repeat(2,minmax(0,1fr)); }
     }
     @media (max-width: 700px) {
       header { padding:14px; }
@@ -2660,6 +2989,14 @@ function homePage() {
       .detailGrid, .formGrid { grid-template-columns:1fr; }
       .workflowControls { grid-template-columns:1fr; }
       .reviewSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .homeHero { align-items:flex-start; flex-direction:column; }
+      .homeActions { justify-content:flex-start; width:100%; }
+      .homeActions button { flex:1 1 140px; }
+      .homeMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .attentionRow { grid-template-columns:1fr; gap:4px; }
+      .mapSectionBody { grid-template-columns:1fr; }
+      .searchControls, .documentControls { grid-template-columns:1fr; }
+      .resultCard { grid-template-columns:1fr; }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
       .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
@@ -2674,7 +3011,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 10 - Revision, acciones y notificaciones centralizadas</p>
+        <p>Paso 11 - Operativa diaria centralizada</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -2699,10 +3036,16 @@ function homePage() {
         <section class="sidebar">
           <h2>Vista</h2>
           <div class="tabs">
-            <button class="tab active" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
+            <button class="tab active" id="homeTab" data-view="home"><span>Inicio</span><span>Resumen</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
+            <button class="tab" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
+            <div class="navDivider"></div>
+            <button class="tab" id="mapTab" data-view="map"><span>Mapa de trabajo</span><span id="mapTabCount">0</span></button>
             <button class="tab" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
             <button class="tab" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
+            <div class="navDivider"></div>
+            <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
+            <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
             <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
             <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
           </div>
@@ -2926,14 +3269,19 @@ function homePage() {
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
-    let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } } };
+    let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
-    let currentView = "projects";
+    let currentView = "home";
     let selectedEntity = null;
     let selectedPresidentRequest = null;
     let reviewProgress = { tasks: new Set(), projects: new Set() };
     let reviewCommunity = "";
     let reviewType = "all";
+    let selectedMapKey = "";
+    let globalSearchResults = [];
+    let documentQuery = "";
+    let documentType = "all";
+    let documentCommunity = "";
     let aiProposal = null;
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
@@ -3058,8 +3406,8 @@ function homePage() {
 
     async function logout() {
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
-      state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } } };
-      currentView = "projects";
+      state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
+      currentView = "home";
       showLogin("Sesion cerrada.");
     }
 
@@ -3525,9 +3873,154 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["projectTab", "taskTab", "workTab", "reviewTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ projects: "projectTab", tasks: "taskTab", work: "workTab", review: "reviewTab", notifications: "notificationTab", ai: "aiTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", notifications: "notificationTab", ai: "aiTab" })[view];
       if (target) $(target).classList.add("active");
+    }
+
+    function homePanelHtml() {
+      const daily = state.daily || {};
+      const metrics = daily.metrics || {};
+      const president = (state.usuario || {}).rol === "Presidente";
+      const attention = ((daily.map || {}).items || []).filter(row => ["Necesita acción", "Bloqueado / riesgo"].includes(row.seccion)).slice(0, 8);
+      const actions = president
+        ? '<button data-home-view="work">Ver decisiones</button><button class="ghost" data-home-view="projects">Consultar proyectos</button>'
+        : '<button data-home-view="map">Abrir mapa de trabajo</button><button class="green" data-home-view="work">Mi bandeja</button><button class="ghost" data-home-create="project">Nuevo proyecto</button><button class="ghost" data-home-create="task">Nueva tarea</button>';
+      const attentionRows = attention.length ? attention.map(row =>
+        '<div class="attentionRow"><div><div class="attentionTitle">' + html(row.titulo) + '</div><div class="muted">' + html(row.entity_type === "task" ? "Tarea" : "Proyecto") + ' · ' + html(row.comunidad || "") + '</div></div>' +
+        '<div><span class="pill state-' + slug(row.estado) + '">' + html(row.estado || "Sin estado") + '</span></div>' +
+        '<div><strong>' + html(row.responsable_proximo_paso || row.responsable || "Sin responsable") + '</strong><div class="muted">' + html(row.fecha_objetivo || "Sin fecha") + '</div></div>' +
+        '<button class="ghost" data-daily-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir</button></div>'
+      ).join("") : '<div class="empty">No hay elementos críticos en este momento.</div>';
+      return '<div class="homeHero"><div><h2>Buenos días, ' + html((state.usuario || {}).nombre || "") + '</h2><p>Resumen operativo actualizado para tus comunidades.</p></div><div class="homeActions">' + actions + '</div></div>' +
+        '<div class="grid homeMetrics">' +
+          countCard("Elementos activos", metrics.activos || 0) +
+          countCard("Necesitan acción", ((daily.map || {}).counts || {})["Necesita acción"] || 0) +
+          countCard("Pendientes de terceros", ((daily.map || {}).counts || {})["Pendiente de terceros"] || 0) +
+          countCard("Bloqueados / riesgo", ((daily.map || {}).counts || {})["Bloqueado / riesgo"] || 0) +
+          countCard("Urgentes", metrics.urgentes || 0) +
+          countCard("Sin revisar > 7 días", metrics.sin_revisar || 0) +
+          countCard("Documentos", (daily.documents || []).length) +
+          countCard(president ? "Decisiones pendientes" : "Notificaciones sin leer", president ? (state.workflow.president_requests || []).length : (state.workflow.unread_notifications || 0)) +
+        '</div>' +
+        '<section><div class="contentHead"><div><h2>Atención prioritaria</h2><p class="muted">Elementos que requieren actuación o presentan riesgo.</p></div></div><div class="attentionList">' + attentionRows + '</div></section>';
+    }
+
+    function dailyMapCard(row) {
+      const key = row.entity_type + "-" + row.entity_id;
+      const selected = selectedMapKey === key;
+      return '<article class="card mapCard priority-' + slug(row.prioridad) + (selected ? ' selected' : '') + '" data-map-key="' + html(key) + '">' +
+        '<h3>' + html(row.titulo) + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.entity_type === "task" ? "Tarea" : "Proyecto") + '</span><span class="pill state-' + slug(row.estado) + '">' + html(row.estado || "Sin estado") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
+        '<div class="line"><strong>Próximo responsable:</strong> ' + html(row.responsable_proximo_paso || row.responsable || "Sin asignar") + ' · ' + html(row.grupo_responsable || "") + '</div>' +
+        '<div class="line"><strong>Fecha:</strong> ' + html(row.fecha_objetivo || "Sin fecha") + '</div>' +
+        '<div class="nextStep"><div class="line"><strong>Próximo paso:</strong> ' + html(row.detalle || "Sin definir") + '</div>' + (row.ultimo_comentario ? '<div class="line"><strong>Último comentario:</strong> ' + html(row.ultimo_comentario) + '</div>' : '') + '</div>' +
+        '<div class="cardActions mapCardActions"><button class="ghost" data-daily-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button>' +
+        (canWrite() ? '<button class="green" data-daily-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Seguimiento</button>' : '') +
+        '<button data-daily-action="report" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Informe</button></div>' +
+      '</article>';
+    }
+
+    function mapPanelHtml() {
+      const map = (state.daily || {}).map || { items: [], counts: {} };
+      const sections = [
+        ["Necesita acción", "#065f46"],
+        ["Pendiente de terceros", "#92400e"],
+        ["En seguimiento", "#1d4ed8"],
+        ["Bloqueado / riesgo", "#991b1b"]
+      ];
+      return '<div class="mapBoard">' + sections.map(([name, color]) => {
+        const rows = (map.items || []).filter(row => row.seccion === name);
+        return '<section class="mapSection"><div class="mapSectionHead"><h3 style="color:' + color + '">' + html(name) + '</h3><span class="tabBadge">' + rows.length + '</span></div><div class="mapSectionBody">' +
+          (rows.length ? rows.map(dailyMapCard).join("") : '<div class="empty">Sin elementos.</div>') + '</div></section>';
+      }).join("") + '</div>';
+    }
+
+    function searchResultCard(row) {
+      const openAction = row.result_type === "attachment" ? "attachment" : row.result_type === "report" ? "report-file" : "open";
+      const openLabel = row.result_type === "attachment" ? "Abrir anexo" : row.result_type === "report" ? "Abrir informe" : "Abrir ficha";
+      return '<article class="card resultCard"><div><h3>' + html(row.titulo || "Sin título") + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.tipo || "Resultado") + '</span><span class="pill">' + html(row.comunidad || "") + '</span>' + (row.fecha ? '<span class="pill">' + html(row.fecha) + '</span>' : '') + '</div>' +
+        '<div class="line" style="margin-top:8px">' + html(row.detalle || "") + '</div></div>' +
+        '<button class="ghost" data-search-action="' + openAction + '" data-id="' + html(row.id) + '" data-type="' + html(row.entity_type || "") + '" data-entity-id="' + html(row.entity_id || row.id || "") + '">' + openLabel + '</button></article>';
+    }
+
+    function globalSearchPanelHtml() {
+      const communities = ((state.daily || {}).communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '">' + html(row.nombre) + '</option>').join("");
+      return '<div class="searchControls"><div><label>Buscar</label><input id="globalSearchInput" placeholder="Proyecto, tarea, comentario, responsable, anexo..." /></div>' +
+        '<div><label>Tipo</label><select id="globalSearchType"><option value="all">Todo</option><option value="entity">Tareas y proyectos</option><option value="record">Seguimientos</option><option value="document">Documentos e informes</option><option value="action">Acciones</option></select></div>' +
+        '<div><label>Comunidad</label><select id="globalSearchCommunity"><option value="">Todas las comunidades</option>' + communities + '</select></div>' +
+        '<button id="runGlobalSearch">Buscar</button></div><div class="muted" id="globalSearchMessage">Escribe una palabra o nombre para buscar en toda la información permitida.</div><div class="resultList" id="globalSearchResults"></div>';
+    }
+
+    function bindGlobalSearchPanel() {
+      $("runGlobalSearch").addEventListener("click", runGlobalSearch);
+      $("globalSearchInput").addEventListener("keydown", event => { if (event.key === "Enter") runGlobalSearch(); });
+      $("globalSearchResults").innerHTML = globalSearchResults.map(searchResultCard).join("");
+    }
+
+    async function runGlobalSearch() {
+      const term = safe($("globalSearchInput").value);
+      if (!term) { $("globalSearchMessage").textContent = "Introduce un texto para buscar."; return; }
+      $("globalSearchMessage").textContent = "Buscando...";
+      try {
+        const query = new URLSearchParams({ q: term, type: $("globalSearchType").value, community: $("globalSearchCommunity").value });
+        const data = await api("/api/global-search?" + query.toString());
+        globalSearchResults = data.results || [];
+        $("globalSearchMessage").textContent = globalSearchResults.length + " resultados.";
+        $("globalSearchResults").innerHTML = globalSearchResults.length ? globalSearchResults.map(searchResultCard).join("") : '<div class="empty">No se encontraron coincidencias.</div>';
+      } catch (error) {
+        $("globalSearchMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
+    function documentUrl(row, inline = true) {
+      return row.document_type === "attachment"
+        ? "/api/attachment?id=" + encodeURIComponent(row.id) + (inline ? "&inline=1" : "&download=1")
+        : "/api/report/download?id=" + encodeURIComponent(row.id);
+    }
+
+    function documentCard(row) {
+      const extension = safe(row.nombre || row.ruta).split(".").pop().toUpperCase().slice(0, 8) || "DOC";
+      const imageFile = /\.(png|jpe?g|gif|webp|bmp)$/i.test(row.nombre || row.ruta || "");
+      const preview = row.document_type === "attachment" && imageFile
+        ? '<img class="documentPreview" loading="lazy" src="' + documentUrl(row, true) + '" alt="' + html(row.nombre) + '" />'
+        : '<div class="documentFileIcon">' + html(row.document_type === "report" ? "WORD" : extension) + '</div>';
+      return '<article class="documentCard">' + preview + '<h3>' + html(row.nombre || "Documento") + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.document_type === "report" ? "Informe" : "Anexo") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
+        '<div class="line"><strong>Relacionado:</strong> ' + html(row.tarea || row.proyecto || "Sin relación") + '</div><div class="muted">' + html(row.fecha || "") + '</div>' +
+        '<div class="cardActions"><button class="ghost" data-document-action="open" data-id="' + html(row.id) + '">Abrir</button><button data-document-action="download" data-id="' + html(row.id) + '">Descargar</button>' +
+        (row.entity_id ? '<button class="green" data-document-action="related" data-type="' + html(row.entity_type) + '" data-entity-id="' + html(row.entity_id) + '">Ver ficha</button>' : '') + '</div></article>';
+    }
+
+    function filteredDocuments() {
+      const query = documentQuery.toLowerCase();
+      return ((state.daily || {}).documents || []).filter(row =>
+        (documentType === "all" || row.document_type === documentType) &&
+        (!documentCommunity || String(row.id_comunidad) === String(documentCommunity)) &&
+        (!query || [row.nombre,row.comunidad,row.tarea,row.proyecto,row.fecha].join(" ").toLowerCase().includes(query))
+      );
+    }
+
+    function documentsPanelHtml() {
+      const communities = ((state.daily || {}).communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '"' + (String(row.id || row.id_comunidad) === String(documentCommunity) ? " selected" : "") + '>' + html(row.nombre) + '</option>').join("");
+      return '<div class="documentControls"><div><label>Filtrar documentos</label><input id="documentQuery" value="' + html(documentQuery) + '" placeholder="Nombre, proyecto, tarea..." /></div>' +
+        '<div><label>Tipo</label><select id="documentType"><option value="all">Todos</option><option value="attachment"' + (documentType === "attachment" ? " selected" : "") + '>Anexos</option><option value="report"' + (documentType === "report" ? " selected" : "") + '>Informes</option></select></div>' +
+        '<div><label>Comunidad</label><select id="documentCommunity"><option value="">Todas las comunidades</option>' + communities + '</select></div></div>' +
+        '<div class="muted" id="documentCount"></div><div class="documentGrid" id="documentResults"></div>';
+    }
+
+    function renderDocumentResults() {
+      const rows = filteredDocuments();
+      $("documentCount").textContent = rows.length + " documentos visibles.";
+      $("documentResults").innerHTML = rows.length ? rows.map(documentCard).join("") : '<div class="empty">No hay documentos con estos filtros.</div>';
+    }
+
+    function bindDocumentsPanel() {
+      $("documentQuery").addEventListener("input", event => { documentQuery = event.target.value; renderDocumentResults(); });
+      $("documentType").addEventListener("change", event => { documentType = event.target.value; renderDocumentResults(); });
+      $("documentCommunity").addEventListener("change", event => { documentCommunity = event.target.value; renderDocumentResults(); });
+      renderDocumentResults();
     }
 
     function workflowActionCard(row) {
@@ -3691,10 +4184,26 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["work", "review", "notifications", "ai"].includes(currentView);
+      const specialView = ["home", "map", "work", "review", "global-search", "documents", "notifications", "ai"].includes(currentView);
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
+      if (currentView === "home") {
+        $("contentTitle").textContent = "Inicio";
+        $("contentSubtitle").textContent = "Situación operativa y prioridades del día.";
+        $("visibleCount").textContent = "Actualizado ahora";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = homePanelHtml();
+        return;
+      }
+      if (currentView === "map") {
+        $("contentTitle").textContent = "Mapa de trabajo";
+        $("contentSubtitle").textContent = "Todos los elementos clasificados por la acción que requieren.";
+        $("visibleCount").textContent = (((state.daily || {}).map || {}).items || []).length + " elementos";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = mapPanelHtml();
+        return;
+      }
       if (currentView === "work") {
         const president = (state.usuario || {}).rol === "Presidente";
         $("contentTitle").textContent = president ? "Decisiones de presidencia" : "Acciones pendientes";
@@ -3720,6 +4229,24 @@ function homePage() {
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = notificationsPanelHtml();
         bindNotificationsPanel();
+        return;
+      }
+      if (currentView === "global-search") {
+        $("contentTitle").textContent = "Buscador global";
+        $("contentSubtitle").textContent = "Busca en fichas, seguimientos, responsables, acciones, informes y anexos.";
+        $("visibleCount").textContent = globalSearchResults.length ? globalSearchResults.length + " resultados" : "";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = globalSearchPanelHtml();
+        bindGlobalSearchPanel();
+        return;
+      }
+      if (currentView === "documents") {
+        $("contentTitle").textContent = "Documentos e informes";
+        $("contentSubtitle").textContent = "Archivos centralizados de las comunidades a las que tienes acceso.";
+        $("visibleCount").textContent = ((state.daily || {}).documents || []).length + " disponibles";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = documentsPanelHtml();
+        bindDocumentsPanel();
         return;
       }
       if (currentView === "ai") {
@@ -3957,14 +4484,16 @@ function homePage() {
       $("sessionStatus").textContent = "Cargando datos...";
       try {
         const firstSessionLoad = !state.usuario;
-        const [data, workflow] = await Promise.all([api("/api/overview"), api("/api/workflow")]);
+        const [data, workflow, daily] = await Promise.all([api("/api/overview"), api("/api/workflow"), api("/api/daily-operations")]);
         data.workflow = workflow;
+        data.daily = daily;
         state = data;
         showApp();
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
         if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "review", "ai"].includes(currentView))) currentView = "work";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
@@ -3973,12 +4502,14 @@ function homePage() {
           countCard("Notificaciones sin leer", workflow.unread_notifications || 0) +
           countCard("Proyectos activos", data.counts.proyectos_activos) +
           countCard("Tareas activas", data.counts.tareas_activas) +
-          countCard("Comunidades", data.counts.comunidades) +
-          countCard("Elementos a revisar", (workflow.review.summary || {}).total || 0);
+          countCard("Necesitan accion", (daily.map.counts || {})["Necesita acción"] || 0) +
+          countCard("Bloqueados / riesgo", (daily.map.counts || {})["Bloqueado / riesgo"] || 0);
         $("projectTabCount").textContent = data.proyectos.length;
         $("taskTabCount").textContent = data.tareas.length;
         $("workTabCount").textContent = user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length;
+        $("mapTabCount").textContent = (daily.map.items || []).length;
         $("reviewTabCount").textContent = (workflow.review.summary || {}).total || 0;
+        $("documentsTabCount").textContent = (daily.documents || []).length;
         $("notificationTabCount").textContent = workflow.unread_notifications || 0;
         refreshFilterOptions();
         render();
@@ -4001,10 +4532,14 @@ function homePage() {
       render();
     }
 
+    $("homeTab").addEventListener("click", () => switchView("home"));
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
+    $("mapTab").addEventListener("click", () => switchView("map"));
     $("workTab").addEventListener("click", () => switchView("work"));
     $("reviewTab").addEventListener("click", () => switchView("review"));
+    $("globalSearchTab").addEventListener("click", () => switchView("global-search"));
+    $("documentsTab").addEventListener("click", () => switchView("documents"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
     $("search").addEventListener("input", render);
@@ -4019,6 +4554,44 @@ function homePage() {
       render();
     });
     $("cards").addEventListener("click", event => {
+      const homeView = event.target.closest("button[data-home-view]");
+      if (homeView) { switchView(homeView.dataset.homeView); return; }
+      const homeCreate = event.target.closest("button[data-home-create]");
+      if (homeCreate) { openCreateModal(homeCreate.dataset.homeCreate).catch(error => alert(error.message)); return; }
+      const dailyButton = event.target.closest("button[data-daily-action]");
+      if (dailyButton) {
+        const action = dailyButton.dataset.dailyAction;
+        if (action === "report") {
+          const reportWindow = window.open("", "_blank");
+          generateReport(dailyButton.dataset.type, dailyButton.dataset.id, reportWindow).catch(error => alert(error.message));
+        } else {
+          openEntity(dailyButton.dataset.type, dailyButton.dataset.id, action === "record").catch(error => alert(error.message));
+        }
+        return;
+      }
+      const searchButton = event.target.closest("button[data-search-action]");
+      if (searchButton) {
+        const action = searchButton.dataset.searchAction;
+        if (action === "attachment") window.open("/api/attachment?id=" + encodeURIComponent(searchButton.dataset.id) + "&inline=1", "_blank");
+        else if (action === "report-file") window.open("/api/report/download?id=" + encodeURIComponent(searchButton.dataset.id), "_blank");
+        else openEntity(searchButton.dataset.type, searchButton.dataset.entityId, false).catch(error => alert(error.message));
+        return;
+      }
+      const documentButton = event.target.closest("button[data-document-action]");
+      if (documentButton) {
+        const row = ((state.daily || {}).documents || []).find(item => String(item.id) === String(documentButton.dataset.id));
+        if (!row) return;
+        const action = documentButton.dataset.documentAction;
+        if (action === "related") openEntity(documentButton.dataset.type, documentButton.dataset.entityId, false).catch(error => alert(error.message));
+        else window.open(documentUrl(row, action === "open"), "_blank");
+        return;
+      }
+      const mapCard = event.target.closest("[data-map-key]");
+      if (mapCard) {
+        selectedMapKey = selectedMapKey === mapCard.dataset.mapKey ? "" : mapCard.dataset.mapKey;
+        render();
+        return;
+      }
       const workflowButton = event.target.closest("button[data-work-action]");
       if (workflowButton) {
         const action = workflowButton.dataset.workAction;
@@ -4139,6 +4712,23 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await queryWorkflow(session));
+  }
+  if (req.method === "GET" && url.pathname === "/api/daily-operations") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await queryDailyOperations(session));
+  }
+  if (req.method === "GET" && url.pathname === "/api/global-search") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await queryGlobalSearch(
+      session,
+      url.searchParams.get("q") || "",
+      url.searchParams.get("type") || "all",
+      url.searchParams.get("community") || ""
+    ));
   }
   if (req.method === "GET" && url.pathname === "/api/options") {
     const session = readSession(req);
@@ -4276,7 +4866,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 10 : 1,
+      step: databaseExists ? 11 : 1,
       port,
       dataDir,
       databasePath,
