@@ -33,6 +33,8 @@ La version web centraliza actualmente:
 - administracion web exclusiva del Superusuario para crear, editar, activar y desactivar usuarios y comunidades;
 - asignacion multiple de comunidades, gestion de roles, desbloqueo y reseteo seguro mediante clave temporal;
 - configuracion de la contrasena definitiva desde la propia web durante el primer acceso;
+- selector de contexto al entrar para usuarios con varias comunidades: una comunidad concreta o todas las asignadas;
+- cambio de comunidad durante la sesion sin cerrar el acceso, aplicado a paneles, mapa, revision, documentos e informes;
 - datos y documentos persistentes en el servidor Ubuntu.
 
 Los datos reales siguen excluidos de GitHub:
@@ -64,6 +66,12 @@ Quedan para el siguiente bloque especifico de Asambleas la importacion web de ce
 La opcion `Administracion` solo aparece al perfil `Superusuario`. Permite gestionar usuarios, roles, estado del acceso y comunidades asignadas, ademas de crear o desactivar comunidades sin eliminar sus datos. Al crear un usuario se muestra una unica vez su clave temporal. El usuario la introduce en `Primer acceso o contrasena reseteada` para crear su contrasena personal.
 
 El Superusuario puede generar una clave temporal nueva, pero nunca consultar la contrasena real. Los cambios quedan registrados en auditoria.
+
+## Contexto de comunidad
+
+Cuando un usuario no Superusuario tiene mas de una comunidad asignada, despues de validar su contrasena debe elegir una comunidad concreta o `Todas mis comunidades`. La seleccion limita de forma conjunta Inicio, tareas, proyectos, mapa de trabajo, acciones, revision, documentos, informes, importacion y asambleas.
+
+El boton `Cambiar comunidad` de la cabecera permite modificar el contexto sin cerrar sesion. Elegir `Todas` recupera solamente las comunidades asignadas al usuario; nunca concede acceso a otras comunidades. Con una unica comunidad asignada, la entrada es automatica.
 
 ## Informes conjuntos
 

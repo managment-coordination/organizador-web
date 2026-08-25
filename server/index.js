@@ -189,6 +189,8 @@ function makeSessionCookie(user) {
       nombre: user.nombre,
       rol: user.rol,
       comunidades: user.comunidades,
+      comunidades_asignadas: user.comunidades_asignadas || user.comunidades || [],
+      alcance_comunidades: user.alcance_comunidades || "todas",
       exp: Math.floor(Date.now() / 1000) + sessionMaxAgeSeconds
     })
   );
@@ -204,6 +206,9 @@ function readSession(req) {
     if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
     const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (!data.exp || data.exp < Math.floor(Date.now() / 1000)) return null;
+    data.comunidades = Array.isArray(data.comunidades) ? data.comunidades : [];
+    data.comunidades_asignadas = Array.isArray(data.comunidades_asignadas) ? data.comunidades_asignadas : data.comunidades;
+    data.alcance_comunidades = data.alcance_comunidades || "todas";
     return data;
   } catch {
     return null;
@@ -692,7 +697,9 @@ estados_proyectos = rows("SELECT COALESCE(estado_general, 'Sin estado') AS estad
 
 conn.close()
 print(json.dumps({
-    "usuario": {"nombre": user_name, "rol": role, "comunidades": ${JSON.stringify(session?.comunidades || [])}},
+    "usuario": {"nombre": user_name, "rol": role, "comunidades": ${JSON.stringify(session?.comunidades || [])},
+                "comunidades_asignadas": ${JSON.stringify(session?.comunidades_asignadas || session?.comunidades || [])},
+                "alcance_comunidades": ${JSON.stringify(session?.alcance_comunidades || "todas")}},
     "counts": counts,
     "proyectos": proyectos,
     "tareas": tareas,
@@ -3370,6 +3377,10 @@ function homePage() {
     .modal { background:white; border-radius:8px; border:1px solid var(--line); width:min(980px, 100%); max-height:92vh; overflow:auto; box-shadow:var(--shadow); }
     .modalHead { position:sticky; top:0; background:white; border-bottom:1px solid var(--line); padding:14px; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; z-index:1; }
     .modalBody { padding:14px; display:grid; gap:12px; }
+    .communityScopeChoices { display:grid; gap:8px; }
+    .communityScopeChoice { border:1px solid var(--line); border-radius:8px; padding:11px; display:flex; gap:10px; align-items:flex-start; cursor:pointer; background:white; }
+    .communityScopeChoice:has(input:checked) { border-color:#2563eb; background:#eff6ff; box-shadow:inset 4px 0 #2563eb; }
+    .communityScopeChoice input { width:19px; min-height:19px; margin-top:2px; }
     .detailGrid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; }
     .detailBox { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:9px; font-size:13px; }
     .detailBox strong { display:block; margin-bottom:3px; }
@@ -3578,10 +3589,11 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 14 - Administracion web</p>
+        <p>Paso 15 - Contexto por comunidad</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
+        <button class="secondary hidden" id="changeCommunityTop">Cambiar comunidad</button>
         <button class="secondary hidden" id="logoutTop">Salir</button>
       </div>
     </div>
@@ -3846,12 +3858,26 @@ function homePage() {
         </div>
       </div>
     </div>
+    <div id="communityScopeModal" class="modalBackdrop hidden">
+      <div class="modal" style="width:min(620px,100%)">
+        <div class="modalHead">
+          <div><h2>Elige donde quieres trabajar</h2><p class="muted">La seleccion se aplicara a toda la sesion.</p></div>
+          <button class="ghost hidden" id="closeCommunityScope">Cerrar</button>
+        </div>
+        <div class="modalBody">
+          <div class="communityScopeChoices" id="communityScopeChoices"></div>
+          <div class="toolbar"><button class="green" id="confirmCommunityScope">Entrar</button><span class="muted" id="communityScopeMessage"></span></div>
+        </div>
+      </div>
+    </div>
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "home";
+    let pendingCommunityUser = null;
+    let communityScopeRequired = false;
     let selectedEntity = null;
     let selectedPresidentRequest = null;
     let reviewProgress = { tasks: new Set(), projects: new Set() };
@@ -3972,6 +3998,8 @@ function homePage() {
       $("loginView").classList.remove("hidden");
       $("appView").classList.add("hidden");
       $("logoutTop").classList.add("hidden");
+      $("changeCommunityTop").classList.add("hidden");
+      $("communityScopeModal").classList.add("hidden");
       $("sessionStatus").textContent = "Sin sesion";
       $("loginMessage").textContent = message;
       loadUsers();
@@ -3996,14 +4024,60 @@ function homePage() {
     async function login() {
       $("loginMessage").textContent = "Comprobando...";
       try {
-        await api("/api/login", {
+        const result = await api("/api/login", {
           method: "POST",
           body: JSON.stringify({ usuario: $("loginUser").value, password: $("loginPassword").value })
         });
         $("loginPassword").value = "";
-        await loadOverview();
+        const user = result.usuario || {};
+        const assigned = user.comunidades_asignadas || user.comunidades || [];
+        if (user.rol !== "Superusuario" && assigned.length > 1) {
+          openCommunityScope(user, true);
+        } else {
+          await loadOverview();
+        }
       } catch (error) {
         $("loginMessage").textContent = error.message;
+      }
+    }
+
+    function openCommunityScope(user, required = false) {
+      pendingCommunityUser = user || state.usuario;
+      communityScopeRequired = required;
+      const assigned = pendingCommunityUser?.comunidades_asignadas || pendingCommunityUser?.comunidades || [];
+      const current = pendingCommunityUser?.alcance_comunidades === "seleccion" ? Number((pendingCommunityUser.comunidades || [])[0]?.id_comunidad || 0) : 0;
+      $("communityScopeChoices").innerHTML = '<label class="communityScopeChoice"><input type="radio" name="communityScope" value="all"' + (!current ? " checked" : "") + ' /><span><strong>Todas mis comunidades</strong><small class="muted" style="display:block">' + html(assigned.length + " comunidades asignadas") + '</small></span></label>' + assigned.map(community => '<label class="communityScopeChoice"><input type="radio" name="communityScope" value="' + community.id_comunidad + '"' + (Number(community.id_comunidad) === current ? " checked" : "") + ' /><span><strong>' + html(community.nombre) + '</strong><small class="muted" style="display:block">Trabajar solo con esta comunidad</small></span></label>').join("");
+      $("communityScopeMessage").textContent = "";
+      $("closeCommunityScope").classList.toggle("hidden", required);
+      $("confirmCommunityScope").textContent = required ? "Entrar" : "Aplicar seleccion";
+      $("communityScopeModal").classList.remove("hidden");
+    }
+
+    function closeCommunityScope() {
+      if (communityScopeRequired) return;
+      $("communityScopeModal").classList.add("hidden");
+      pendingCommunityUser = null;
+    }
+
+    async function confirmCommunityScope() {
+      const selected = document.querySelector('input[name="communityScope"]:checked');
+      if (!selected) { $("communityScopeMessage").textContent="Selecciona una opcion."; return; }
+      $("communityScopeMessage").textContent = "Cargando contexto...";
+      try {
+        await api("/api/session/community-scope", {
+          method:"POST",
+          body:JSON.stringify(selected.value === "all" ? { scope:"all" } : { scope:"community", id_comunidad:Number(selected.value) })
+        });
+        $("communityScopeModal").classList.add("hidden");
+        pendingCommunityUser = null;
+        communityScopeRequired = false;
+        selectedEntity = null;
+        assembliesData = { assemblies:[], loaded:false };
+        reportsCenter = { reports:[], entities:[], communities:[], loaded:false };
+        currentView = "home";
+        await loadOverview();
+      } catch (error) {
+        $("communityScopeMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
       }
     }
 
@@ -4042,6 +4116,8 @@ function homePage() {
       selectedAdminUserId = 0;
       selectedAdminCommunityId = 0;
       lastTemporaryKey = null;
+      pendingCommunityUser = null;
+      communityScopeRequired = false;
       currentView = "home";
       showLogin("Sesion cerrada.");
     }
@@ -5779,7 +5855,11 @@ function homePage() {
         state = data;
         showApp();
         const user = data.usuario || {};
-        $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
+        const assignedCommunities = user.comunidades_asignadas || user.comunidades || [];
+        const activeCommunities = user.comunidades || [];
+        const scopeLabel = user.rol === "Superusuario" || user.alcance_comunidades !== "seleccion" ? "Todas mis comunidades" : (activeCommunities[0]?.nombre || "Sin comunidad");
+        $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - " + html(scopeLabel);
+        $("changeCommunityTop").classList.toggle("hidden", user.rol === "Superusuario" || assignedCommunities.length <= 1);
         if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai"].includes(currentView))) currentView = "work";
         if (currentView === "admin" && user.rol !== "Superusuario") currentView = user.rol === "Presidente" ? "work" : "home";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
@@ -5957,6 +6037,10 @@ function homePage() {
     $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
     $("firstAccessButton").addEventListener("click", configureFirstAccess);
     $("firstAccessConfirm").addEventListener("keydown", event => { if (event.key === "Enter") configureFirstAccess(); });
+    $("changeCommunityTop").addEventListener("click", () => openCommunityScope(state.usuario, false));
+    $("confirmCommunityScope").addEventListener("click", confirmCommunityScope);
+    $("closeCommunityScope").addEventListener("click", closeCommunityScope);
+    $("communityScopeModal").addEventListener("click", event => { if (event.target.id === "communityScopeModal") closeCommunityScope(); });
     $("logoutTop").addEventListener("click", logout);
     loadOverview();
   </script>
@@ -5987,7 +6071,7 @@ async function handle(req, res) {
       return sendJson(res, 401, { ok: false, error: "Usuario no disponible." });
     }
     if (!user.password_configurada || user.requiere_cambio_password) {
-      return sendJson(res, 401, { ok: false, error: "Este usuario debe configurar o cambiar la contrasena desde la app principal." });
+      return sendJson(res, 401, { ok: false, error: "Usa Primer acceso o contrasena reseteada para crear tu contrasena." });
     }
     if (!verifyPassword(password, user.password_hash)) {
       return sendJson(res, 401, { ok: false, error: "Contrasena incorrecta." });
@@ -5996,7 +6080,9 @@ async function handle(req, res) {
       id_usuario: user.id_usuario,
       nombre: user.nombre,
       rol: user.rol,
-      comunidades: auth.comunidades || []
+      comunidades: auth.comunidades || [],
+      comunidades_asignadas: auth.comunidades || [],
+      alcance_comunidades: "todas"
     };
     setSessionCookie(res, publicUser);
     return sendJson(res, 200, { ok: true, usuario: publicUser });
@@ -6010,6 +6096,34 @@ async function handle(req, res) {
       confirmacion: body.confirmacion
     }, String(req.socket.remoteAddress || "web"));
     return sendJson(res, 200, result);
+  }
+  if (req.method === "POST" && url.pathname === "/api/session/community-scope") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const assigned = Array.isArray(session.comunidades_asignadas) ? session.comunidades_asignadas : session.comunidades || [];
+    let selected = assigned;
+    let scope = "todas";
+    if (session.rol !== "Superusuario" && body.scope !== "all" && assigned.length > 1) {
+      const communityId = Number(body.id_comunidad || 0);
+      const match = assigned.find(row => Number(row.id_comunidad) === communityId);
+      if (!match) return sendJson(res, 403, { ok: false, error: "La comunidad seleccionada no esta asignada a tu usuario." });
+      selected = [match];
+      scope = "seleccion";
+    }
+    const updated = {
+      ...session,
+      comunidades: selected,
+      comunidades_asignadas: assigned,
+      alcance_comunidades: scope
+    };
+    setSessionCookie(res, updated);
+    return sendJson(res, 200, {
+      ok: true,
+      comunidades: selected,
+      comunidades_asignadas: assigned,
+      alcance_comunidades: scope
+    });
   }
   if (req.method === "POST" && url.pathname === "/api/logout") {
     clearSessionCookie(res);
@@ -6294,7 +6408,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 14 : 1,
+      step: databaseExists ? 15 : 1,
       port,
       dataDir,
       databasePath,
