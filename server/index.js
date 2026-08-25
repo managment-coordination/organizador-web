@@ -3644,6 +3644,9 @@ function homePage() {
       .assemblyHeader { flex-direction:column; }
       .assemblyMetrics, .voteSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .attendanceRow, .voteMember, .pointEditor, .votePointSelect { grid-template-columns:1fr; }
+      .attendanceRow { grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+      .attendanceRow > div:first-child, .attendanceRow > .toolbar { grid-column:1 / -1; }
+      .attendanceRow > .toolbar { margin-top:0; }
       .adminMetrics, .communityChecks { grid-template-columns:1fr; }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
@@ -3777,6 +3780,8 @@ function homePage() {
     .sidebar option { color:#20201e; background:#fff; }
     .sidebar .toolbar button { flex:1; min-width:92px; background:var(--gold); color:#221f18; }
     .sidebar .toolbar button.ghost { background:#2b2d2c; color:#fff; border-color:#4a4c4b; }
+    .mobileNav { display:none; }
+    body:has(.modalBackdrop:not(.hidden)) { overflow:hidden; }
 
     .workspaceContent { min-width:0; padding:2px 0 20px; border:0; background:transparent; box-shadow:none; }
     .contentHead { min-height:58px; align-items:center; margin:0 0 14px; padding-bottom:12px; border-bottom:1px solid var(--line); }
@@ -3922,36 +3927,113 @@ function homePage() {
       .sidebar .toolbar button { flex:0 1 150px; }
     }
     @media (max-width:700px) {
-      header { padding:10px 12px; }
-      .topbar { min-height:48px; gap:8px; }
+      html, body { max-width:100%; overflow-x:hidden; }
+      header { padding:8px 10px; }
+      .topbar { min-height:46px; gap:7px; flex-direction:row; align-items:center; }
       .brand { min-height:39px; padding-left:49px; }
       .brand::before { width:39px; height:39px; }
-      .brand h1 { font-size:18px; }
+      .brand h1 { font-size:17px; }
       .brand p { display:none; }
-      .session { width:100%; justify-content:space-between; }
-      .session > span { max-width:58%; font-size:12px; }
+      .session { width:auto; margin-left:auto; justify-content:flex-end; flex-wrap:nowrap; }
+      .session > span { display:none; }
+      button, input, select { min-height:44px; }
+      .session button { min-height:44px; padding:8px 10px; }
       main { padding:10px 9px 20px; }
-      .counts { gap:7px; margin-bottom:9px; }
+      #appView:not([data-view="home"]) > .counts { display:none; }
+      .counts { gap:7px; margin-bottom:9px; grid-template-columns:repeat(3,minmax(0,1fr)); }
       .count { min-height:72px; padding:10px 11px; }
       .count strong { font-size:21px; }
-      .sidebar { padding:10px; border-radius:8px; }
-      .tabs { display:flex; max-height:none; overflow-x:auto; overflow-y:hidden; padding:0 0 7px; scroll-snap-type:x proximity; }
-      .tabs .tab { flex:0 0 auto; width:auto; min-width:104px; min-height:40px; scroll-snap-align:start; }
-      .tabs .tab span:last-child { display:block; margin-left:8px; }
-      #homeTab span:last-child, #globalSearchTab span:last-child, #importTab span:last-child, #aiTab span:last-child { display:none; }
-      .filters { grid-template-columns:1fr 1fr; margin-top:8px; padding-top:8px; }
+      .count span { font-size:11px; line-height:1.2; }
+      .workbench { gap:9px; }
+      .sidebar {
+        position:sticky;
+        top:63px;
+        z-index:16;
+        max-height:calc(100dvh - 72px);
+        overflow:auto;
+        padding:9px;
+        border:1px solid #c8cac8;
+        border-radius:7px;
+        background:rgba(255,253,250,.98);
+        color:var(--ink);
+        box-shadow:0 8px 22px rgba(25,26,25,.12);
+      }
+      .sidebar > h2, .tabs, .navDivider { display:none; }
+      .mobileNav { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:end; }
+      .mobileNavField { min-width:0; }
+      .mobileNav label { margin:0 0 3px; color:#4b4e4c; font-size:11px; }
+      .mobileNav select { padding:8px 30px 8px 9px; background:#fff; color:var(--ink); border-color:#bfc2bf; font-weight:750; }
+      .mobileNav button { padding:8px 10px; background:#fff; color:#303331; border-color:#c7c9c7; font-size:12px; }
+      .filters { display:none; grid-template-columns:1fr; margin-top:9px; padding-top:9px; border-top:1px solid #dedfdd; }
+      .filters.mobile-open { display:grid; }
+      .sidebar label { color:#4b4e4c; }
+      .sidebar input, .sidebar select { min-height:44px; color:var(--ink); background:#fff; border-color:#c7cac8; }
+      .sidebar > .toolbar { display:none; }
+      .sidebar.filters-open > .toolbar { display:flex; margin-top:8px; }
       .sidebar .toolbar button { flex:1; }
       .contentHead { align-items:flex-start; }
       .contentHead > div:last-child { width:100%; justify-content:space-between; }
       .contentHead h2 { font-size:20px; }
       .cards { gap:9px; }
       .card { min-height:0; padding:12px; }
-      .modalBackdrop { padding:7px; align-items:flex-start; }
-      .modal { margin-top:7px; max-height:calc(100vh - 14px); }
-      .modalHead { padding:12px; }
-      .modalActions { width:100%; justify-content:flex-start; }
-      .modalActions button { flex:1 1 120px; }
-      .modalBody { padding:10px; }
+      .cardActions button, .toolbar button { min-height:44px; }
+      .nextStep .line { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; }
+      .contentHead > div:last-child .toolbar { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); width:100%; }
+      .contentHead > div:last-child .toolbar button { width:100%; }
+      .modalBackdrop { padding:0; align-items:stretch; }
+      .modal {
+        width:100% !important;
+        height:100dvh;
+        max-height:100dvh;
+        margin:0;
+        border:0;
+        border-radius:0;
+        display:flex;
+        flex-direction:column;
+        overflow:hidden;
+      }
+      .modalHead { position:static; flex:0 0 auto; padding:10px 11px; align-items:flex-start; }
+      .modalHead > div:first-child { min-width:0; }
+      .modalHead h2 { font-size:18px; overflow-wrap:anywhere; }
+      .modalHead p { margin:3px 0 0; font-size:12px; }
+      #entityModal .modalHead { display:grid; grid-template-columns:1fr; gap:8px; }
+      #entityModal .modalActions { width:100%; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:5px; }
+      #entityModal .modalActions button { min-width:0; min-height:42px; padding:6px 4px; font-size:11px; line-height:1.15; }
+      .modalHead > button { flex:0 0 auto; }
+      .modalBody { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:9px; gap:10px; }
+      .modalBody section { padding:11px; }
+      .detailGrid, .formGrid { grid-template-columns:1fr; }
+      .attachmentGrid, .documentGrid, .assemblyList, .securityIncidentList { grid-template-columns:1fr; }
+      .attachmentPreview, .documentPreview { height:auto; max-height:190px; object-fit:contain; }
+      .homeHero { padding:13px; }
+      .homeHero h2 { font-size:20px; }
+      .homeMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .attentionRow, .resultCard, .reportRow, .securityCandidate { grid-template-columns:1fr; }
+      .mapSectionBody { padding:7px; }
+      .mapSectionHead { padding:10px; }
+      .reviewSummary, .securityMetrics, .assemblyMetrics, .voteSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .searchControls, .documentControls, .importControls, .importProposalGrid, .historicalRow, .reportControls, .workflowControls { grid-template-columns:1fr; }
+      .assemblyHeader { padding:11px; }
+      .assemblyHeader h2 { font-size:19px; }
+      .assemblyTabs { flex-wrap:nowrap; overflow-x:auto; padding-bottom:7px; scrollbar-width:thin; }
+      .assemblyTabs button { flex:0 0 auto; }
+      .agendaItem { grid-template-columns:32px minmax(0,1fr); }
+      .agendaItem > :last-child { grid-column:1 / -1; width:100%; }
+      .attendanceRow, .voteMember, .pointEditor, .votePointSelect { grid-template-columns:1fr; }
+      .voteGroupHead { align-items:flex-start; flex-direction:column; }
+      .voteActions { width:100%; }
+      .voteActions button { flex:1 1 62px; }
+      .adminMetrics, .communityChecks { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .adminLayout { gap:9px; }
+      .adminList { max-height:360px; }
+      .securityDashboard { gap:9px; }
+      .securityBarRow { grid-template-columns:minmax(82px,.8fr) minmax(80px,1fr) 28px; }
+      .answerCards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .answerCard strong { font-size:18px; }
+      .login { margin:18px auto; padding:17px 14px; }
+      pre, code, .securityOriginal { overflow-wrap:anywhere; word-break:break-word; }
+      .mobileMoreWrap { grid-column:1 / -1; padding:2px 0; }
+      .mobileMore { width:100%; min-height:46px; background:#fff; color:#303331; border-color:#bfc2bf; }
       .login { margin:28px auto; padding:20px 16px; }
     }
   </style>
@@ -3995,6 +4077,14 @@ function homePage() {
       <div class="workbench">
         <section class="sidebar">
           <h2>Vista</h2>
+          <div class="mobileNav">
+            <div class="mobileNavField">
+              <label for="mobileViewSelect">Seccion</label>
+              <select id="mobileViewSelect" aria-label="Seccion actual"></select>
+            </div>
+            <button class="ghost hidden" id="mobileFiltersToggle" type="button">Filtros</button>
+            <button class="ghost" id="mobileReload" type="button">Actualizar</button>
+          </div>
           <div class="tabs">
             <button class="tab active" id="homeTab" data-view="home"><span>Inicio</span><span>Resumen</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
@@ -4258,6 +4348,7 @@ function homePage() {
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "home";
+    let mobileVisibleLimits = {};
     let pendingCommunityUser = null;
     let communityScopeRequired = false;
     let selectedEntity = null;
@@ -4972,6 +5063,37 @@ function homePage() {
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
+      $("appView").dataset.view = view;
+      syncMobileNavigation();
+    }
+
+    function syncMobileNavigation() {
+      const select = $("mobileViewSelect");
+      if (!select) return;
+      const visibleTabs = [...document.querySelectorAll(".tabs .tab:not(.hidden)")];
+      const signature = visibleTabs.map(tab => tab.dataset.view + ":" + safe(tab.querySelector("span")?.textContent)).join("|");
+      if (select.dataset.signature !== signature) {
+        select.innerHTML = visibleTabs.map(tab => '<option value="' + html(tab.dataset.view) + '">' + html(safe(tab.querySelector("span")?.textContent)) + '</option>').join("");
+        select.dataset.signature = signature;
+      }
+      if ([...select.options].some(option => option.value === currentView)) select.value = currentView;
+      const filtersAvailable = ["tasks", "projects"].includes(currentView);
+      $("mobileFiltersToggle").classList.toggle("hidden", !filtersAvailable);
+      if (!filtersAvailable) {
+        $("listFilters").classList.remove("mobile-open");
+        document.querySelector(".sidebar")?.classList.remove("filters-open");
+      }
+    }
+
+    function mobilePage(rows, key, pageSize = 8) {
+      if (!window.matchMedia("(max-width: 700px)").matches) return { rows, footer: "" };
+      const limit = mobileVisibleLimits[key] || pageSize;
+      const visible = rows.slice(0, limit);
+      const remaining = Math.max(0, rows.length - visible.length);
+      const footer = remaining
+        ? '<div class="mobileMoreWrap"><button class="mobileMore" data-mobile-more="' + html(key) + '" data-mobile-total="' + rows.length + '" data-mobile-step="' + pageSize + '">Mostrar ' + Math.min(pageSize, remaining) + ' mas (' + remaining + ' pendientes)</button></div>'
+        : "";
+      return { rows: visible, footer };
     }
 
     function homePanelHtml() {
@@ -5027,8 +5149,9 @@ function homePage() {
       ];
       return '<div class="mapBoard">' + sections.map(([name, color]) => {
         const rows = (map.items || []).filter(row => row.seccion === name);
+        const page = mobilePage(rows, "map-" + slug(name), 4);
         return '<section class="mapSection"><div class="mapSectionHead"><h3 style="color:' + color + '">' + html(name) + '</h3><span class="tabBadge">' + rows.length + '</span></div><div class="mapSectionBody">' +
-          (rows.length ? rows.map(dailyMapCard).join("") : '<div class="empty">Sin elementos.</div>') + '</div></section>';
+          (rows.length ? page.rows.map(dailyMapCard).join("") + page.footer : '<div class="empty">Sin elementos.</div>') + '</div></section>';
       }).join("") + '</div>';
     }
 
@@ -5108,8 +5231,9 @@ function homePage() {
 
     function renderDocumentResults() {
       const rows = filteredDocuments();
-      $("documentCount").textContent = rows.length + " documentos visibles.";
-      $("documentResults").innerHTML = rows.length ? rows.map(documentCard).join("") : '<div class="empty">No hay documentos con estos filtros.</div>';
+      const page = mobilePage(rows, "documents", 8);
+      $("documentCount").textContent = page.rows.length === rows.length ? rows.length + " documentos visibles." : "Mostrando " + page.rows.length + " de " + rows.length + " documentos.";
+      $("documentResults").innerHTML = rows.length ? page.rows.map(documentCard).join("") + page.footer : '<div class="empty">No hay documentos con estos filtros.</div>';
     }
 
     function bindDocumentsPanel() {
@@ -5213,8 +5337,10 @@ function homePage() {
     function assemblyRegistrationHtml(detail) {
       const owners = filteredAssemblyOwners(detail);
       const picker = owners.length ? owners.map(row => '<label class="ownerChoice"><input type="checkbox" data-owner-select="' + html(row.propietario) + '" /><span><strong>' + html(row.propietario) + '</strong><span class="muted" style="display:block">' + html(row.propiedades + " propiedades | coef. " + Number(row.coeficiente || 0).toFixed(4)) + '</span><small>' + html(row.propiedad_ids || "") + '</small></span></label>').join("") : '<div class="empty">No hay coincidencias sin registrar.</div>';
-      const rows = (detail.attendance || []).map(row => '<div class="attendanceRow"><div><strong>' + html(row.propietario) + '</strong><div class="muted">' + html(row.propiedad_ids || "") + '</div></div><div><span class="pill">' + html(row.tipo) + '</span>' + ((row.sin_voto || row.moroso) ? '<span class="pill state-Bloqueado">Sin voto</span>' : '') + '</div><div>' + (row.tipo === "representado" ? 'Representa: <strong>' + html(row.representante) + '</strong>' : 'Coef. ' + Number(row.coeficiente || 0).toFixed(4)) + '</div>' +
-        (canWrite() ? '<div class="toolbar"><button class="ghost" data-attendance-moroso="' + html(row.propietario) + '" data-moroso="' + (row.moroso ? "0" : "1") + '">' + (row.moroso ? "Dar voto" : "Sin voto") + '</button><button class="red" data-attendance-remove="' + html(row.propietario) + '">Quitar</button></div>' : '') + '</div>').join("");
+      const attendance = detail.attendance || [];
+      const attendancePage = mobilePage(attendance, "assembly-attendance-" + safe((detail.assembly || {}).id_asamblea), 8);
+      const rows = attendancePage.rows.map(row => '<div class="attendanceRow"><div><strong>' + html(row.propietario) + '</strong><div class="muted">' + html(row.propiedad_ids || "") + '</div></div><div><span class="pill">' + html(row.tipo) + '</span>' + ((row.sin_voto || row.moroso) ? '<span class="pill state-Bloqueado">Sin voto</span>' : '') + '</div><div>' + (row.tipo === "representado" ? 'Representa: <strong>' + html(row.representante) + '</strong>' : 'Coef. ' + Number(row.coeficiente || 0).toFixed(4)) + '</div>' +
+        (canWrite() ? '<div class="toolbar"><button class="ghost" data-attendance-moroso="' + html(row.propietario) + '" data-moroso="' + (row.moroso ? "0" : "1") + '">' + (row.moroso ? "Dar voto" : "Sin voto") + '</button><button class="red" data-attendance-remove="' + html(row.propietario) + '">Quitar</button></div>' : '') + '</div>').join("") + attendancePage.footer;
       return assemblyMetricsHtml(detail) + '<div class="assemblySplit"><div class="assemblyPane"><h3>Registrar asistencia</h3><label>Buscar por propietario o propiedad</label><input id="assemblyOwnerSearch" value="' + html(assemblyOwnerQuery) + '" placeholder="Nombre, CB, villa, plaza..." />' +
         '<div class="ownerResults" id="assemblyOwnerResults">' + picker + '</div><div class="formGrid" style="margin-top:10px"><div><label>Tipo</label><select id="attendanceType"><option value="presente">Presente</option><option value="representado">Representado</option></select></div><div><label>Representante</label><input id="attendanceRepresentative" placeholder="Nombre del representante" /></div></div>' +
         '<label><input id="attendanceWithoutVote" type="checkbox" /> Sin derecho a voto por otra causa</label><div class="toolbar"><button class="green" id="saveAssemblyAttendance">Registrar seleccionados</button><span class="muted" id="attendanceMessage"></span></div></div>' +
@@ -5666,12 +5792,14 @@ function homePage() {
       if (!reportsCenter.loaded) return '<div class="empty">Cargando centro de informes...</div>';
       const reports = filteredReportRows();
       const entities = filteredReportEntities();
-      const reportRows = reports.length ? reports.map(row => '<article class="reportRow"><div><h3>' + html(row.nombre_archivo || "Informe") + '</h3><div class="meta"><span class="pill">' + html(row.tipo_informe || "Informe") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div><div class="muted">' + html(row.fecha_generacion || "") + ' | ' + html(row.usuario || "") + '</div></div><div class="toolbar"><button class="ghost" data-report-open="' + html(row.id_informe) + '">Abrir</button>' + (row.entity_id ? '<button data-report-related="' + html(row.entity_id) + '" data-report-type="' + html(row.entity_type) + '">Ficha</button>' : '') + '</div></article>').join("") : '<div class="empty">No hay informes con estos filtros.</div>';
-      const entityRows = entities.length ? entities.map(row => {
+      const reportPage = mobilePage(reports, "reports-existing", 8);
+      const entityPage = mobilePage(entities, "reports-entities", 8);
+      const reportRows = reports.length ? reportPage.rows.map(row => '<article class="reportRow"><div><h3>' + html(row.nombre_archivo || "Informe") + '</h3><div class="meta"><span class="pill">' + html(row.tipo_informe || "Informe") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div><div class="muted">' + html(row.fecha_generacion || "") + ' | ' + html(row.usuario || "") + '</div></div><div class="toolbar"><button class="ghost" data-report-open="' + html(row.id_informe) + '">Abrir</button>' + (row.entity_id ? '<button data-report-related="' + html(row.entity_id) + '" data-report-type="' + html(row.entity_type) + '">Ficha</button>' : '') + '</div></article>').join("") + reportPage.footer : '<div class="empty">No hay informes con estos filtros.</div>';
+      const entityRows = entities.length ? entityPage.rows.map(row => {
         const key = row.entity_type + ":" + row.entity_id;
         const checked = selectedReportEntities.has(key);
         return '<label class="entityChoice' + (checked ? " selected" : "") + '"><input type="checkbox" data-report-entity="' + html(key) + '"' + (checked ? " checked" : "") + ' /><span><strong>' + html(row.titulo) + '</strong><span class="muted" style="display:block">' + html((row.entity_type === "task" ? "Tarea" : "Proyecto") + " | " + (row.comunidad || "") + " | " + (row.estado || "")) + '</span><span style="display:block;margin-top:4px">' + html(row.responsable || "Sin responsable") + '</span></span></label>';
-      }).join("") : '<div class="empty">No hay elementos disponibles.</div>';
+      }).join("") + entityPage.footer : '<div class="empty">No hay elementos disponibles.</div>';
       return '<div class="reportLayout">' +
         '<section><h2>Informes existentes</h2><div class="reportControls"><div><label>Buscar</label><input id="reportQuery" value="' + html(reportQuery) + '" placeholder="Nombre, proyecto, usuario..." /></div><div><label>Tipo</label><select id="reportType"><option value="all">Todos</option><option value="proyecto">Proyectos</option><option value="tarea">Tareas</option><option value="conjunto">Conjuntos</option></select></div><div><label>Comunidad</label><select id="reportCommunity"><option value="">Todas</option>' + reportCommunityOptions(reportCommunity) + '</select></div></div><div class="reportList" id="reportRows">' + reportRows + '</div></section>' +
         '<section><div class="contentHead"><div><h2>Crear informe conjunto</h2><p class="muted">Selecciona hasta 40 elementos de una misma comunidad. Cada ficha incluye su historico completo.</p></div><span class="tabBadge" id="reportSelectedCount">' + selectedReportEntities.size + ' seleccionados</span></div>' +
@@ -5797,6 +5925,7 @@ function homePage() {
         bloqueadas: items.filter(row => (row.review_reasons || []).includes("Bloqueada")).length,
         sin_actualizar: items.filter(row => (row.review_reasons || []).includes("Sin actualizar")).length
       };
+      const page = mobilePage(items, "review", 6);
       const communities = (review.communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '"' + (String(row.id || row.id_comunidad) === String(reviewCommunity) ? " selected" : "") + '>' + html(row.nombre) + '</option>').join("");
       return '<div class="reviewSummary">' +
           countCard("Vencidas", summary.vencidas || 0) + countCard("Pendientes de mi", summary.mias || 0) + countCard("Pendientes de terceros", summary.terceros || 0) + countCard("Bloqueadas", summary.bloqueadas || 0) + countCard("Sin actualizar", summary.sin_actualizar || 0) +
@@ -5804,7 +5933,7 @@ function homePage() {
         '<div class="workflowControls"><div><label>Comunidad</label><select id="reviewCommunity"><option value="">Todas las comunidades</option>' + communities + '</select></div>' +
         '<div><label>Tipo</label><select id="reviewType"><option value="all"' + (reviewType === "all" ? " selected" : "") + '>Tareas y proyectos</option><option value="task"' + (reviewType === "task" ? " selected" : "") + '>Solo tareas</option><option value="project"' + (reviewType === "project" ? " selected" : "") + '>Solo proyectos</option></select></div>' +
         '<div><label>Progreso de esta revision</label><div class="detailBox">' + (reviewProgress.tasks.size + reviewProgress.projects.size) + ' revisados</div></div></div>' +
-        '<div class="cards">' + (items.length ? items.map(reviewCard).join("") : '<div class="empty">No hay elementos para este filtro.</div>') + '</div>' +
+        '<div class="cards">' + (items.length ? page.rows.map(reviewCard).join("") + page.footer : '<div class="empty">No hay elementos para este filtro.</div>') + '</div>' +
         '<section style="margin-top:12px"><h2>Cerrar revision de hoy</h2><textarea id="reviewNotes" placeholder="Observaciones generales opcionales..."></textarea><div class="toolbar"><button class="green" id="finishReview">Guardar resumen de revision</button><span class="muted" id="reviewMessage"></span></div></section>';
     }
 
@@ -5820,8 +5949,9 @@ function homePage() {
 
     function notificationsPanelHtml() {
       const rows = state.workflow.notifications || [];
+      const page = mobilePage(rows, "notifications", 8);
       return '<div class="toolbar"><button class="ghost" id="markAllNotifications">Marcar todas como leidas</button><span class="muted" id="notificationMessage"></span></div><div class="cards">' +
-        (rows.length ? rows.map(notificationCard).join("") : '<div class="empty">No hay notificaciones.</div>') + '</div>';
+        (rows.length ? page.rows.map(notificationCard).join("") + page.footer : '<div class="empty">No hay notificaciones.</div>') + '</div>';
     }
 
     function bindReviewPanel() {
@@ -6196,13 +6326,14 @@ function homePage() {
         matchesSearch(row, search)
       );
       const title = currentView === "projects" ? "Proyectos" : "Tareas";
+      const page = mobilePage(rows, currentView, 6);
       $("contentTitle").textContent = title;
       $("contentSubtitle").textContent = currentView === "projects"
         ? "Proyectos visibles segun tus comunidades y permisos."
         : "Tareas visibles segun tus comunidades y permisos.";
       $("visibleCount").textContent = rows.length + " de " + activeRows().length + " visibles";
       $("viewActions").classList.toggle("hidden", !canWrite());
-      $("cards").innerHTML = rows.length ? rows.map(card).join("") : '<div class="empty">No hay elementos con esos filtros.</div>';
+      $("cards").innerHTML = rows.length ? page.rows.map(card).join("") + page.footer : '<div class="empty">No hay elementos con esos filtros.</div>';
     }
 
     function aiPanelHtml() {
@@ -6473,6 +6604,10 @@ function homePage() {
 
     function switchView(view) {
       currentView = view;
+      $("listFilters").classList.remove("mobile-open");
+      document.querySelector(".sidebar")?.classList.remove("filters-open");
+      $("mobileFiltersToggle").textContent = "Filtros";
+      $("mobileFiltersToggle").setAttribute("aria-expanded", "false");
       $("search").value = "";
       $("stateFilter").value = "";
       $("communityFilter").value = "";
@@ -6500,6 +6635,16 @@ function homePage() {
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
     $("adminTab").addEventListener("click", () => switchView("admin"));
+    $("mobileViewSelect").addEventListener("change", event => switchView(event.target.value));
+    $("mobileFiltersToggle").addEventListener("click", () => {
+      const filters = $("listFilters");
+      const open = !filters.classList.contains("mobile-open");
+      filters.classList.toggle("mobile-open", open);
+      document.querySelector(".sidebar")?.classList.toggle("filters-open", open);
+      $("mobileFiltersToggle").textContent = open ? "Ocultar" : "Filtros";
+      $("mobileFiltersToggle").setAttribute("aria-expanded", String(open));
+    });
+    $("mobileReload").addEventListener("click", () => loadOverview());
     $("search").addEventListener("input", render);
     $("stateFilter").addEventListener("change", render);
     $("communityFilter").addEventListener("change", render);
@@ -6512,6 +6657,14 @@ function homePage() {
       render();
     });
     $("cards").addEventListener("click", event => {
+      const mobileMore = event.target.closest("button[data-mobile-more]");
+      if (mobileMore) {
+        const key = mobileMore.dataset.mobileMore;
+        const current = mobileVisibleLimits[key] || Number(mobileMore.dataset.step || 8);
+        mobileVisibleLimits[key] = Math.min(Number(mobileMore.dataset.mobileTotal || current), current + Number(mobileMore.dataset.step || 8));
+        render();
+        return;
+      }
       const homeView = event.target.closest("button[data-home-view]");
       if (homeView) { switchView(homeView.dataset.homeView); return; }
       const homeCreate = event.target.closest("button[data-home-create]");
