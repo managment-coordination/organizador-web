@@ -1585,7 +1585,10 @@ function outOfScopeProposal(text, projectMatches, taskMatches) {
 }
 
 function localAiProposal(text, context) {
-  const queryish = /[?¿]|\b(cual|cuanto|quien|dime|consulta|estado de|busca|listado)\b/i.test(text);
+  const shortText = String(text || "").length <= 320;
+  const debtQuery = /\b(deuda|morosidad|saldo pendiente|importe pendiente|recibos? pendientes?)\b|^\s*(cuanto|cuando|que cantidad|que importe|importe|saldo)?\s*(debe|adeuda)\s+\S+/i.test(text);
+  const queryish = shortText
+    && (/[?¿]|\b(cual|cuanto|cuando|quien|dime|consulta|estado de|busca|listado)\b/i.test(text) || debtQuery);
   const projectMatches = (context.projects || []).map((item) => ({ ...item, kind: "project", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
   const taskMatches = (context.tasks || []).map((item) => ({ ...item, kind: "task", score: scoreTextMatch(text, item.titulo) })).sort((a, b) => b.score - a.score);
   const best = [...projectMatches.slice(0, 3), ...taskMatches.slice(0, 3)].sort((a, b) => b.score - a.score)[0];
@@ -1593,7 +1596,7 @@ function localAiProposal(text, context) {
   if (!queryish && !operational && (!best || best.score === 0)) {
     return outOfScopeProposal(text, projectMatches, taskMatches);
   }
-  if (queryish && !operational) {
+  if (queryish) {
     const matches = [...projectMatches, ...taskMatches].filter((item) => item.score > 0).slice(0, 6);
     return {
       source: "local",
@@ -2170,9 +2173,10 @@ def first(sql, params=()):
 
 def score_tokens(query, value):
     stop = {
-        "A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "QUE", "QUIEN", "CUAL", "CUANTO",
-        "CANTIDAD", "PERTENECE", "TIENE", "DEUDA", "MOROSIDAD", "PROPIETARIO", "PROPIEDAD",
-        "VIVIENDA", "GARAJE", "LOCAL", "ES", "EN", "POR", "PARA", "ACTUAL"
+        "A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "QUE", "QUIEN", "CUAL", "CUANTO", "CUANDO",
+        "CANTIDAD", "IMPORTE", "SALDO", "PERTENECE", "TIENE", "DEBE", "DEBEN", "ADEUDA", "ADEUDAN",
+        "DEUDA", "MOROSIDAD", "PENDIENTE", "PENDIENTES", "RECIBO", "RECIBOS", "PROPIETARIO", "PROPIEDAD",
+        "VIVIENDA", "GARAJE", "LOCAL", "ES", "EN", "POR", "PARA", "ACTUAL", "ACTUALMENTE", "HOY"
     }
     q_tokens = [t for t in norm(query).split() if t and t not in stop]
     v_tokens = set(norm(value).split())
@@ -2227,6 +2231,10 @@ def find_owners(query):
 def extract_owner_query(q):
     text = str(q or "")
     patterns = [
+        r"(?:cuanto|cuando|que\\s+cantidad|que\\s+importe|importe|saldo)\\s+(?:dinero\\s+)?(?:debe|adeuda)\\s+(.+)$",
+        r"(?:debe|adeuda)\\s+(.+)$",
+        r"recibos?\\s+pendientes?\\s+de\\s+(.+)$",
+        r"(?:importe|saldo)\\s+pendiente\\s+de\\s+(.+)$",
         r"propietario\\s+(.+?)\\s+tiene\\s+deuda",
         r"(.+?)\\s+tiene\\s+deuda",
         r"deuda\\s+de\\s+(.+)$",
@@ -2292,7 +2300,8 @@ q_norm = norm(question)
 try:
     is_finance_question = any(token in q_norm for token in ["BALANCE", "FINANCIERO", "TESORERIA", "RESULTADO ECONOMICO"])
     is_budget_question = any(token in q_norm for token in ["PRESUPUEST", "PARTIDA", "DESVIACION"]) and not is_finance_question
-    is_debt_question = any(token in q_norm for token in ["DEUDA", "MOROS", "RECIBO PENDIENTE"])
+    explicit_debt_verb = bool(re.match(r"^(?:CUANTO|CUANDO|QUE CANTIDAD|QUE IMPORTE|IMPORTE|SALDO)?\\s*(?:DEBE|ADEUDA)\\s+.+$", q_norm))
+    is_debt_question = any(token in q_norm for token in ["DEUDA", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb
     is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
 
@@ -2427,7 +2436,7 @@ try:
                 answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
                 print(json.dumps(response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"]), ensure_ascii=False))
                 raise SystemExit
-        if not owners and owner_query and "DEUDA" in q_norm:
+        if not owners and owner_query and is_debt_question:
             owners = find_owners(owner_query)
         if years and not owners:
             year = int(years[0])
@@ -2583,6 +2592,9 @@ async function analyzeWithAi(session, text, target = null) {
   const fallback = localAiProposal(cleanText, context);
   try {
     const external = await externalAiProposal(cleanText, context);
+    if (fallback.action === "consulta" && external?.action && external.action !== "consulta") {
+      return { ...fallback, warning: "La IA externa interpreto la consulta como una accion. Se ha mantenido el modo de consulta para evitar crear o modificar datos por error." };
+    }
     return external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback;
   } catch (error) {
     return { ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` };
