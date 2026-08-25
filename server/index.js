@@ -1230,6 +1230,17 @@ for source in [
 ]:
     responsables.extend(source)
 responsables = sorted(dict.fromkeys([str(v).strip() for v in responsables if str(v).strip()]))
+community_filter_sql, community_params = community_filter("c")
+communities = [dict(row) for row in conn.execute("""
+    SELECT c.id_comunidad AS id, c.nombre
+    FROM comunidades c
+    WHERE COALESCE(c.activo, 1) = 1
+""" + community_filter_sql + " ORDER BY c.nombre", community_params)]
+projects_for_create = [dict(row) for row in conn.execute("""
+    SELECT p.id_proyecto AS id, p.nombre, p.id_comunidad
+    FROM proyectos p
+    WHERE COALESCE(p.activo, 1) = 1
+""" + project_filter + " ORDER BY p.nombre", project_params)]
 conn.close()
 print(json.dumps({
     "estados_tarea": ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueada", "Terminada", "Archivada"],
@@ -1237,6 +1248,8 @@ print(json.dumps({
     "prioridades": ["Urgente", "Alta", "Media", "Baja"],
     "tipos_registro": ["Seguimiento", "Decision", "Llamada", "Correo", "Reunion", "Incidencia", "Cierre"],
     "responsables": responsables,
+    "comunidades": communities,
+    "proyectos": projects_for_create,
 }, ensure_ascii=False))
 `;
   return runPythonJson(script);
@@ -1777,6 +1790,153 @@ finally:
   return runPythonJson(script);
 }
 
+function updateEntity(session, type, id, payload, pc, archive = false) {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime, date
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+entity_type = ${JSON.stringify(type)}
+entity_id = int(${JSON.stringify(id)})
+data = ${JSON.stringify(payload || {})}
+pc = ${JSON.stringify(pc || "web")}
+archive = ${archive ? "True" : "False"}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def today_iso():
+    return date.today().isoformat()
+
+def is_superuser():
+    return role == "Superusuario"
+
+def check_can_write():
+    if not user:
+        raise PermissionError("No autenticado.")
+    if role == "Presidente":
+        raise PermissionError("El perfil Presidente no puede editar tareas ni proyectos.")
+    if role not in {"Superusuario", "Administrador", "Usuario"}:
+        raise PermissionError("Tu perfil no tiene permiso de escritura.")
+
+def ensure_allowed(cid):
+    if not is_superuser() and int(cid or 0) not in allowed_ids:
+        raise PermissionError("No tienes permiso para modificar esta comunidad.")
+
+def audit(conn, action, entity="", entity_id_value=None, detail=""):
+    conn.execute(
+        "INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (now_iso(), user, pc, action, entity, entity_id_value, str(detail or "")[:1000]),
+    )
+
+check_can_write()
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    conn.execute("PRAGMA foreign_keys = ON")
+    with conn:
+        ts = now_iso()
+        if entity_type == "task":
+            item = conn.execute("SELECT * FROM tareas WHERE id_tarea = ?", (entity_id,)).fetchone()
+            if not item:
+                raise ValueError("La tarea no existe.")
+            ensure_allowed(item["id_comunidad"])
+            if archive:
+                conn.execute("""
+                    UPDATE tareas
+                    SET archivada = 1, activa = 0, estado = 'Archivada',
+                        fecha_ultima_actualizacion = ?, usuario_ultima_actualizacion = ?, pc_ultima_actualizacion = ?
+                    WHERE id_tarea = ?
+                """, (ts, user, pc, entity_id))
+                audit(conn, "Archivar tarea web", "tarea", entity_id, item["titulo"])
+                print(json.dumps({"ok": True, "type": "task", "id": entity_id, "archived": True}, ensure_ascii=False))
+            else:
+                title = str(data.get("titulo") or item["titulo"] or "").strip()
+                if not title:
+                    raise ValueError("El titulo es obligatorio.")
+                conn.execute("""
+                    UPDATE tareas
+                    SET titulo = ?, descripcion = ?, categoria = ?, estado = ?, prioridad = ?,
+                        responsable = ?, responsable_proximo_paso = ?, fecha_objetivo_proximo_paso = ?,
+                        fecha_proxima_revision = ?, proximo_paso = ?, dependencia_bloqueo = ?,
+                        observaciones_internas = ?, fecha_ultima_actualizacion = ?,
+                        usuario_ultima_actualizacion = ?, pc_ultima_actualizacion = ?
+                    WHERE id_tarea = ?
+                """, (
+                    title,
+                    str(data.get("descripcion") or "").strip(),
+                    str(data.get("categoria") or "General").strip(),
+                    str(data.get("estado") or item["estado"] or "Pendiente").strip(),
+                    str(data.get("prioridad") or item["prioridad"] or "Media").strip(),
+                    str(data.get("responsable") or item["responsable"] or user).strip(),
+                    str(data.get("responsable_proximo_paso") or data.get("responsable") or item["responsable_proximo_paso"] or item["responsable"] or user).strip(),
+                    str(data.get("fecha_objetivo_proximo_paso") or "").strip(),
+                    str(data.get("fecha_proxima_revision") or data.get("fecha_objetivo_proximo_paso") or "").strip(),
+                    str(data.get("proximo_paso") or "").strip(),
+                    str(data.get("dependencia_bloqueo") or "").strip(),
+                    str(data.get("observaciones_internas") or "").strip(),
+                    ts, user, pc, entity_id,
+                ))
+                audit(conn, "Editar tarea web", "tarea", entity_id, f"{item['titulo']} -> {title}")
+                print(json.dumps({"ok": True, "type": "task", "id": entity_id}, ensure_ascii=False))
+        elif entity_type == "project":
+            item = conn.execute("SELECT * FROM proyectos WHERE id_proyecto = ?", (entity_id,)).fetchone()
+            if not item:
+                raise ValueError("El proyecto no existe.")
+            ensure_allowed(item["id_comunidad"])
+            if archive:
+                conn.execute("""
+                    UPDATE proyectos
+                    SET activo = 0, estado_general = 'Archivado',
+                        fecha_ultima_actualizacion = ?, usuario_ultima_actualizacion = ?, pc_ultima_actualizacion = ?
+                    WHERE id_proyecto = ?
+                """, (ts, user, pc, entity_id))
+                audit(conn, "Archivar proyecto web", "proyecto", entity_id, item["nombre"])
+                print(json.dumps({"ok": True, "type": "project", "id": entity_id, "archived": True}, ensure_ascii=False))
+            else:
+                title = str(data.get("titulo") or data.get("nombre") or item["nombre"] or "").strip()
+                if not title:
+                    raise ValueError("El nombre del proyecto es obligatorio.")
+                state = str(data.get("estado") or item["estado_general"] or "En curso").strip()
+                final_date = item["fecha_real_finalizacion"]
+                if state == "Finalizado" and not final_date:
+                    final_date = today_iso()
+                conn.execute("""
+                    UPDATE proyectos
+                    SET nombre = ?, descripcion = ?, categoria = ?, estado_general = ?, prioridad = ?,
+                        responsable_principal = ?, responsable_proximo_paso = ?, fecha_objetivo_proximo_paso = ?,
+                        fecha_prevista_finalizacion = ?, fecha_real_finalizacion = ?, observaciones = ?,
+                        fecha_ultima_actualizacion = ?, usuario_ultima_actualizacion = ?, pc_ultima_actualizacion = ?
+                    WHERE id_proyecto = ?
+                """, (
+                    title,
+                    str(data.get("descripcion") or "").strip(),
+                    str(data.get("categoria") or "General").strip(),
+                    state,
+                    str(data.get("prioridad") or item["prioridad"] or "Media").strip(),
+                    str(data.get("responsable") or item["responsable_principal"] or user).strip(),
+                    str(data.get("responsable_proximo_paso") or data.get("responsable") or item["responsable_proximo_paso"] or item["responsable_principal"] or user).strip(),
+                    str(data.get("fecha_objetivo_proximo_paso") or "").strip(),
+                    str(data.get("fecha_prevista_finalizacion") or "").strip(),
+                    str(data.get("fecha_real_finalizacion") or final_date or "").strip(),
+                    str(data.get("proximo_paso") or data.get("observaciones") or "").strip(),
+                    ts, user, pc, entity_id,
+                ))
+                audit(conn, "Editar proyecto web", "proyecto", entity_id, f"{item['nombre']} -> {title}")
+                print(json.dumps({"ok": True, "type": "project", "id": entity_id}, ensure_ascii=False))
+        else:
+            raise ValueError("Tipo de entidad no valido.")
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function homePage() {
   return `<!doctype html>
 <html lang="es">
@@ -1842,6 +2002,8 @@ function homePage() {
     button.secondary { background:#64748b; }
     button.ghost { background:#e2e8f0; color:#1f2937; }
     button.green { background:#15803d; }
+    button.red { background:#b91c1c; }
+    .modalActions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
     .login { max-width:440px; margin:44px auto; box-shadow:var(--shadow); }
     .login h2 { font-size:24px; }
     .login input, .login select, .login button { width:100%; margin-bottom:8px; }
@@ -1972,7 +2134,13 @@ function homePage() {
               <h2 id="contentTitle">Proyectos</h2>
               <p class="muted" id="contentSubtitle">Vista de lectura.</p>
             </div>
-            <div class="muted" id="visibleCount"></div>
+            <div>
+              <div class="muted" id="visibleCount"></div>
+              <div class="toolbar" id="viewActions">
+                <button id="newProjectButton">Nuevo proyecto</button>
+                <button class="green" id="newTaskButton">Nueva tarea</button>
+              </div>
+            </div>
           </div>
           <div class="cards" id="cards"></div>
         </section>
@@ -1985,12 +2153,38 @@ function homePage() {
             <h2 id="modalTitle">Ficha</h2>
             <p class="muted" id="modalSubtitle"></p>
           </div>
-          <button class="ghost" id="closeModal">Cerrar</button>
+          <div class="modalActions">
+            <button class="ghost" id="toggleEditEntity">Editar ficha</button>
+            <button class="red" id="archiveEntityButton">Archivar</button>
+            <button class="ghost" id="closeModal">Cerrar</button>
+          </div>
         </div>
         <div class="modalBody">
           <section>
             <h2>Resumen</h2>
             <div class="detailGrid" id="detailGrid"></div>
+          </section>
+          <section id="editSection" class="hidden">
+            <h2>Editar datos principales</h2>
+            <div class="formGrid">
+              <div><label>Titulo / nombre</label><input id="editTitle" /></div>
+              <div><label>Categoria</label><input id="editCategory" /></div>
+              <div><label>Estado</label><select id="editState"></select></div>
+              <div><label>Prioridad</label><select id="editPriority"></select></div>
+              <div><label>Responsable</label><input id="editOwner" list="responsiblesList" /></div>
+              <div><label>Proximo responsable</label><input id="editNextOwner" list="responsiblesList" /></div>
+              <div><label>Fecha proximo paso</label><input id="editNextDate" type="date" /></div>
+              <div id="editProjectDateWrap"><label>Fecha prevista fin</label><input id="editProjectDate" type="date" /></div>
+            </div>
+            <label>Descripcion</label>
+            <textarea id="editDescription"></textarea>
+            <label>Proximo paso / observaciones</label>
+            <textarea id="editNextStep"></textarea>
+            <div class="toolbar">
+              <button class="green" id="saveEntityEdit">Guardar cambios</button>
+              <button class="ghost" id="cancelEntityEdit">Cancelar</button>
+              <span class="muted" id="editMessage"></span>
+            </div>
           </section>
           <section id="recordSection">
             <h2>Añadir seguimiento</h2>
@@ -2056,11 +2250,46 @@ function homePage() {
         </div>
       </div>
     </div>
+    <div id="createModal" class="modalBackdrop hidden">
+      <div class="modal">
+        <div class="modalHead">
+          <div>
+            <h2 id="createTitle">Nuevo elemento</h2>
+            <p class="muted" id="createSubtitle"></p>
+          </div>
+          <button class="ghost" id="closeCreateModal">Cerrar</button>
+        </div>
+        <div class="modalBody">
+          <section>
+            <div class="formGrid">
+              <div><label>Tipo</label><select id="createType"><option value="project">Proyecto</option><option value="task">Tarea</option></select></div>
+              <div><label>Comunidad</label><select id="createCommunity"></select></div>
+              <div id="createProjectWrap"><label>Proyecto contenedor</label><select id="createProject"></select></div>
+              <div><label>Titulo / nombre</label><input id="createName" /></div>
+              <div><label>Categoria</label><input id="createCategory" value="General" /></div>
+              <div><label>Estado</label><select id="createState"></select></div>
+              <div><label>Prioridad</label><select id="createPriority"></select></div>
+              <div><label>Responsable</label><input id="createOwner" list="responsiblesList" /></div>
+              <div><label>Proximo responsable</label><input id="createNextOwner" list="responsiblesList" /></div>
+              <div><label>Fecha proximo paso</label><input id="createNextDate" type="date" /></div>
+            </div>
+            <label>Descripcion / comentario inicial</label>
+            <textarea id="createDescription"></textarea>
+            <label>Proximo paso</label>
+            <textarea id="createNextStep"></textarea>
+            <div class="toolbar">
+              <button class="green" id="saveCreateEntity">Crear</button>
+              <span class="muted" id="createMessage"></span>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
     let state = { usuario: null, proyectos: [], tareas: [] };
-    let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [] };
+    let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "projects";
     let selectedEntity = null;
     let aiProposal = null;
@@ -2160,6 +2389,11 @@ function homePage() {
       $("logoutTop").classList.remove("hidden");
     }
 
+    function canWrite() {
+      const role = (state.usuario || {}).rol;
+      return ["Superusuario", "Administrador", "Usuario"].includes(role);
+    }
+
     async function loadUsers() {
       const data = await api("/api/auth/users");
       $("loginUser").innerHTML = data.usuarios.map(user => '<option>' + html(user.nombre) + '</option>').join("");
@@ -2223,6 +2457,20 @@ function homePage() {
       $("responsiblesList").innerHTML = (options.responsables || []).map(value => '<option value="' + html(value) + '"></option>').join("");
     }
 
+    function optionRows(rows, valueKey, labelKey, selected) {
+      return (rows || []).map(row => {
+        const value = row[valueKey];
+        const label = row[labelKey];
+        return '<option value="' + html(value) + '"' + (String(value) === String(selected || "") ? " selected" : "") + '>' + html(label) + '</option>';
+      }).join("");
+    }
+
+    function projectOptions(selectedId) {
+      return '<option value="">Seleccionar proyecto...</option>' + (options.proyectos || []).map(row =>
+        '<option value="' + html(row.id) + '"' + (String(row.id) === String(selectedId || "") ? " selected" : "") + '>' + html(row.id + " - " + row.nombre) + '</option>'
+      ).join("");
+    }
+
     function renderHistory(history) {
       $("historyList").innerHTML = history.length ? history.map(row => {
         const stateChange = [row.estado_anterior, row.estado_nuevo].filter(Boolean).join(" -> ");
@@ -2265,6 +2513,22 @@ function homePage() {
         detailValue("Ultima actualizacion", item.fecha_ultima_actualizacion) +
         detailValue(type === "task" ? "Proyecto" : "Inicio", type === "task" ? item.proyecto : item.fecha_inicio);
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
+      const writable = canWrite();
+      $("toggleEditEntity").classList.toggle("hidden", !writable);
+      $("archiveEntityButton").classList.toggle("hidden", !writable);
+      $("editSection").classList.add("hidden");
+      $("editMessage").textContent = "";
+      $("editTitle").value = itemTitle(item, type) || "";
+      $("editCategory").value = item.categoria || "";
+      fillOptions($("editState"), states || [], itemState(item, type));
+      fillOptions($("editPriority"), options.prioridades || [], item.prioridad);
+      $("editOwner").value = itemOwner(item, type) || "";
+      $("editNextOwner").value = item.responsable_proximo_paso || itemOwner(item, type) || "";
+      $("editNextDate").value = (item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision || "").slice(0, 10);
+      $("editProjectDateWrap").classList.toggle("hidden", type !== "project");
+      $("editProjectDate").value = (item.fecha_prevista_finalizacion || "").slice(0, 10);
+      $("editDescription").value = item.descripcion || "";
+      $("editNextStep").value = type === "project" ? (item.observaciones || "") : (item.proximo_paso || "");
       fillOptions($("recordType"), options.tipos_registro || ["Seguimiento"], "Seguimiento");
       fillOptions($("recordState"), states || [], itemState(item, type));
       fillOptions($("recordPriority"), options.prioridades || [], item.prioridad);
@@ -2345,6 +2609,133 @@ function homePage() {
       recognition.start();
     }
 
+    function toggleEditSection(show) {
+      $("editSection").classList.toggle("hidden", show === undefined ? !$("editSection").classList.contains("hidden") : !show);
+      if (!$("editSection").classList.contains("hidden")) setTimeout(() => $("editTitle").focus(), 30);
+    }
+
+    async function saveEntityEdit() {
+      if (!selectedEntity) return;
+      const payload = {
+        titulo: $("editTitle").value,
+        nombre: $("editTitle").value,
+        descripcion: $("editDescription").value,
+        categoria: $("editCategory").value,
+        estado: $("editState").value,
+        prioridad: $("editPriority").value,
+        responsable: $("editOwner").value,
+        responsable_proximo_paso: $("editNextOwner").value,
+        fecha_objetivo_proximo_paso: $("editNextDate").value,
+        fecha_proxima_revision: $("editNextDate").value,
+        fecha_prevista_finalizacion: $("editProjectDate").value,
+        proximo_paso: $("editNextStep").value,
+        observaciones: $("editNextStep").value
+      };
+      if (!safe(payload.titulo)) {
+        $("editMessage").innerHTML = '<span class="dangerText">El titulo es obligatorio.</span>';
+        return;
+      }
+      $("editMessage").textContent = "Guardando...";
+      try {
+        await api("/api/entity/update", {
+          method: "POST",
+          body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id, payload })
+        });
+        $("editMessage").textContent = "Cambios guardados.";
+        await loadOverview();
+        await openEntity(selectedEntity.type, selectedEntity.id, false);
+      } catch (error) {
+        $("editMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
+    async function archiveSelectedEntity() {
+      if (!selectedEntity) return;
+      const label = selectedEntity.type === "project" ? "proyecto" : "tarea";
+      if (!confirm("Se archivara esta " + label + " y dejara de aparecer en los paneles activos.\\n\\n¿Continuar?")) return;
+      try {
+        await api("/api/entity/archive", {
+          method: "POST",
+          body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id })
+        });
+        closeModal();
+        await loadOverview();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    async function openCreateModal(type) {
+      await loadOptions();
+      $("createType").value = type;
+      $("createName").value = "";
+      $("createCategory").value = "General";
+      $("createOwner").value = (state.usuario || {}).nombre || "";
+      $("createNextOwner").value = (state.usuario || {}).nombre || "";
+      $("createNextDate").value = "";
+      $("createDescription").value = "";
+      $("createNextStep").value = "";
+      $("createMessage").textContent = "";
+      $("createCommunity").innerHTML = '<option value="">Automatico / Macrocomunidad</option>' + optionRows(options.comunidades || [], "id", "nombre", "");
+      $("createProject").innerHTML = projectOptions("");
+      updateCreateForm();
+      $("createModal").classList.remove("hidden");
+      setTimeout(() => $("createName").focus(), 30);
+    }
+
+    function updateCreateForm() {
+      const type = $("createType").value;
+      $("createTitle").textContent = type === "project" ? "Nuevo proyecto" : "Nueva tarea";
+      $("createSubtitle").textContent = type === "project" ? "Crea un proyecto operativo." : "Crea una tarea vinculada a un proyecto.";
+      $("createProjectWrap").classList.toggle("hidden", type !== "task");
+      fillOptions($("createState"), type === "project" ? options.estados_proyecto : options.estados_tarea, type === "project" ? "En curso" : "Pendiente");
+      fillOptions($("createPriority"), options.prioridades || [], "Media");
+    }
+
+    function closeCreateModal() {
+      $("createModal").classList.add("hidden");
+    }
+
+    async function saveCreateEntity() {
+      const type = $("createType").value;
+      const payload = {
+        titulo: $("createName").value,
+        nombre: $("createName").value,
+        id_comunidad: $("createCommunity").value,
+        id_proyecto: $("createProject").value,
+        descripcion: $("createDescription").value,
+        comentario: $("createDescription").value,
+        categoria: $("createCategory").value,
+        estado: $("createState").value,
+        estado_nuevo: $("createState").value,
+        prioridad: $("createPriority").value,
+        prioridad_nueva: $("createPriority").value,
+        responsable: $("createOwner").value,
+        responsable_nuevo: $("createOwner").value,
+        responsable_proximo_paso: $("createNextOwner").value,
+        fecha_objetivo_proximo_paso: $("createNextDate").value,
+        fecha_proxima_revision: $("createNextDate").value,
+        proximo_paso: $("createNextStep").value
+      };
+      if (!safe(payload.titulo)) {
+        $("createMessage").innerHTML = '<span class="dangerText">El titulo es obligatorio.</span>';
+        return;
+      }
+      if (type === "task" && !safe(payload.id_proyecto)) {
+        $("createMessage").innerHTML = '<span class="dangerText">Selecciona el proyecto contenedor.</span>';
+        return;
+      }
+      $("createMessage").textContent = "Creando...";
+      try {
+        const result = await api("/api/entity/create", { method: "POST", body: JSON.stringify({ type, payload }) });
+        closeCreateModal();
+        await loadOverview();
+        if (result?.type && result?.id) await openEntity(result.type, result.id, false);
+      } catch (error) {
+        $("createMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
     function closeModal() {
       $("entityModal").classList.add("hidden");
       selectedEntity = null;
@@ -2409,6 +2800,7 @@ function homePage() {
         $("contentTitle").textContent = "IA operativa";
         $("contentSubtitle").textContent = "Pega una llamada, reunion o consulta. La IA propone y tu confirmas antes de guardar.";
         $("visibleCount").textContent = "";
+        $("viewActions").classList.add("hidden");
         $("cards").innerHTML = aiPanelHtml();
         $("projectTab").classList.remove("active");
         $("taskTab").classList.remove("active");
@@ -2432,6 +2824,7 @@ function homePage() {
         ? "Proyectos visibles segun tus comunidades y permisos."
         : "Tareas visibles segun tus comunidades y permisos.";
       $("visibleCount").textContent = rows.length + " de " + activeRows().length + " visibles";
+      $("viewActions").classList.toggle("hidden", !canWrite());
       $("cards").innerHTML = rows.length ? rows.map(card).join("") : '<div class="empty">No hay elementos con esos filtros.</div>';
       $("projectTab").classList.toggle("active", currentView === "projects");
       $("taskTab").classList.toggle("active", currentView === "tasks");
@@ -2701,6 +3094,16 @@ function homePage() {
     });
     $("closeModal").addEventListener("click", closeModal);
     $("entityModal").addEventListener("click", event => { if (event.target.id === "entityModal") closeModal(); });
+    $("toggleEditEntity").addEventListener("click", () => toggleEditSection());
+    $("cancelEntityEdit").addEventListener("click", () => toggleEditSection(false));
+    $("saveEntityEdit").addEventListener("click", saveEntityEdit);
+    $("archiveEntityButton").addEventListener("click", archiveSelectedEntity);
+    $("newProjectButton").addEventListener("click", () => openCreateModal("project").catch(error => alert(error.message)));
+    $("newTaskButton").addEventListener("click", () => openCreateModal("task").catch(error => alert(error.message)));
+    $("closeCreateModal").addEventListener("click", closeCreateModal);
+    $("createModal").addEventListener("click", event => { if (event.target.id === "createModal") closeCreateModal(); });
+    $("createType").addEventListener("change", updateCreateForm);
+    $("saveCreateEntity").addEventListener("click", saveCreateEntity);
     $("recordState").addEventListener("change", updateBlockReasonVisibility);
     $("saveRecord").addEventListener("click", saveRecord);
     $("quickRecordAnalyze").addEventListener("click", analyzeQuickRecord);
@@ -2802,6 +3205,28 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await createEntity(session, type, body.payload || {}, String(pc)));
+  }
+  if (req.method === "POST" && url.pathname === "/api/entity/update") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const type = String(body.type || "").trim();
+    const id = Number(body.id || 0);
+    if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await updateEntity(session, type, id, body.payload || {}, String(pc), false));
+  }
+  if (req.method === "POST" && url.pathname === "/api/entity/archive") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const type = String(body.type || "").trim();
+    const id = Number(body.id || 0);
+    if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await updateEntity(session, type, id, {}, String(pc), true));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);
