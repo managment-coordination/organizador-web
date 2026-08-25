@@ -30,6 +30,9 @@ La version web centraliza actualmente:
 - modulo web de asambleas con ficha, orden del dia, registro, quorum legal, votaciones, documentos, proxys e historial;
 - agrupacion de votos por representante, voto individual o conjunto y proteccion de instrucciones de proxy;
 - control de asistentes sin derecho a voto y calculo de mayorias simple, tres quintos, dos tercios y unanimidad;
+- administracion web exclusiva del Superusuario para crear, editar, activar y desactivar usuarios y comunidades;
+- asignacion multiple de comunidades, gestion de roles, desbloqueo y reseteo seguro mediante clave temporal;
+- configuracion de la contrasena definitiva desde la propia web durante el primer acceso;
 - datos y documentos persistentes en el servidor Ubuntu.
 
 Los datos reales siguen excluidos de GitHub:
@@ -52,7 +55,15 @@ La primera version web operativa permite consultar y editar la ficha de cada asa
 
 El perfil `Presidente` no accede a la gestion general de asambleas. El resto de perfiles respeta las comunidades permitidas y los permisos de escritura de la sesion.
 
+La edicion de los datos generales y del orden del dia se abre desde el boton `Editar` de la cabecera o desde la pestana `Configuracion` de la ficha.
+
 Quedan para el siguiente bloque especifico de Asambleas la importacion web de censo, morosos y PDF de proxy, el generador del formulario para Google Sites, la exportacion del acta y el sistema opcional de votacion movil por QR y PIN.
+
+## Administracion
+
+La opcion `Administracion` solo aparece al perfil `Superusuario`. Permite gestionar usuarios, roles, estado del acceso y comunidades asignadas, ademas de crear o desactivar comunidades sin eliminar sus datos. Al crear un usuario se muestra una unica vez su clave temporal. El usuario la introduce en `Primer acceso o contrasena reseteada` para crear su contrasena personal.
+
+El Superusuario puede generar una clave temporal nueva, pero nunca consultar la contrasena real. Los cambios quedan registrados en auditoria.
 
 ## Informes conjuntos
 

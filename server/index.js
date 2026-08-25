@@ -30,6 +30,7 @@ const reportsDir = path.join(dataDir, "reports");
 const assemblyDocumentsDir = path.join(dataDir, "assembly-documents");
 const databasePath = path.resolve(rootDir, process.env.DATABASE_PATH || "./data/organizador_tareas.db");
 const assemblyBridgePath = path.join(__dirname, "assembly-bridge.py");
+const adminBridgePath = path.join(__dirname, "admin-bridge.py");
 
 for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -258,6 +259,26 @@ function runAssemblyCommand(session, action, data = {}, pc = "web") {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
       } catch {
         reject(new Error(stderr || error?.message || "No se pudo leer la operacion de asamblea."));
+        return;
+      }
+      if (error || result?.error) {
+        reject(new Error(`${result?.error_type || "ValueError"}: ${result?.error || stderr || error?.message}`));
+        return;
+      }
+      resolve(result);
+    });
+  });
+}
+
+function runAdminCommand(session, action, data = {}, pc = "web") {
+  return new Promise((resolve, reject) => {
+    const request = JSON.stringify({ session, action, data, pc });
+    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(String(stdout || "{}").trim() || "{}");
+      } catch {
+        reject(new Error(stderr || error?.message || "No se pudo leer la operacion de administracion."));
         return;
       }
       if (error || result?.error) {
@@ -3488,6 +3509,17 @@ function homePage() {
     .voteActions button.active-sin { background:#64748b; color:white; }
     .lockedVote { color:#7c3aed; font-weight:800; font-size:12px; }
     .pointEditor { display:grid; grid-template-columns:42px minmax(240px,1fr) 170px auto; gap:8px; align-items:end; border-bottom:1px solid #e2e8f0; padding:8px 0; }
+    .adminMetrics { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; }
+    .adminLayout { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(420px,1.3fr); gap:12px; align-items:start; }
+    .adminList { display:grid; gap:7px; max-height:560px; overflow:auto; }
+    .adminRow { width:100%; text-align:left; border:1px solid var(--line); background:white; color:var(--text); padding:10px; display:grid; gap:5px; }
+    .adminRow.selected { border-color:#2563eb; background:#eff6ff; box-shadow:inset 4px 0 #2563eb; }
+    .adminRow.inactive { opacity:.6; }
+    .communityChecks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; border:1px solid var(--line); border-radius:8px; padding:9px; max-height:230px; overflow:auto; }
+    .communityCheck { display:flex; gap:8px; align-items:flex-start; padding:6px; }
+    .communityCheck input { width:18px; min-height:18px; }
+    .temporaryKey { border:2px solid #16a34a; background:#f0fdf4; border-radius:8px; padding:12px; display:grid; gap:7px; }
+    .temporaryKey code { font-size:20px; font-weight:900; letter-spacing:1px; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -3498,6 +3530,7 @@ function homePage() {
       .mapSectionBody { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .assemblyMetrics { grid-template-columns:repeat(3,minmax(115px,1fr)); }
       .assemblySplit { grid-template-columns:1fr; }
+      .adminLayout { grid-template-columns:1fr; }
     }
     @media (max-width: 700px) {
       header { padding:14px; }
@@ -3530,6 +3563,7 @@ function homePage() {
       .assemblyHeader { flex-direction:column; }
       .assemblyMetrics, .voteSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .attendanceRow, .voteMember, .pointEditor, .votePointSelect { grid-template-columns:1fr; }
+      .adminMetrics, .communityChecks { grid-template-columns:1fr; }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
       .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
@@ -3544,7 +3578,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 13 - Asambleas web</p>
+        <p>Paso 14 - Administracion web</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -3562,6 +3596,15 @@ function homePage() {
       <input id="loginPassword" type="password" autocomplete="current-password" />
       <button id="loginButton">Entrar</button>
       <div id="loginMessage" class="muted"></div>
+      <details class="assemblyPane" style="margin-top:12px">
+        <summary><strong>Primer acceso o contrasena reseteada</strong></summary>
+        <p class="muted">Usa la clave temporal facilitada por el Superusuario para crear tu contrasena definitiva.</p>
+        <label>Clave temporal</label><input id="firstAccessKey" autocomplete="one-time-code" />
+        <label>Nueva contrasena</label><input id="firstAccessPassword" type="password" autocomplete="new-password" />
+        <label>Confirmar contrasena</label><input id="firstAccessConfirm" type="password" autocomplete="new-password" />
+        <button class="green" id="firstAccessButton">Configurar y entrar</button>
+        <div id="firstAccessMessage" class="muted"></div>
+      </details>
     </section>
     <div id="appView" class="hidden">
       <div class="grid counts" id="counts"></div>
@@ -3584,6 +3627,7 @@ function homePage() {
             <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
             <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
             <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
+            <button class="tab hidden" id="adminTab" data-view="admin"><span>Administracion</span><span>Usuarios</span></button>
           </div>
           <div class="filters" id="listFilters">
             <div>
@@ -3838,6 +3882,10 @@ function homePage() {
     let assemblySection = "summary";
     let assemblyOwnerQuery = "";
     let selectedAssemblyPoint = 0;
+    let adminData = { users: [], communities: [], roles: [], loaded: false };
+    let selectedAdminUserId = 0;
+    let selectedAdminCommunityId = 0;
+    let lastTemporaryKey = null;
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -3959,6 +4007,26 @@ function homePage() {
       }
     }
 
+    async function configureFirstAccess() {
+      const password = $("firstAccessPassword").value;
+      const confirmation = $("firstAccessConfirm").value;
+      $("firstAccessMessage").textContent = "Comprobando clave temporal...";
+      try {
+        await api("/api/auth/first-access", {
+          method:"POST",
+          body:JSON.stringify({ usuario:$("loginUser").value, clave_temporal:$("firstAccessKey").value, password, confirmacion:confirmation })
+        });
+        $("firstAccessKey").value = "";
+        $("firstAccessPassword").value = "";
+        $("firstAccessConfirm").value = "";
+        $("loginPassword").value = password;
+        $("firstAccessMessage").textContent = "Contrasena configurada. Iniciando sesion...";
+        await login();
+      } catch (error) {
+        $("firstAccessMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
     async function logout() {
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
       state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
@@ -3970,6 +4038,10 @@ function homePage() {
       assembliesData = { assemblies: [], loaded: false };
       selectedAssemblyId = 0;
       assemblyDetail = null;
+      adminData = { users: [], communities: [], roles: [], loaded: false };
+      selectedAdminUserId = 0;
+      selectedAdminCommunityId = 0;
+      lastTemporaryKey = null;
       currentView = "home";
       showLogin("Sesion cerrada.");
     }
@@ -4436,8 +4508,8 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["homeTab", "projectTab", "taskTab", "assemblyTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "assemblyTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
     }
 
@@ -4617,6 +4689,7 @@ function homePage() {
 
     function assemblyTabsHtml() {
       const tabs = [["summary","Resumen"],["registration","Registro"],["voting","Votacion"],["documents","Documentos y proxys"],["history","Historial"]];
+      if (canWrite()) tabs.push(["configuration", "Configuracion"]);
       return '<div class="assemblyTabs">' + tabs.map(row => '<button data-assembly-section="' + row[0] + '" class="' + (assemblySection === row[0] ? "active" : "") + '">' + row[1] + '</button>').join("") + '</div>';
     }
 
@@ -4643,7 +4716,7 @@ function homePage() {
       const item = detail.assembly || {};
       const communities = ((state.daily || {}).communities || []).map(row => { const id = row.id || row.id_comunidad; return '<option value="' + html(id) + '"' + (String(id) === String(item.id_comunidad) ? " selected" : "") + '>' + html(row.nombre) + '</option>'; }).join("");
       const states = ["Preparacion","Convocada","En celebracion","Cerrada","Archivada"];
-      return '<details class="assemblyPane"><summary><strong>Editar datos y orden del dia</strong></summary><div class="formGrid" style="margin-top:10px">' +
+      return '<div class="assemblyPane"><h3>Datos generales</h3><div class="formGrid">' +
         '<div><label>Comunidad</label><select id="assemblyEditCommunity">' + communities + '</select></div><div><label>Codigo</label><input id="assemblyEditCode" value="' + html(item.codigo) + '" /></div>' +
         '<div><label>Nombre</label><input id="assemblyEditName" value="' + html(item.nombre) + '" /></div><div><label>Fecha</label><input id="assemblyEditDate" type="date" value="' + html((item.fecha || "").slice(0,10)) + '" /></div>' +
         '<div><label>Convocatoria</label><select id="assemblyEditCall"><option value="primera"' + (item.convocatoria === "primera" ? " selected" : "") + '>Primera</option><option value="segunda"' + (item.convocatoria !== "primera" ? " selected" : "") + '>Segunda</option></select></div>' +
@@ -4653,7 +4726,7 @@ function homePage() {
         '<label>Junta directiva</label><textarea id="assemblyEditBoard">' + html(item.junta_directiva) + '</textarea><label>Observaciones</label><textarea id="assemblyEditNotes">' + html(item.observaciones) + '</textarea>' +
         '<div class="toolbar"><button class="green" id="saveAssemblyEdit">Guardar datos</button><span class="muted" id="assemblyEditMessage"></span></div>' +
         '<h3>Orden del dia</h3><div id="assemblyPointEditors">' + (detail.points || []).map((point,index) => pointEditorHtml(point,index)).join("") + '</div>' +
-        '<div class="toolbar"><button class="ghost" id="addAssemblyPoint">Anadir punto</button><button id="saveAssemblyPoints">Guardar orden y mayorias</button><span class="muted" id="assemblyPointsMessage"></span></div></details>';
+        '<div class="toolbar"><button class="ghost" id="addAssemblyPoint">Anadir punto</button><button id="saveAssemblyPoints">Guardar orden y mayorias</button><span class="muted" id="assemblyPointsMessage"></span></div></div>';
     }
 
     function pointEditorHtml(point, index) {
@@ -4667,7 +4740,7 @@ function homePage() {
       const item = detail.assembly || {};
       return assemblyMetricsHtml(detail) + '<div class="assemblySplit"><div class="assemblyPane"><h3>Datos de celebracion</h3>' +
         detailValue("Presidente", item.presidente) + detailValue("Administrador", item.administrador) + detailValue("Junta directiva", item.junta_directiva) + detailValue("Inicio", [item.fecha,item.hora_inicio].filter(Boolean).join(" ")) + detailValue("Lugar", item.lugar_celebracion || item.ubicacion) + '</div>' +
-        '<div class="assemblyPane"><h3>Orden del dia y situacion</h3><div class="agendaList">' + ((detail.points || []).length ? detail.points.map(agendaItemHtml).join("") : '<div class="empty">No hay puntos configurados.</div>') + '</div></div></div>' + assemblyEditHtml(detail);
+        '<div class="assemblyPane"><h3>Orden del dia y situacion</h3><div class="agendaList">' + ((detail.points || []).length ? detail.points.map(agendaItemHtml).join("") : '<div class="empty">No hay puntos configurados.</div>') + '</div></div></div>';
     }
 
     function filteredAssemblyOwners(detail) {
@@ -4728,8 +4801,8 @@ function homePage() {
 
     function assemblyDetailHtml(detail) {
       const item = detail.assembly || {};
-      const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySummaryHtml(detail);
-      return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button><button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
+      const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySection === "configuration" ? assemblyEditHtml(detail) : assemblySummaryHtml(detail);
+      return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button>' + (canWrite() ? '<button class="green" id="assemblyEditShortcut">Editar</button>' : '') + '<button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
     }
 
     function assembliesPanelHtml() {
@@ -4772,6 +4845,7 @@ function homePage() {
       if (!selectedAssemblyId || !assemblyDetail) return;
       $("backAssemblies").addEventListener("click", () => { selectedAssemblyId=0; assemblyDetail=null; assemblySection="summary"; render(); });
       $("reloadAssembly").addEventListener("click", () => loadAssemblyDetail());
+      if ($("assemblyEditShortcut")) $("assemblyEditShortcut").addEventListener("click", () => { assemblySection="configuration"; render(); });
       document.querySelectorAll("[data-assembly-section]").forEach(button => button.addEventListener("click", () => { assemblySection=button.dataset.assemblySection; render(); }));
       if ($("saveAssemblyEdit")) $("saveAssemblyEdit").addEventListener("click", saveAssemblyEdit);
       if ($("addAssemblyPoint")) $("addAssemblyPoint").addEventListener("click", () => { assemblyDetail.points.push({ titulo:"", tipo_mayoria:"simple" }); render(); });
@@ -4814,6 +4888,115 @@ function homePage() {
     async function uploadAssemblyDocuments(){const files=[...($("assemblyDocumentFiles").files||[])];if(!files.length){$("assemblyDocumentMessage").textContent="Selecciona archivos.";return;}$("assemblyDocumentMessage").textContent="Subiendo 0 de "+files.length+"...";try{for(let index=0;index<files.length;index++){const query=new URLSearchParams({id:selectedAssemblyId,folder:$("assemblyDocumentFolder").value||"General",description:$("assemblyDocumentDescription").value||""});const response=await fetch("/api/assembly/document/upload?"+query.toString(),{method:"POST",body:files[index],credentials:"same-origin",headers:{"x-file-name":encodeURIComponent(files[index].name)}});const body=await response.json();if(!response.ok)throw new Error(body.error||"Error subiendo archivo.");$("assemblyDocumentMessage").textContent="Subiendo "+(index+1)+" de "+files.length+"...";}await loadAssemblyDetail();}catch(error){$("assemblyDocumentMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
     async function deleteAssemblyDocument(id){if(!confirm("Eliminar este documento de la asamblea?"))return;try{await api("/api/assembly/document/delete",{method:"POST",body:JSON.stringify({id})});await loadAssemblyDetail();}catch(error){alert(error.message);}}
     async function saveAssemblyUpdate(){try{$("assemblyUpdateMessage").textContent="Guardando...";await assemblyApi("add_update",{id:selectedAssemblyId,tipo:$("assemblyUpdateType").value,comentario:$("assemblyUpdateComment").value});await loadAssemblyDetail();}catch(error){$("assemblyUpdateMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
+
+    async function adminApi(action, data = {}) {
+      return api("/api/admin/action", { method:"POST", body:JSON.stringify({ action, data }) });
+    }
+
+    async function loadAdmin() {
+      try {
+        adminData = { ...(await api("/api/admin")), loaded:true };
+        if (currentView === "admin") render();
+      } catch (error) {
+        adminData = { users:[], communities:[], roles:[], loaded:true, error:error.message };
+        if (currentView === "admin") { render(); alert(error.message); }
+      }
+    }
+
+    function adminUserRow(user) {
+      const communities = (user.community_ids || []).map(id => adminData.communities.find(row => Number(row.id_comunidad) === Number(id))?.nombre).filter(Boolean);
+      return '<button class="adminRow ' + (Number(user.id_usuario) === Number(selectedAdminUserId) ? "selected " : "") + (user.activo ? "" : "inactive") + '" data-admin-user="' + user.id_usuario + '"><div><strong>' + html(user.nombre) + '</strong> <span class="pill">' + html(user.rol) + '</span></div><div class="muted">' + html(communities.length ? communities.join(", ") : (user.rol === "Superusuario" ? "Todas las comunidades" : "Sin comunidades asignadas")) + '</div><div class="meta"><span>' + html(user.password_status) + '</span>' + (user.bloqueado ? '<span class="dangerText">Bloqueado</span>' : '') + (user.activo ? '' : '<span>Inactivo</span>') + '</div></button>';
+    }
+
+    function adminCommunityRow(community) {
+      return '<button class="adminRow ' + (Number(community.id_comunidad) === Number(selectedAdminCommunityId) ? "selected " : "") + (community.activo ? "" : "inactive") + '" data-admin-community="' + community.id_comunidad + '"><div><strong>' + html(community.nombre) + '</strong>' + (community.activo ? '' : ' <span class="pill">Inactiva</span>') + '</div><div class="muted">' + html(community.descripcion || "Sin descripcion") + '</div><div class="meta"><span>' + html(String(community.total_usuarios || 0)) + ' usuarios</span><span>' + html(String(community.total_proyectos || 0)) + ' proyectos</span><span>' + html(String(community.total_tareas || 0)) + ' tareas</span></div></button>';
+    }
+
+    function temporaryKeyHtml() {
+      if (!lastTemporaryKey) return "";
+      return '<div class="temporaryKey"><strong>Clave temporal de primer acceso para ' + html(lastTemporaryKey.nombre) + '</strong><code>' + html(lastTemporaryKey.key) + '</code><div>Esta clave solo se muestra ahora. El usuario debera crear su contrasena definitiva al acceder.</div><div class="toolbar"><button class="green" id="copyTemporaryKey">Copiar clave</button><button class="ghost" id="hideTemporaryKey">Ocultar</button><span class="muted" id="temporaryKeyMessage"></span></div></div>';
+    }
+
+    function adminUserEditorHtml() {
+      const user = adminData.users.find(row => Number(row.id_usuario) === Number(selectedAdminUserId)) || null;
+      const roles = (adminData.roles || []).map(role => '<option value="' + html(role) + '"' + ((user?.rol || "Usuario") === role ? " selected" : "") + '>' + html(role) + '</option>').join("");
+      const assigned = new Set((user?.community_ids || []).map(Number));
+      const checks = (adminData.communities || []).map(community => '<label class="communityCheck"><input type="checkbox" data-admin-user-community="' + community.id_comunidad + '"' + (assigned.has(Number(community.id_comunidad)) ? " checked" : "") + ' /><span><strong>' + html(community.nombre) + '</strong>' + (community.activo ? '' : '<small class="dangerText" style="display:block">Inactiva</small>') + '</span></label>').join("");
+      return '<div class="assemblyPane"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El Superusuario puede ver todas las comunidades aunque no aparezcan marcadas. Los demas perfiles solo acceden a las seleccionadas.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
+    }
+
+    function adminCommunityEditorHtml() {
+      const community = adminData.communities.find(row => Number(row.id_comunidad) === Number(selectedAdminCommunityId)) || null;
+      return '<div class="assemblyPane"><h3>' + (community ? "Editar comunidad" : "Nueva comunidad") + '</h3><label>Nombre</label><input id="adminCommunityName" value="' + html(community?.nombre || "") + '" /><label>Descripcion</label><textarea id="adminCommunityDescription">' + html(community?.descripcion || "") + '</textarea><label><input type="checkbox" id="adminCommunityActive"' + (community ? (community.activo ? " checked" : "") : " checked") + ' /> Comunidad activa</label><p class="muted">Desactivar no elimina datos. La comunidad deja de estar disponible para el trabajo habitual.</p><div class="toolbar"><button class="green" id="saveAdminCommunity">Guardar comunidad</button><span class="muted" id="adminCommunityMessage"></span></div></div>';
+    }
+
+    function adminPanelHtml() {
+      if (!adminData.loaded) return '<div class="empty">Cargando administracion...</div>';
+      if (adminData.error) return '<div class="empty dangerText">' + html(adminData.error) + '</div>';
+      const activeUsers = adminData.users.filter(row => row.activo).length;
+      const activeCommunities = adminData.communities.filter(row => row.activo).length;
+      const blocked = adminData.users.filter(row => row.bloqueado).length;
+      const pendingPasswords = adminData.users.filter(row => row.requiere_cambio_password || !row.password_configurada).length;
+      return '<div class="assemblyShell"><div class="adminMetrics">' + countCard("Usuarios activos", String(activeUsers)) + countCard("Comunidades activas", String(activeCommunities)) + countCard("Accesos bloqueados", String(blocked)) + countCard("Primer acceso pendiente", String(pendingPasswords)) + '</div><div class="adminLayout"><div class="assemblyPane"><div class="contentHead"><div><h3>Usuarios</h3><p class="muted">Roles, acceso y comunidades.</p></div><button class="green" id="newAdminUser">Nuevo</button></div><div class="adminList">' + (adminData.users.map(adminUserRow).join("") || '<div class="empty">No hay usuarios.</div>') + '</div></div>' + adminUserEditorHtml() + '</div><div class="adminLayout"><div class="assemblyPane"><div class="contentHead"><div><h3>Comunidades</h3><p class="muted">Alta, descripcion y estado.</p></div><button class="green" id="newAdminCommunity">Nueva</button></div><div class="adminList">' + (adminData.communities.map(adminCommunityRow).join("") || '<div class="empty">No hay comunidades.</div>') + '</div></div>' + adminCommunityEditorHtml() + '</div></div>';
+    }
+
+    function bindAdminPanel() {
+      if (!adminData.loaded || adminData.error) return;
+      document.querySelectorAll("[data-admin-user]").forEach(button => button.addEventListener("click", () => { selectedAdminUserId=Number(button.dataset.adminUser); lastTemporaryKey=null; render(); }));
+      document.querySelectorAll("[data-admin-community]").forEach(button => button.addEventListener("click", () => { selectedAdminCommunityId=Number(button.dataset.adminCommunity); render(); }));
+      $("newAdminUser").addEventListener("click", () => { selectedAdminUserId=0; lastTemporaryKey=null; render(); });
+      $("newAdminCommunity").addEventListener("click", () => { selectedAdminCommunityId=0; render(); });
+      $("saveAdminUser").addEventListener("click", saveAdminUser);
+      $("saveAdminCommunity").addEventListener("click", saveAdminCommunity);
+      if ($("resetAdminPassword")) $("resetAdminPassword").addEventListener("click", resetAdminPassword);
+      if ($("unlockAdminUser")) $("unlockAdminUser").addEventListener("click", unlockAdminUser);
+      if ($("copyTemporaryKey")) $("copyTemporaryKey").addEventListener("click", async () => { try { await navigator.clipboard.writeText(lastTemporaryKey.key); $("temporaryKeyMessage").textContent="Copiada."; } catch { $("temporaryKeyMessage").textContent="No se pudo copiar automaticamente."; } });
+      if ($("hideTemporaryKey")) $("hideTemporaryKey").addEventListener("click", () => { lastTemporaryKey=null; render(); });
+    }
+
+    async function saveAdminUser() {
+      const communityIds = [...document.querySelectorAll("[data-admin-user-community]:checked")].map(row => Number(row.dataset.adminUserCommunity));
+      const data = { id_usuario:selectedAdminUserId || null, nombre:$("adminUserName").value, rol:$("adminUserRole").value, activo:$("adminUserActive").checked, community_ids:communityIds };
+      if (!safe(data.nombre)) { $("adminUserMessage").textContent="El nombre es obligatorio."; return; }
+      if (!confirm((selectedAdminUserId ? "Guardar los cambios del usuario" : "Crear el nuevo usuario") + "?")) return;
+      try {
+        $("adminUserMessage").textContent="Guardando...";
+        const result = await adminApi("save_user", data);
+        selectedAdminUserId = Number(result.id_usuario);
+        lastTemporaryKey = result.temporary_key ? { nombre:data.nombre, key:result.temporary_key } : null;
+        await loadAdmin();
+      } catch (error) { $("adminUserMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>'; }
+    }
+
+    async function saveAdminCommunity() {
+      const data = { id_comunidad:selectedAdminCommunityId || null, nombre:$("adminCommunityName").value, descripcion:$("adminCommunityDescription").value, activo:$("adminCommunityActive").checked };
+      if (!safe(data.nombre)) { $("adminCommunityMessage").textContent="El nombre es obligatorio."; return; }
+      if (!confirm((selectedAdminCommunityId ? "Guardar los cambios de la comunidad" : "Crear la nueva comunidad") + "?")) return;
+      try {
+        $("adminCommunityMessage").textContent="Guardando...";
+        const result = await adminApi("save_community", data);
+        selectedAdminCommunityId = Number(result.id_comunidad);
+        await loadAdmin();
+        await loadOverview();
+        currentView="admin";
+        render();
+      } catch (error) { $("adminCommunityMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>'; }
+    }
+
+    async function resetAdminPassword() {
+      const user = adminData.users.find(row => Number(row.id_usuario) === Number(selectedAdminUserId));
+      if (!user || !confirm("Se invalidara la contrasena actual de " + user.nombre + " y se generara una clave temporal nueva. Continuar?")) return;
+      try {
+        const result = await adminApi("reset_password", { id_usuario:selectedAdminUserId });
+        lastTemporaryKey = { nombre:result.nombre, key:result.temporary_key };
+        await loadAdmin();
+      } catch (error) { alert(error.message); }
+    }
+
+    async function unlockAdminUser() {
+      try { await adminApi("unlock_user", { id_usuario:selectedAdminUserId }); await loadAdmin(); }
+      catch (error) { alert(error.message); }
+    }
 
     function importCommunityOptions() {
       const communities = (state.daily || {}).communities || [];
@@ -5254,7 +5437,7 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["home", "assemblies", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai"].includes(currentView);
+      const specialView = ["home", "assemblies", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin"].includes(currentView);
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
@@ -5353,6 +5536,15 @@ function homePage() {
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = aiPanelHtml();
         bindAiPanel();
+        return;
+      }
+      if (currentView === "admin") {
+        $("contentTitle").textContent = "Usuarios y comunidades";
+        $("contentSubtitle").textContent = "Gestion exclusiva del Superusuario: permisos, asignaciones y acceso.";
+        $("visibleCount").textContent = adminData.loaded ? adminData.users.length + " usuarios | " + adminData.communities.length + " comunidades" : "Cargando...";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = adminPanelHtml();
+        bindAdminPanel();
         return;
       }
       const search = safe($("search").value).toLowerCase();
@@ -5589,12 +5781,14 @@ function homePage() {
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
         if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai"].includes(currentView))) currentView = "work";
+        if (currentView === "admin" && user.rol !== "Superusuario") currentView = user.rol === "Presidente" ? "work" : "home";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
         $("assemblyTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
+        $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
         $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
         $("counts").innerHTML =
           countCard(user.rol === "Presidente" ? "Decisiones pendientes" : "Acciones pendientes", user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length) +
@@ -5633,6 +5827,7 @@ function homePage() {
       render();
       if (view === "reports" && !reportsCenter.loaded) loadReportsCenter();
       if (view === "assemblies" && !assembliesData.loaded) loadAssemblies();
+      if (view === "admin" && !adminData.loaded) loadAdmin();
     }
 
     $("homeTab").addEventListener("click", () => switchView("home"));
@@ -5648,6 +5843,7 @@ function homePage() {
     $("importTab").addEventListener("click", () => switchView("imports"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
+    $("adminTab").addEventListener("click", () => switchView("admin"));
     $("search").addEventListener("input", render);
     $("stateFilter").addEventListener("change", render);
     $("communityFilter").addEventListener("change", render);
@@ -5759,6 +5955,8 @@ function homePage() {
     $("reload").addEventListener("click", loadOverview);
     $("loginButton").addEventListener("click", login);
     $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
+    $("firstAccessButton").addEventListener("click", configureFirstAccess);
+    $("firstAccessConfirm").addEventListener("keydown", event => { if (event.key === "Enter") configureFirstAccess(); });
     $("logoutTop").addEventListener("click", logout);
     loadOverview();
   </script>
@@ -5802,6 +6000,16 @@ async function handle(req, res) {
     };
     setSessionCookie(res, publicUser);
     return sendJson(res, 200, { ok: true, usuario: publicUser });
+  }
+  if (req.method === "POST" && url.pathname === "/api/auth/first-access") {
+    const body = await readBody(req);
+    const result = await runAdminCommand({}, "first_access", {
+      nombre: body.usuario,
+      clave_temporal: body.clave_temporal,
+      password: body.password,
+      confirmacion: body.confirmacion
+    }, String(req.socket.remoteAddress || "web"));
+    return sendJson(res, 200, result);
   }
   if (req.method === "POST" && url.pathname === "/api/logout") {
     clearSessionCookie(res);
@@ -6068,12 +6276,25 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await analyzeWithAi(session, body.text || "", body.target || null));
   }
+  if (req.method === "GET" && url.pathname === "/api/admin") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runAdminCommand(session, "list", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/admin/action") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const allowedActions = new Set(["save_user", "save_community", "reset_password", "unlock_user"]);
+    if (!allowedActions.has(String(body.action || ""))) return sendJson(res, 400, { ok: false, error: "Accion de administracion no permitida." });
+    return sendJson(res, 200, await runAdminCommand(session, body.action, body.data || {}, String(req.socket.remoteAddress || "web")));
+  }
   if (req.method === "GET" && url.pathname === "/health") {
     const databaseExists = fs.existsSync(databasePath);
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 13 : 1,
+      step: databaseExists ? 14 : 1,
       port,
       dataDir,
       databasePath,
