@@ -230,3 +230,79 @@ export async function buildEntityReport({ type, item, history = [], attachments 
   const filename = `Informe_${entityLabel}_${safeFilename(title)}_${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.docx`;
   return { buffer: await Packer.toBuffer(document), filename };
 }
+
+export async function buildCollectionReport({ title = "Informe conjunto", entries = [] }) {
+  const generatedAt = new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date());
+  const taskCount = entries.filter(entry => entry.type === "task").length;
+  const projectCount = entries.filter(entry => entry.type === "project").length;
+  const attachmentCount = entries.reduce((total, entry) => total + (entry.attachments || []).length, 0);
+  const children = [
+    new Paragraph({ children: [new TextRun({ text: "INFORME OPERATIVO CONJUNTO", bold: true, color: COLORS.blue, size: 24 })], spacing: { after: 40 } }),
+    new Paragraph({ children: [new TextRun({ text: clean(title), bold: true, color: COLORS.dark, size: 40 })], spacing: { after: 80 } }),
+    new Paragraph({ children: [new TextRun({ text: `Generado: ${generatedAt}`, color: COLORS.muted, size: 18 })], spacing: { after: 220 } }),
+    sectionHeading("Resumen ejecutivo"),
+    textParagraph(`El informe re\u00fane ${entries.length} elementos: ${projectCount} proyectos y ${taskCount} tareas. Cada ficha conserva su situaci\u00f3n actual, responsables, pr\u00f3ximo paso y actuaciones cronol\u00f3gicas.`),
+    infoTable([
+      ["Total de elementos", entries.length],
+      ["Proyectos", projectCount],
+      ["Tareas", taskCount],
+      ["Anexos", attachmentCount]
+    ])
+  ];
+
+  entries.forEach((entry, index) => {
+    const isTask = entry.type === "task";
+    const item = entry.item || {};
+    const history = entry.history || [];
+    const entityTitle = clean(isTask ? item.titulo : item.nombre);
+    const state = clean(isTask ? item.estado : item.estado_general);
+    const owner = clean(isTask ? item.responsable : item.responsable_principal);
+    const nextOwner = clean(item.responsable_proximo_paso);
+    const nextDate = clean(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision);
+    const nextStep = clean(isTask ? item.proximo_paso : item.observaciones);
+    children.push(new Paragraph({
+      pageBreakBefore: index > 0,
+      children: [new TextRun({ text: `${index + 1}. ${isTask ? "TAREA" : "PROYECTO"}: ${entityTitle}`, bold: true, color: COLORS.blue, size: 28 })],
+      spacing: { before: 260, after: 120 },
+      keepNext: true
+    }));
+    children.push(infoTable([
+      ["Comunidad", item.comunidad],
+      ["Estado", state],
+      ["Prioridad", item.prioridad],
+      ["Responsable actual", owner],
+      ["Responsable del pr\u00f3ximo paso", nextOwner],
+      ["Fecha objetivo", nextDate],
+      ["Categor\u00eda", item.categoria]
+    ]));
+    if (clean(item.descripcion)) children.push(sectionHeading("Contexto", 2), textParagraph(item.descripcion));
+    children.push(sectionHeading("Actuaciones", 2), ...timeline(history));
+    children.push(sectionHeading("Situaci\u00f3n y pr\u00f3ximo paso", 2), infoTable([
+      ["Actuaci\u00f3n prevista", nextStep || "No se ha definido un pr\u00f3ximo paso."],
+      ["Responsable", nextOwner || owner || "Sin asignar"],
+      ["Fecha objetivo", nextDate || "Sin fecha"]
+    ]));
+    children.push(textParagraph(conclusionFor(state), "Conclusi\u00f3n: ", { after: 120 }));
+    children.push(sectionHeading("Anexos", 2), ...attachmentBlocks(entry.attachments || []));
+  });
+
+  const document = new Document({
+    creator: "Organizador Web",
+    title: clean(title),
+    styles: {
+      default: { document: { run: { font: "Aptos", size: 20, color: COLORS.dark } } },
+      paragraphStyles: [
+        { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 30, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } },
+        { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 23, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } }
+      ]
+    },
+    sections: [{
+      properties: { page: { margin: { top: 900, right: 950, bottom: 900, left: 950 } } },
+      headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "ORGANIZADOR - INFORME OPERATIVO", color: COLORS.muted, size: 16 })] })] }) },
+      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "Informe conjunto | P\u00e1gina ", color: COLORS.muted, size: 16 }), new TextRun({ children: [PageNumber.CURRENT], color: COLORS.muted, size: 16 })] })] }) },
+      children
+    }]
+  });
+  const filename = `Informe_conjunto_${safeFilename(title)}_${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.docx`;
+  return { buffer: await Packer.toBuffer(document), filename };
+}

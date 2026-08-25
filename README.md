@@ -23,6 +23,9 @@ La version web centraliza actualmente:
 - buscador global sobre fichas, seguimientos, acciones, informes y anexos;
 - centro documental con filtros, vista previa, descarga y acceso a la ficha relacionada;
 - informes Word individuales de tareas y proyectos;
+- centro de informes con consulta de archivos existentes y generacion conjunta de hasta 40 tareas/proyectos de una misma comunidad;
+- importador inteligente de DOCX, TXT, MD o texto pegado, con vista previa editable de varias actuaciones;
+- alta de un proyecto o tarea anterior con reconstruccion de seguimientos historicos por fecha;
 - subida multiple, vista previa y descarga protegida de anexos;
 - datos y documentos persistentes en el servidor Ubuntu.
 
@@ -33,6 +36,16 @@ Los datos reales siguen excluidos de GitHub:
 - claves y sesiones;
 - copias de seguridad y logs.
 - datos personales.
+
+## Importacion segura
+
+El importador funciona primero en modo de propuesta: leer o analizar un documento no modifica datos. El usuario debe revisar cada tarjeta, elegir si crea o actualiza, seleccionar el elemento correcto y confirmar expresamente las propuestas incluidas. La comunidad es obligatoria y se valida contra los permisos de la sesion.
+
+Los perfiles `Presidente` y `Consulta` no pueden utilizar el importador. La importacion aplicada queda registrada en documentos importados, detecciones y auditoria.
+
+## Informes conjuntos
+
+El centro de informes permite abrir los informes ya generados y crear un Word conjunto con las fichas seleccionadas. Por seguridad, todos los elementos de un mismo informe deben pertenecer a una unica comunidad. El documento incluye resumen ejecutivo, situacion, responsables, actuaciones cronologicas, siguiente paso, conclusion y anexos disponibles.
 
 ## Estructura
 

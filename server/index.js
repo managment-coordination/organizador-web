@@ -4,7 +4,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { buildEntityReport } from "./report-generator.js";
+import mammoth from "mammoth";
+import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -323,6 +324,91 @@ with conn:
                  (now, user, pc, "Generar informe Word web", "tarea" if entity_type == "task" else "proyecto", entity_id, filename))
 conn.close()
 print(json.dumps({"ok": True, "report_id": report_id, "filename": filename}, ensure_ascii=False))
+`;
+    return await runPythonJson(script);
+  } catch (error) {
+    if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    throw error;
+  }
+}
+
+function queryReportsCenter(session) {
+  const script = `
+import json,sqlite3
+path=${JSON.stringify(databasePath)}
+session=${JSON.stringify(session || {})}
+role=str(session.get("rol") or "")
+allowed_ids=[int(c.get("id_comunidad")) for c in session.get("comunidades",[]) if c.get("id_comunidad")]
+conn=sqlite3.connect(f"file:{path}?mode=ro",uri=True); conn.row_factory=sqlite3.Row
+def rows(sql,params=()): return [dict(r) for r in conn.execute(sql,params).fetchall()]
+def scope(alias):
+    if role=="Superusuario": return "",[]
+    if not allowed_ids: return " AND 1=0",[]
+    return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in allowed_ids)})",allowed_ids
+rf,rp=scope("i")
+president_report=" AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role=="Presidente" else ""
+reports=rows("""SELECT i.id_informe,i.fecha_generacion,i.tipo_informe,i.periodo_desde,i.periodo_hasta,
+    i.id_proyecto,i.archivo_word,i.observaciones,i.usuario,i.id_comunidad,c.nombre AS comunidad,p.nombre AS proyecto
+    FROM informes i LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
+    WHERE COALESCE(i.archivo_word,'')<>''"""+president_report+rf+" ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 350",tuple(rp))
+for report in reports:
+    report["nombre_archivo"]=str(report.get("archivo_word") or "").replace("\\\\","/").split("/")[-1]
+    report["entity_type"]="project"; report["entity_id"]=report.get("id_proyecto")
+    try: metadata=json.loads(report.get("observaciones") or "{}")
+    except (TypeError,ValueError): metadata={}
+    if metadata.get("tipo_entidad") in {"task","tarea"} and metadata.get("id_entidad"):
+        report["entity_type"]="task"; report["entity_id"]=int(metadata["id_entidad"])
+    report.pop("archivo_word",None); report.pop("observaciones",None)
+pf,pp=scope("p"); tf,tp=scope("t")
+projects=rows("""SELECT 'project' AS entity_type,p.id_proyecto AS entity_id,p.id_comunidad,p.nombre AS titulo,
+    p.estado_general AS estado,p.prioridad,p.responsable_principal AS responsable,p.fecha_ultima_actualizacion,c.nombre AS comunidad
+    FROM proyectos p LEFT JOIN comunidades c ON c.id_comunidad=p.id_comunidad WHERE 1=1"""+pf+" ORDER BY p.nombre",tuple(pp))
+tasks=[] if role=="Presidente" else rows("""SELECT 'task' AS entity_type,t.id_tarea AS entity_id,t.id_comunidad,t.titulo,
+    t.estado,t.prioridad,t.responsable,t.fecha_ultima_actualizacion,c.nombre AS comunidad
+    FROM tareas t LEFT JOIN comunidades c ON c.id_comunidad=t.id_comunidad WHERE 1=1"""+tf+" ORDER BY t.titulo",tuple(tp))
+communities=rows("SELECT id_comunidad AS id,nombre FROM comunidades WHERE COALESCE(activo,1)=1 ORDER BY nombre") if role=="Superusuario" else list(session.get("comunidades") or [])
+conn.close()
+print(json.dumps({"reports":reports,"entities":projects+tasks,"communities":communities},ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+async function generateCollectionReport(session, selections, title, pc) {
+  if (!Array.isArray(selections) || !selections.length) throw new Error("Selecciona al menos un elemento.");
+  if (selections.length > 40) throw new Error("El informe conjunto admite un maximo de 40 elementos.");
+  const normalized = selections.map(row => ({ type: String(row.type || ""), id: Number(row.id || 0) }));
+  if (normalized.some(row => !["task", "project"].includes(row.type) || !row.id)) throw new Error("La seleccion contiene elementos no validos.");
+  if (session?.rol === "Presidente" && normalized.some(row => row.type === "task")) throw new Error("El Presidente no puede generar informes generales de tareas.");
+  const details = await Promise.all(normalized.map(row => queryEntityDetail(session, row.type, row.id)));
+  if (details.some(detail => !detail?.item || detail.error)) throw new Error("No se pudo acceder a uno de los elementos seleccionados.");
+  const communityIds = [...new Set(details.map(detail => Number(detail.item.id_comunidad || 0)).filter(Boolean))];
+  if (communityIds.length !== 1) throw new Error("Para mantener los permisos del archivo, selecciona elementos de una sola comunidad.");
+  const entries = details.map((detail, index) => ({
+    type: normalized[index].type,
+    item: detail.item,
+    history: [...(detail.history || [])].reverse(),
+    attachments: (detail.attachments || []).map(row => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }))
+  }));
+  const report = await buildCollectionReport({ title: String(title || "Informe conjunto").trim(), entries });
+  const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
+  fs.mkdirSync(folder, { recursive: true });
+  const outputPath = path.join(folder, report.filename);
+  fs.writeFileSync(outputPath, report.buffer, { flag: "wx" });
+  try {
+    const script = `
+import json,sqlite3
+from datetime import datetime
+path=${JSON.stringify(databasePath)}; output=${JSON.stringify(outputPath)}; filename=${JSON.stringify(report.filename)}
+title=${JSON.stringify(String(title || "Informe conjunto").trim())}; community_id=int(${JSON.stringify(communityIds[0])})
+selection=${JSON.stringify(normalized)}; user=${JSON.stringify(session?.nombre || "web")}; pc=${JSON.stringify(pc || "web")}
+now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn=sqlite3.connect(path)
+with conn:
+    cur=conn.execute("""INSERT INTO informes (fecha_generacion,tipo_informe,periodo_desde,periodo_hasta,id_proyecto,archivo_word,observaciones,usuario,pc,id_comunidad)
+        VALUES (?,'Informe conjunto','','',NULL,?,?,?,?,?)""",(now,output,json.dumps({"titulo":title,"seleccion":selection},ensure_ascii=False),user,pc,community_id))
+    report_id=int(cur.lastrowid)
+    conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",(now,user,pc,"Generar informe conjunto web","informe",report_id,f"{len(selection)} elementos | {filename}"))
+conn.close(); print(json.dumps({"ok":True,"report_id":report_id,"filename":filename},ensure_ascii=False))
 `;
     return await runPythonJson(script);
   } catch (error) {
@@ -1501,6 +1587,362 @@ function localAiProposal(text, context) {
       motivo_bloqueo: "",
     },
   };
+}
+
+function cleanImportText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replaceAll("\u00a0", " ")
+    .replace(/[\u2000-\u200b\ufeff]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+async function extractImportDocument(fileName, bytes) {
+  const name = safeUploadName(fileName);
+  const extension = path.extname(name).toLowerCase();
+  if (!bytes?.length) throw new Error("El documento esta vacio.");
+  if (bytes.length > 12 * 1024 * 1024) throw new Error("El documento supera el limite de 12 MB.");
+  if ([".txt", ".md"].includes(extension)) {
+    return { name, text: cleanImportText(bytes.toString("utf8")), format: extension.slice(1) };
+  }
+  if (extension === ".docx") {
+    const result = await mammoth.extractRawText({ buffer: bytes });
+    return { name, text: cleanImportText(result.value), format: "docx", warnings: (result.messages || []).map(message => message.message).filter(Boolean) };
+  }
+  throw new Error("Formato no compatible. Usa DOCX, TXT o MD.");
+}
+
+const IMPORT_FIELD_LABELS = new Map([
+  ["tipo de entrada", "entry_type"], ["tipo", "entry_type"],
+  ["elemento relacionado", "related"], ["proyecto o tarea relacionada", "related"],
+  ["titulo propuesto", "title"], ["titulo", "title"],
+  ["categoria", "category"], ["estado sugerido", "state"], ["estado", "state"],
+  ["prioridad sugerida", "priority"], ["prioridad", "priority"],
+  ["responsable actual", "owner"], ["responsable", "owner"],
+  ["responsable proximo paso", "next_owner"], ["proximo responsable", "next_owner"],
+  ["comentario actualizacion", "comment"], ["comentario o actualizacion", "comment"], ["comentario", "comment"], ["actualizacion", "comment"],
+  ["proximo paso", "next_step"], ["fecha objetivo", "target_date"],
+  ["anexos mencionados", "attachments"], ["justificacion", "justification"]
+]);
+
+function splitStructuredImport(text) {
+  const source = cleanImportText(text);
+  const matches = [...source.matchAll(/^\s*ELEMENTO\s+\d+\s*$/gim)];
+  if (!matches.length) return [];
+  return matches.slice(0, 20).map((match, index) => source.slice(match.index, matches[index + 1]?.index ?? source.length).trim());
+}
+
+function parseStructuredImportBlock(block) {
+  const fields = {};
+  let current = "";
+  for (const rawLine of String(block || "").split("\n")) {
+    const line = rawLine.trim().replace(/^[-*#]+\s*/, "");
+    if (!line || /^elemento\s+\d+$/i.test(line)) continue;
+    const separator = line.indexOf(":");
+    const label = normalizeText(separator >= 0 ? line.slice(0, separator) : line);
+    const key = IMPORT_FIELD_LABELS.get(label);
+    if (key) {
+      current = key;
+      fields[key] = separator >= 0 ? line.slice(separator + 1).trim() : "";
+    } else if (current) {
+      fields[current] = [fields[current], line].filter(Boolean).join("\n");
+    }
+  }
+  return fields;
+}
+
+function importEntityMatches(text, context, kind) {
+  const rows = kind === "task" ? (context.tasks || []) : (context.projects || []);
+  const wanted = normalizeText(text);
+  return rows.map(item => {
+    const exact = wanted && normalizeText(item.titulo) === wanted;
+    return { ...item, type: kind, score: exact ? 100 : scoreTextMatch(text, item.titulo) };
+  }).filter(item => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 6);
+}
+
+function normalizedImportAction(entryType) {
+  const value = normalizeText(entryType);
+  if (value.includes("seguimiento") && value.includes("tarea")) return "seguimiento_tarea";
+  if ((value.includes("seguimiento") || value.includes("actualizacion")) && value.includes("proyecto")) return "seguimiento_proyecto";
+  if (value.includes("nueva") && value.includes("tarea")) return "crear_tarea";
+  if (value.includes("nuevo") && value.includes("proyecto")) return "crear_proyecto";
+  if (value.includes("tarea")) return "crear_tarea";
+  if (value.includes("proyecto")) return "crear_proyecto";
+  return "revisar_manual";
+}
+
+function normalizeImportState(kind, value, fallback) {
+  let state = String(value || fallback || "").trim();
+  if (kind === "task") {
+    state = state.replace(/^Bloqueado$/i, "Bloqueada").replace(/^Finalizado$/i, "Terminada").replace(/^Archivado$/i, "Archivada");
+  } else {
+    state = state.replace(/^Bloqueada$/i, "Bloqueado").replace(/^Terminada$/i, "Finalizado").replace(/^Archivada$/i, "Archivado");
+  }
+  return state || fallback;
+}
+
+function structuredImportProposal(block, context, index) {
+  const fields = parseStructuredImportBlock(block);
+  let action = normalizedImportAction(fields.entry_type);
+  const wanted = fields.related || fields.title || "";
+  const wantedKind = action.includes("tarea") ? "task" : "project";
+  const matches = importEntityMatches(wanted, context, wantedKind);
+  const best = matches[0];
+  if (action === "seguimiento_tarea" && (!best || best.score < 2)) action = "crear_tarea";
+  if (action === "seguimiento_proyecto" && (!best || best.score < 2)) action = "crear_proyecto";
+  const kind = action.includes("tarea") ? "task" : "project";
+  const fallbackState = kind === "task" ? "Pendiente" : "En curso";
+  const commentParts = [fields.comment, fields.attachments && `Anexos mencionados:\n${fields.attachments}`].filter(Boolean);
+  return {
+    client_id: index + 1,
+    selected: action !== "revisar_manual",
+    action,
+    confidence: best ? (best.score === 100 ? 0.98 : Math.min(0.9, 0.35 + best.score / 10)) : 0.45,
+    entity: action.startsWith("seguimiento") && best ? { type: kind, id: best.id, title: best.titulo } : null,
+    candidates: matches.map(item => ({ type: kind, id: item.id, title: item.titulo, score: item.score })),
+    payload: {
+      titulo: fields.title || fields.related || `Elemento importado ${index + 1}`,
+      categoria: fields.category || "Otro",
+      tipo_registro: detectRecordType(fields.comment || block),
+      comentario: cleanImportText(commentParts.join("\n\n") || block).slice(0, 8000),
+      estado_nuevo: normalizeImportState(kind, detectState(fields.state || fields.comment || "", fallbackState), fallbackState),
+      prioridad_nueva: detectPriority(fields.priority || fields.comment || "", "Media"),
+      responsable_nuevo: fields.owner || "Luis Gallardo",
+      responsable_proximo_paso: fields.next_owner || fields.owner || "Luis Gallardo",
+      fecha_objetivo_proximo_paso: normalizeImportDate(fields.target_date),
+      fecha_proxima_revision: normalizeImportDate(fields.target_date),
+      proximo_paso: fields.next_step || extractNextStep(fields.comment || "") || "Revisar la actuación propuesta.",
+      motivo_bloqueo: normalizeText(fields.state).includes("bloque") ? (fields.justification || fields.comment || "") : ""
+    },
+    original: block
+  };
+}
+
+function detectRecordType(text) {
+  const value = normalizeText(text);
+  if (value.includes("reunion") || value.includes("acta")) return "Reunión";
+  if (value.includes("llamada") || value.includes("telefono")) return "Llamada";
+  if (value.includes("correo") || value.includes("email")) return "Email";
+  if (value.includes("presupuesto") || value.includes("oferta")) return "Presupuesto";
+  if (value.includes("decision") || value.includes("acuerda") || value.includes("aprueba")) return "Decisión";
+  if (value.includes("incidencia") || value.includes("bloque") || value.includes("problema")) return "Incidencia";
+  return "Seguimiento";
+}
+
+function normalizeImportDate(value) {
+  const text = String(value || "").trim();
+  let match = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (match) {
+    const year = match[3].length === 2 ? `20${match[3]}` : match[3];
+    return `${year}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+  }
+  match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  return match ? `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}` : "";
+}
+
+function historicalImportProposal(text) {
+  const source = cleanImportText(text);
+  const title = source.match(/^(?:T[IÍ]TULO|PROYECTO|TAREA)\s*:\s*(.+)$/im)?.[1]?.trim() || source.split("\n").find(line => line.trim())?.replace(/^#+\s*/, "").slice(0, 140) || "Elemento histórico";
+  const typeLabel = source.match(/^TIPO\s*:\s*(.+)$/im)?.[1] || "Proyecto";
+  const kind = normalizeText(typeLabel).includes("tarea") ? "task" : "project";
+  const category = source.match(/^CATEGOR[IÍ]A\s*:\s*(.+)$/im)?.[1]?.trim() || "Otro";
+  const priority = detectPriority(source.match(/^PRIORIDAD\s*:\s*(.+)$/im)?.[1] || source, "Media");
+  const owner = source.match(/^RESPONSABLE\s*:\s*(.+)$/im)?.[1]?.trim() || "Luis Gallardo";
+  const datePattern = /(?:actualizaci[oó]n|seguimiento|reuni[oó]n|llamada|entrada|fecha)?(?:\s+de\s+seguimiento)?(?:\s+del|\s+de)?\s*(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})/gim;
+  const matches = [...source.matchAll(datePattern)].slice(0, 40);
+  const records = matches.map((match, index) => {
+    const end = matches[index + 1]?.index ?? source.length;
+    const comment = cleanImportText(source.slice((match.index || 0) + match[0].length, end).replace(/^[\s:\-]+/, ""));
+    return {
+      fecha: normalizeImportDate(match[1]),
+      tipo_registro: detectRecordType(`${match[0]} ${comment}`),
+      comentario: comment || "Actuación histórica pendiente de completar.",
+      estado_nuevo: normalizeImportState(kind, detectState(comment, kind === "task" ? "Pendiente" : "En curso"), kind === "task" ? "Pendiente" : "En curso"),
+      prioridad_nueva: detectPriority(comment, priority),
+      responsable_nuevo: owner,
+      responsable_proximo_paso: owner,
+      proximo_paso: extractNextStep(comment) || "Revisar la siguiente actuación."
+    };
+  }).filter(record => record.comentario);
+  if (!records.length) records.push({ fecha: new Date().toISOString().slice(0, 10), tipo_registro: detectRecordType(source), comentario: source, estado_nuevo: kind === "task" ? "Pendiente" : "En curso", prioridad_nueva: priority, responsable_nuevo: owner, responsable_proximo_paso: owner, proximo_paso: extractNextStep(source) || "Revisar la siguiente actuación." });
+  const last = records.at(-1);
+  return {
+    client_id: 1, selected: true, action: kind === "task" ? "crear_tarea" : "crear_proyecto", confidence: 0.8,
+    entity: null, candidates: [], historical: true, records,
+    payload: {
+      titulo: title, categoria: category, tipo_registro: "Creación", comentario: records[0].comentario,
+      estado_nuevo: last.estado_nuevo, prioridad_nueva: priority, responsable_nuevo: owner,
+      responsable_proximo_paso: last.responsable_proximo_paso, fecha_objetivo_proximo_paso: "",
+      fecha_proxima_revision: "", proximo_paso: last.proximo_paso, motivo_bloqueo: "", descripcion: source.slice(0, 8000)
+    }, original: source
+  };
+}
+
+async function analyzeImportBatch(session, text, mode = "updates") {
+  if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error("Tu perfil no puede importar información.");
+  const source = cleanImportText(text);
+  if (source.length < 12) throw new Error("El texto es demasiado corto para analizarlo.");
+  if (source.length > 120000) throw new Error("El texto supera el limite de 120.000 caracteres.");
+  const context = await queryAiContext(session);
+  if (mode === "historical") return { mode, source: "local", proposals: [historicalImportProposal(source)] };
+  const blocks = splitStructuredImport(source);
+  const proposals = blocks.length
+    ? blocks.map((block, index) => structuredImportProposal(block, context, index))
+    : [{ ...localAiProposal(source, context), client_id: 1, selected: true, original: source }];
+  return { mode, source: "local", structured: Boolean(blocks.length), proposals };
+}
+
+function writeHistoricalRecords(session, type, id, records, pc) {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime, timedelta
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+entity_type = ${JSON.stringify(type)}
+entity_id = int(${JSON.stringify(id)})
+records = json.loads(${JSON.stringify(JSON.stringify(records || []))})
+user = str(session.get("nombre") or "web")
+role = str(session.get("rol") or "")
+pc = ${JSON.stringify(pc || "web")}
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+table = "tareas" if entity_type == "task" else "proyectos"
+id_column = "id_tarea" if entity_type == "task" else "id_proyecto"
+item = conn.execute(f"SELECT * FROM {table} WHERE {id_column}=?", (entity_id,)).fetchone()
+if not item: raise ValueError("El elemento historico no existe.")
+if role != "Superusuario" and int(item["id_comunidad"] or 0) not in allowed_ids: raise PermissionError("Comunidad no permitida.")
+
+def timestamp(value, index):
+    text = str(value or "").strip()[:10]
+    try: day = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError: day = datetime.now()
+    return (day + timedelta(minutes=index)).strftime("%Y-%m-%d %H:%M:%S")
+
+valid = [r for r in records[:50] if str(r.get("comentario") or "").strip()]
+if not valid: raise ValueError("No hay seguimientos historicos validos.")
+first_ts = timestamp(valid[0].get("fecha"), 0)
+last = valid[-1]
+with conn:
+    if entity_type == "task":
+        conn.execute("UPDATE registros SET fecha_hora=?, comentario=? WHERE id_registro=(SELECT id_registro FROM registros WHERE id_tarea=? AND tipo_registro='Creación' ORDER BY id_registro DESC LIMIT 1)",
+                     (first_ts, "Ficha incorporada mediante importacion historica revisada.", entity_id))
+        for index, row in enumerate(valid, 1):
+            conn.execute("""INSERT INTO registros
+                (id_tarea,id_proyecto,fecha_hora,tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,proximo_paso,fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (entity_id,item["id_proyecto"],timestamp(row.get("fecha"),index),str(row.get("tipo_registro") or "Seguimiento"),str(row.get("comentario") or ""),str(row.get("estado_nuevo") or "Pendiente"),str(row.get("prioridad_nueva") or "Media"),str(row.get("responsable_nuevo") or user),str(row.get("proximo_paso") or ""),str(row.get("fecha") or ""),str(row.get("motivo_bloqueo") or ""),user,pc,item["id_comunidad"],str(row.get("responsable_proximo_paso") or row.get("responsable_nuevo") or user),str(row.get("fecha_objetivo_proximo_paso") or "")))
+        conn.execute("""UPDATE tareas SET estado=?,prioridad=?,responsable=?,responsable_proximo_paso=?,proximo_paso=?,fecha_ultima_actualizacion=?,usuario_ultima_actualizacion=?,pc_ultima_actualizacion=? WHERE id_tarea=?""",
+                     (str(last.get("estado_nuevo") or "Pendiente"),str(last.get("prioridad_nueva") or "Media"),str(last.get("responsable_nuevo") or user),str(last.get("responsable_proximo_paso") or last.get("responsable_nuevo") or user),str(last.get("proximo_paso") or ""),timestamp(last.get("fecha"),len(valid)),user,pc,entity_id))
+    else:
+        conn.execute("UPDATE registros_proyectos SET fecha_hora=?, comentario=? WHERE id_registro_proyecto=(SELECT id_registro_proyecto FROM registros_proyectos WHERE id_proyecto=? AND tipo_registro='Creación' ORDER BY id_registro_proyecto DESC LIMIT 1)",
+                     (first_ts, "Ficha incorporada mediante importacion historica revisada.", entity_id))
+        for index, row in enumerate(valid, 1):
+            state = str(row.get("estado_nuevo") or "En curso").replace("Bloqueada","Bloqueado").replace("Terminada","Finalizado")
+            conn.execute("""INSERT INTO registros_proyectos
+                (id_proyecto,fecha_hora,tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,proximo_paso,fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (entity_id,timestamp(row.get("fecha"),index),str(row.get("tipo_registro") or "Seguimiento"),str(row.get("comentario") or ""),state,str(row.get("prioridad_nueva") or "Media"),str(row.get("responsable_nuevo") or user),str(row.get("proximo_paso") or ""),str(row.get("fecha") or ""),str(row.get("motivo_bloqueo") or ""),user,pc,item["id_comunidad"],str(row.get("responsable_proximo_paso") or row.get("responsable_nuevo") or user),str(row.get("fecha_objetivo_proximo_paso") or "")))
+        final_state = str(last.get("estado_nuevo") or "En curso").replace("Bloqueada","Bloqueado").replace("Terminada","Finalizado")
+        conn.execute("""UPDATE proyectos SET estado_general=?,prioridad=?,responsable_principal=?,responsable_proximo_paso=?,observaciones=?,fecha_ultima_actualizacion=?,usuario_ultima_actualizacion=?,pc_ultima_actualizacion=? WHERE id_proyecto=?""",
+                     (final_state,str(last.get("prioridad_nueva") or "Media"),str(last.get("responsable_nuevo") or user),str(last.get("responsable_proximo_paso") or last.get("responsable_nuevo") or user),str(last.get("proximo_paso") or ""),timestamp(last.get("fecha"),len(valid)),user,pc,entity_id))
+    conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
+                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),user,pc,"Importar historico web",entity_type,entity_id,f"{len(valid)} seguimientos historicos"))
+conn.close()
+print(json.dumps({"ok":True,"records":len(valid)},ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function saveImportTrace(session, sourceName, sourceText, communityId, proposals, results, pc) {
+  const script = `
+import json,sqlite3
+from datetime import datetime
+path=${JSON.stringify(databasePath)}
+session=${JSON.stringify(session || {})}
+name=${JSON.stringify(String(sourceName || "Texto pegado").slice(0, 180))}
+text=${JSON.stringify(String(sourceText || "").slice(0, 120000))}
+community_id=int(${JSON.stringify(Number(communityId) || 0)}) or None
+proposals=json.loads(${JSON.stringify(JSON.stringify(proposals || []))})
+results=json.loads(${JSON.stringify(JSON.stringify(results || []))})
+user=str(session.get("nombre") or "web"); pc=${JSON.stringify(pc || "web")}
+now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn=sqlite3.connect(path)
+with conn:
+    cur=conn.execute("""INSERT INTO documentos_importados
+        (nombre_archivo,ruta_archivo,tipo_archivo,fecha_importacion,fecha_documento,asunto_documento,texto_extraido,proyecto_sugerido,observaciones,usuario,pc,id_comunidad)
+        VALUES (?,'','texto_web',?,'',?,?,?, ?,?,?,?)""",
+        (name,now,name,text,"",json.dumps({"origen":"web","resultados":results},ensure_ascii=False),user,pc,community_id))
+    document_id=int(cur.lastrowid)
+    for index,item in enumerate(proposals):
+        payload=item.get("payload") or {}; entity=item.get("entity") or {}; result=results[index] if index < len(results) else {}
+        conn.execute("""INSERT INTO detecciones_documento
+            (id_documento,texto_original,texto_validado,tipo_detectado,accion_elegida,id_proyecto_asociado,id_tarea_asociada,titulo_propuesto,comentario,estado_propuesto,prioridad_propuesta,responsable_propuesto,proximo_paso,fecha_proxima_revision,motivo_bloqueo,categoria_propuesta,puntuacion_coincidencia,validado,descartado,fecha_validacion,id_tarea_creada,id_proyecto_creado,id_comunidad)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (document_id,str(item.get("original") or ""),str(item.get("original") or ""),str(payload.get("tipo_registro") or "Seguimiento"),str(item.get("action") or ""),entity.get("id") if entity.get("type")=="project" else None,entity.get("id") if entity.get("type")=="task" else None,str(payload.get("titulo") or ""),str(payload.get("comentario") or ""),str(payload.get("estado_nuevo") or ""),str(payload.get("prioridad_nueva") or ""),str(payload.get("responsable_nuevo") or ""),str(payload.get("proximo_paso") or ""),str(payload.get("fecha_proxima_revision") or ""),str(payload.get("motivo_bloqueo") or ""),str(payload.get("categoria") or ""),str(round(float(item.get("confidence") or 0)*100)),1 if item.get("selected",True) else 0,0 if item.get("selected",True) else 1,now,result.get("id") if result.get("type")=="task" and result.get("created") else None,result.get("id") if result.get("type")=="project" and result.get("created") else None,community_id))
+    conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",(now,user,pc,"Aplicar importacion web","documento_importado",document_id,f"{len(results)} operaciones"))
+conn.close()
+print(json.dumps({"ok":True,"document_id":document_id},ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+async function applyImportBatch(session, body, pc) {
+  if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error("Tu perfil no puede aplicar importaciones.");
+  const proposals = Array.isArray(body?.proposals) ? body.proposals.slice(0, 25) : [];
+  const selected = proposals.filter(item => item?.selected !== false && item?.action !== "descartar");
+  if (!selected.length) throw new Error("No hay propuestas seleccionadas para guardar.");
+  const communityId = Number(body.id_comunidad || 0);
+  if (!communityId) throw new Error("Selecciona la comunidad de la importacion.");
+  if (!allowedCommunity(session, communityId)) throw new Error("No tienes permiso para esa comunidad.");
+  for (const item of selected) {
+    const action = String(item.action || "");
+    if (!["seguimiento_tarea", "seguimiento_proyecto", "crear_tarea", "crear_proyecto"].includes(action)) {
+      throw new Error(`Revisa la accion de la propuesta ${item.client_id || ""}.`);
+    }
+    if (action.startsWith("seguimiento")) {
+      const type = action === "seguimiento_tarea" ? "task" : "project";
+      const id = Number(item.entity?.id || item.entity_id || 0);
+      if (!id) throw new Error(`Falta seleccionar el elemento de la propuesta ${item.client_id || ""}.`);
+      const detail = await queryEntityDetail(session, type, id);
+      if (!detail?.item || detail.error) throw new Error(`No se puede acceder al elemento de la propuesta ${item.client_id || ""}.`);
+      if (Number(detail.item.id_comunidad || 0) !== communityId) throw new Error(`La propuesta ${item.client_id || ""} pertenece a otra comunidad.`);
+    } else {
+      const payload = item.payload || {};
+      if (!String(payload.titulo || "").trim()) throw new Error(`Falta el titulo de la propuesta ${item.client_id || ""}.`);
+      if (action === "crear_tarea" && payload.id_proyecto) {
+        const detail = await queryEntityDetail(session, "project", Number(payload.id_proyecto));
+        if (!detail?.item || Number(detail.item.id_comunidad || 0) !== communityId) throw new Error(`El proyecto contenedor de la propuesta ${item.client_id || ""} no pertenece a la comunidad seleccionada.`);
+      }
+    }
+  }
+  const results = [];
+  for (const item of selected) {
+    const action = String(item.action || "");
+    const payload = { ...(item.payload || {}), id_comunidad: communityId };
+    let result;
+    if (["seguimiento_tarea", "seguimiento_proyecto"].includes(action)) {
+      const type = action === "seguimiento_tarea" ? "task" : "project";
+      const id = Number(item.entity?.id || item.entity_id || 0);
+      if (!id) throw new Error(`Falta seleccionar el elemento de la propuesta ${item.client_id || ""}.`);
+      result = await writeEntityRecord(session, type, id, payload, pc);
+      results.push({ ...result, created: false });
+    } else if (["crear_tarea", "crear_proyecto"].includes(action)) {
+      const type = action === "crear_tarea" ? "task" : "project";
+      if (!String(payload.titulo || "").trim()) throw new Error(`Falta el titulo de la propuesta ${item.client_id || ""}.`);
+      result = await createEntity(session, type, payload, pc);
+      if (item.historical && Array.isArray(item.records)) await writeHistoricalRecords(session, type, result.id, item.records, pc);
+      results.push({ ...result, created: true });
+    } else {
+      throw new Error(`Revisa la accion de la propuesta ${item.client_id || ""}.`);
+    }
+  }
+  const trace = await saveImportTrace(session, body.source_name || "Importacion web", body.source_text || "", communityId, selected, results, pc);
+  return { ok: true, applied: results.length, results, document_id: trace.document_id };
 }
 
 function cleanAiJson(content) {
@@ -2967,6 +3409,26 @@ function homePage() {
     .documentCard h3 { margin:0; font-size:15px; overflow-wrap:anywhere; }
     .documentPreview { width:100%; height:145px; object-fit:cover; border:1px solid #e2e8f0; border-radius:6px; background:#f8fafc; }
     .documentFileIcon { height:104px; display:grid; place-items:center; border:1px solid #e2e8f0; border-radius:6px; background:#f8fafc; font-weight:900; font-size:18px; color:#475569; }
+    .importShell { display:grid; gap:12px; }
+    .importControls { display:grid; grid-template-columns:220px 240px minmax(220px,1fr); gap:9px; }
+    .importSource { min-height:240px; }
+    .importProposalList { display:grid; gap:11px; }
+    .importProposal { border:1px solid var(--line); border-left:6px solid var(--blue); border-radius:8px; background:white; padding:12px; display:grid; gap:10px; }
+    .importProposal.disabled { opacity:.58; border-left-color:#94a3b8; }
+    .importProposalHead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .importProposalHead h3 { margin:0; }
+    .importProposalGrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+    .historicalRows { display:grid; gap:8px; }
+    .historicalRow { display:grid; grid-template-columns:135px 150px minmax(260px,1fr) minmax(220px,.8fr); gap:8px; border-top:1px solid #e2e8f0; padding-top:8px; }
+    .reportLayout { display:grid; gap:12px; }
+    .reportControls { display:grid; grid-template-columns:minmax(220px,1fr) 200px 230px; gap:9px; }
+    .reportList { display:grid; gap:8px; }
+    .reportRow { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+    .reportRow h3 { margin:0 0 5px; font-size:15px; overflow-wrap:anywhere; }
+    .entitySelector { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:8px; max-height:520px; overflow:auto; padding:2px; }
+    .entityChoice { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; display:grid; grid-template-columns:auto 1fr; gap:9px; align-items:start; cursor:pointer; }
+    .entityChoice.selected { border-color:#2563eb; background:#eff6ff; }
+    .entityChoice input { width:18px; min-height:18px; margin:2px 0 0; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2997,6 +3459,8 @@ function homePage() {
       .mapSectionBody { grid-template-columns:1fr; }
       .searchControls, .documentControls { grid-template-columns:1fr; }
       .resultCard { grid-template-columns:1fr; }
+      .importControls, .importProposalGrid, .historicalRow, .reportControls { grid-template-columns:1fr; }
+      .reportRow { grid-template-columns:1fr; }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
       .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
@@ -3011,7 +3475,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 11 - Operativa diaria centralizada</p>
+        <p>Paso 12 - Importacion inteligente e informes</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -3046,6 +3510,8 @@ function homePage() {
             <div class="navDivider"></div>
             <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
             <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
+            <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
+            <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
             <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
             <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
           </div>
@@ -3283,6 +3749,19 @@ function homePage() {
     let documentType = "all";
     let documentCommunity = "";
     let aiProposal = null;
+    let importAnalysis = null;
+    let importSourceName = "Texto pegado";
+    let importSourceText = "";
+    let importCommunity = "";
+    let reportsCenter = { reports: [], entities: [], communities: [], loaded: false };
+    let selectedReportEntities = new Set();
+    let reportQuery = "";
+    let reportType = "all";
+    let reportCommunity = "";
+    let reportEntityQuery = "";
+    let reportEntityType = "all";
+    let reportEntityCommunity = "";
+    let collectionReportTitle = "";
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -3407,6 +3886,11 @@ function homePage() {
     async function logout() {
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
       state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
+      importAnalysis = null;
+      importSourceText = "";
+      importCommunity = "";
+      reportsCenter = { reports: [], entities: [], communities: [], loaded: false };
+      selectedReportEntities = new Set();
       currentView = "home";
       showLogin("Sesion cerrada.");
     }
@@ -3873,8 +4357,8 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["homeTab", "projectTab", "taskTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", notifications: "notificationTab", ai: "aiTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab" })[view];
       if (target) $(target).classList.add("active");
     }
 
@@ -4021,6 +4505,284 @@ function homePage() {
       $("documentType").addEventListener("change", event => { documentType = event.target.value; renderDocumentResults(); });
       $("documentCommunity").addEventListener("change", event => { documentCommunity = event.target.value; renderDocumentResults(); });
       renderDocumentResults();
+    }
+
+    function importCommunityOptions() {
+      const communities = (state.daily || {}).communities || [];
+      return communities.map(row => {
+        const id = row.id || row.id_comunidad;
+        return '<option value="' + html(id) + '"' + (String(id) === String(importCommunity || "") ? " selected" : "") + '>' + html(row.nombre) + '</option>';
+      }).join("");
+    }
+
+    function importActionOptions(selected) {
+      const rows = [
+        ["seguimiento_proyecto", "Actualizar proyecto"], ["seguimiento_tarea", "Actualizar tarea"],
+        ["crear_proyecto", "Crear proyecto"], ["crear_tarea", "Crear tarea"], ["descartar", "Descartar"]
+      ];
+      return rows.map(row => '<option value="' + row[0] + '"' + (row[0] === selected ? " selected" : "") + '>' + row[1] + '</option>').join("");
+    }
+
+    function importProposalEntityOptions(action, selectedId) {
+      const task = action.includes("tarea");
+      const rows = task ? state.tareas : state.proyectos;
+      return '<option value="">Seleccionar...</option>' + rows.map(row => {
+        const id = task ? row.id_tarea : row.id_proyecto;
+        const title = task ? row.titulo : row.nombre;
+        return '<option value="' + html(id) + '"' + (String(id) === String(selectedId || "") ? " selected" : "") + '>' + html(id + " - " + title) + '</option>';
+      }).join("");
+    }
+
+    function importStateOptions(action, selected) {
+      const task = action.includes("tarea");
+      const values = task ? (options.estados_tarea || ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueada", "Terminada", "Archivada"]) : (options.estados_proyecto || ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueado", "Finalizado", "Archivado"]);
+      return values.map(value => '<option value="' + html(value) + '"' + (value === selected ? " selected" : "") + '>' + html(value) + '</option>').join("");
+    }
+
+    function historicalRowsHtml(proposal, index) {
+      if (!proposal.historical) return "";
+      const rows = proposal.records || [];
+      return '<details open><summary><strong>Seguimientos historicos (' + rows.length + ')</strong></summary><div class="historicalRows">' + rows.map((row, recordIndex) =>
+        '<div class="historicalRow" data-import-record="' + recordIndex + '">' +
+          '<div><label>Fecha</label><input type="date" data-field="fecha" value="' + html(row.fecha || "") + '" /></div>' +
+          '<div><label>Tipo</label><input data-field="tipo_registro" value="' + html(row.tipo_registro || "Seguimiento") + '" /></div>' +
+          '<div><label>Actuacion</label><textarea data-field="comentario">' + html(row.comentario || "") + '</textarea></div>' +
+          '<div><label>Proximo paso</label><textarea data-field="proximo_paso">' + html(row.proximo_paso || "") + '</textarea></div>' +
+        '</div>'
+      ).join("") + '</div></details>';
+    }
+
+    function importProposalHtml(proposal, index) {
+      const payload = proposal.payload || {};
+      const action = proposal.action || "descartar";
+      const selectedId = proposal.entity?.id || proposal.entity_id || "";
+      const createTask = action === "crear_tarea";
+      return '<article class="importProposal' + (proposal.selected === false ? " disabled" : "") + '" data-import-index="' + index + '">' +
+        '<div class="importProposalHead"><div><h3>Propuesta ' + (index + 1) + ': ' + html(payload.titulo || proposal.entity?.title || "Sin titulo") + '</h3><span class="muted">Confianza ' + Math.round((proposal.confidence || 0) * 100) + '%</span></div>' +
+        '<label><input type="checkbox" data-field="selected"' + (proposal.selected === false ? "" : " checked") + ' /> Incluir</label></div>' +
+        '<div class="importProposalGrid">' +
+          '<div><label>Accion</label><select data-field="action">' + importActionOptions(action) + '</select></div>' +
+          '<div><label>Elemento existente</label><select data-field="entity_id"' + (action.startsWith("seguimiento") ? "" : " disabled") + '>' + importProposalEntityOptions(action, selectedId) + '</select></div>' +
+          '<div><label>Titulo</label><input data-field="titulo" value="' + html(payload.titulo || "") + '" /></div>' +
+          '<div><label>Categoria</label><input data-field="categoria" value="' + html(payload.categoria || "Otro") + '" /></div>' +
+          '<div><label>Estado</label><select data-field="estado_nuevo">' + importStateOptions(action, payload.estado_nuevo) + '</select></div>' +
+          '<div><label>Prioridad</label><select data-field="prioridad_nueva">' + (options.prioridades || ["Baja", "Media", "Alta", "Urgente"]).map(value => '<option value="' + html(value) + '"' + (value === payload.prioridad_nueva ? " selected" : "") + '>' + html(value) + '</option>').join("") + '</select></div>' +
+          '<div><label>Responsable actual</label><input data-field="responsable_nuevo" list="responsiblesList" value="' + html(payload.responsable_nuevo || "") + '" /></div>' +
+          '<div><label>Proximo responsable</label><input data-field="responsable_proximo_paso" list="responsiblesList" value="' + html(payload.responsable_proximo_paso || "") + '" /></div>' +
+          '<div><label>Fecha objetivo</label><input data-field="fecha_objetivo_proximo_paso" type="date" value="' + html((payload.fecha_objetivo_proximo_paso || "").slice(0, 10)) + '" /></div>' +
+          '<div' + (createTask ? "" : ' class="hidden"') + '><label>Proyecto contenedor</label><select data-field="id_proyecto">' + projectContainerOptions(payload.id_proyecto) + '</select></div>' +
+        '</div>' +
+        '<label>Comentario que se guardara</label><textarea data-field="comentario">' + html(payload.comentario || "") + '</textarea>' +
+        '<label>Proximo paso</label><textarea data-field="proximo_paso">' + html(payload.proximo_paso || "") + '</textarea>' +
+        historicalRowsHtml(proposal, index) +
+      '</article>';
+    }
+
+    function importPanelHtml() {
+      const mode = importAnalysis?.mode || "updates";
+      const proposals = importAnalysis?.proposals || [];
+      return '<div class="importShell"><section>' +
+        '<div class="importControls">' +
+          '<div><label>Tipo de importacion</label><select id="importMode"><option value="updates"' + (mode === "updates" ? " selected" : "") + '>Varias actualizaciones</option><option value="historical"' + (mode === "historical" ? " selected" : "") + '>Nuevo elemento con historico</option></select></div>' +
+          '<div><label>Comunidad</label><select id="importCommunity"><option value="">Seleccionar comunidad...</option>' + importCommunityOptions() + '</select></div>' +
+          '<div><label>Documento DOCX, TXT o MD</label><input id="importFile" type="file" accept=".docx,.txt,.md" /></div>' +
+        '</div>' +
+        '<label>Texto a analizar</label><textarea id="importSource" class="importSource" placeholder="Pega el resumen estructurado, la reunion o el historico completo...">' + html(importSourceText) + '</textarea>' +
+        '<div class="toolbar"><button id="importAnalyze">Analizar y mostrar vista previa</button><button class="ghost" id="importClear">Limpiar</button><span class="muted" id="importMessage"></span></div>' +
+      '</section>' +
+      (proposals.length ? '<section><div class="contentHead"><div><h2>Vista previa editable</h2><p class="muted">Cada tarjeta indica exactamente lo que se creara o actualizara.</p></div><button class="green" id="importApply">Confirmar seleccionadas</button></div><div class="importProposalList">' + proposals.map(importProposalHtml).join("") + '</div><div class="muted" id="importApplyMessage"></div></section>' : '') + '</div>';
+    }
+
+    function collectImportProposals() {
+      return [...document.querySelectorAll("[data-import-index]")].map(card => {
+        const index = Number(card.dataset.importIndex);
+        const original = importAnalysis.proposals[index];
+        const value = name => card.querySelector('[data-field="' + name + '"]')?.value || "";
+        const action = value("action");
+        const type = action.includes("tarea") ? "task" : "project";
+        const records = [...card.querySelectorAll("[data-import-record]")].map(row => ({
+          ...(original.records?.[Number(row.dataset.importRecord)] || {}),
+          fecha: row.querySelector('[data-field="fecha"]').value,
+          tipo_registro: row.querySelector('[data-field="tipo_registro"]').value,
+          comentario: row.querySelector('[data-field="comentario"]').value,
+          proximo_paso: row.querySelector('[data-field="proximo_paso"]').value
+        }));
+        return {
+          ...original,
+          selected: card.querySelector('[data-field="selected"]').checked,
+          action,
+          entity: value("entity_id") ? { type, id: Number(value("entity_id")) } : null,
+          records,
+          payload: {
+            ...(original.payload || {}), titulo: value("titulo"), categoria: value("categoria"),
+            estado_nuevo: value("estado_nuevo"), prioridad_nueva: value("prioridad_nueva"),
+            responsable_nuevo: value("responsable_nuevo"), responsable_proximo_paso: value("responsable_proximo_paso"),
+            fecha_objetivo_proximo_paso: value("fecha_objetivo_proximo_paso"), fecha_proxima_revision: value("fecha_objetivo_proximo_paso"),
+            comentario: value("comentario"), proximo_paso: value("proximo_paso"), id_proyecto: value("id_proyecto")
+          }
+        };
+      });
+    }
+
+    function bindImportPanel() {
+      const communities = (state.daily || {}).communities || [];
+      if (!importCommunity && communities.length === 1) importCommunity = String(communities[0].id || communities[0].id_comunidad);
+      $("importCommunity").value = importCommunity;
+      $("importCommunity").addEventListener("change", event => { importCommunity = event.target.value; });
+      $("importSource").addEventListener("input", event => { importSourceText = event.target.value; });
+      $("importFile").addEventListener("change", extractImportFile);
+      $("importAnalyze").addEventListener("click", analyzeImportSource);
+      $("importClear").addEventListener("click", () => { importAnalysis = null; importSourceText = ""; importSourceName = "Texto pegado"; render(); });
+      if ($("importApply")) $("importApply").addEventListener("click", applyImportProposals);
+      document.querySelectorAll('.importProposal [data-field="selected"]').forEach(input => input.addEventListener("change", event => event.target.closest(".importProposal").classList.toggle("disabled", !event.target.checked)));
+      document.querySelectorAll('.importProposal [data-field="action"]').forEach(select => select.addEventListener("change", () => {
+        importAnalysis.proposals = collectImportProposals();
+        render();
+      }));
+    }
+
+    async function extractImportFile(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      $("importMessage").textContent = "Leyendo " + file.name + "...";
+      try {
+        const response = await fetch("/api/import/extract", { method: "POST", body: file, credentials: "same-origin", headers: { "x-file-name": encodeURIComponent(file.name) } });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "No se pudo leer el documento.");
+        importSourceName = data.name || file.name;
+        importSourceText = data.text || "";
+        $("importSource").value = importSourceText;
+        $("importMessage").textContent = "Documento leido. Revisa el texto y pulsa Analizar.";
+      } catch (error) { $("importMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function analyzeImportSource() {
+      importSourceText = $("importSource").value;
+      if (!safe(importSourceText)) { $("importMessage").textContent = "Pega un texto o selecciona un documento."; return; }
+      $("importMessage").textContent = "Analizando sin guardar cambios...";
+      try {
+        if (!options.estados_tarea.length) await loadOptions();
+        importAnalysis = await api("/api/import/analyze", { method: "POST", body: JSON.stringify({ text: importSourceText, mode: $("importMode").value }) });
+        render();
+      } catch (error) { $("importMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function applyImportProposals() {
+      const proposals = collectImportProposals();
+      const selected = proposals.filter(row => row.selected && row.action !== "descartar");
+      if (!selected.length) { $("importApplyMessage").textContent = "Selecciona al menos una propuesta."; return; }
+      importCommunity = $("importCommunity").value;
+      const community = importCommunity;
+      if (!community) { $("importApplyMessage").textContent = "Selecciona la comunidad."; return; }
+      if (!confirm("Se guardaran " + selected.length + " operaciones revisadas. Confirmas?")) return;
+      $("importApplyMessage").textContent = "Guardando operaciones...";
+      try {
+        const result = await api("/api/import/apply", { method: "POST", body: JSON.stringify({ id_comunidad: community, source_name: importSourceName, source_text: importSourceText, proposals }) });
+        importAnalysis = null; importSourceText = ""; importSourceName = "Texto pegado";
+        await loadOverview();
+        alert(result.applied + " operaciones guardadas correctamente.");
+        switchView("work");
+      } catch (error) { $("importApplyMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    function reportCommunityOptions(selected) {
+      return (reportsCenter.communities || []).map(row => {
+        const id = row.id || row.id_comunidad;
+        return '<option value="' + html(id) + '"' + (String(id) === String(selected || "") ? " selected" : "") + '>' + html(row.nombre) + '</option>';
+      }).join("");
+    }
+
+    function filteredReportRows() {
+      const query = reportQuery.toLowerCase();
+      return (reportsCenter.reports || []).filter(row =>
+        (reportType === "all" || safe(row.tipo_informe).toLowerCase().includes(reportType)) &&
+        (!reportCommunity || String(row.id_comunidad) === String(reportCommunity)) &&
+        (!query || [row.nombre_archivo,row.tipo_informe,row.comunidad,row.proyecto,row.usuario].join(" ").toLowerCase().includes(query))
+      );
+    }
+
+    function filteredReportEntities() {
+      const query = reportEntityQuery.toLowerCase();
+      return (reportsCenter.entities || []).filter(row =>
+        (reportEntityType === "all" || row.entity_type === reportEntityType) &&
+        (!reportEntityCommunity || String(row.id_comunidad) === String(reportEntityCommunity)) &&
+        (!query || [row.titulo,row.comunidad,row.estado,row.responsable].join(" ").toLowerCase().includes(query))
+      );
+    }
+
+    function reportsPanelHtml() {
+      if (!reportsCenter.loaded) return '<div class="empty">Cargando centro de informes...</div>';
+      const reports = filteredReportRows();
+      const entities = filteredReportEntities();
+      const reportRows = reports.length ? reports.map(row => '<article class="reportRow"><div><h3>' + html(row.nombre_archivo || "Informe") + '</h3><div class="meta"><span class="pill">' + html(row.tipo_informe || "Informe") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div><div class="muted">' + html(row.fecha_generacion || "") + ' | ' + html(row.usuario || "") + '</div></div><div class="toolbar"><button class="ghost" data-report-open="' + html(row.id_informe) + '">Abrir</button>' + (row.entity_id ? '<button data-report-related="' + html(row.entity_id) + '" data-report-type="' + html(row.entity_type) + '">Ficha</button>' : '') + '</div></article>').join("") : '<div class="empty">No hay informes con estos filtros.</div>';
+      const entityRows = entities.length ? entities.map(row => {
+        const key = row.entity_type + ":" + row.entity_id;
+        const checked = selectedReportEntities.has(key);
+        return '<label class="entityChoice' + (checked ? " selected" : "") + '"><input type="checkbox" data-report-entity="' + html(key) + '"' + (checked ? " checked" : "") + ' /><span><strong>' + html(row.titulo) + '</strong><span class="muted" style="display:block">' + html((row.entity_type === "task" ? "Tarea" : "Proyecto") + " | " + (row.comunidad || "") + " | " + (row.estado || "")) + '</span><span style="display:block;margin-top:4px">' + html(row.responsable || "Sin responsable") + '</span></span></label>';
+      }).join("") : '<div class="empty">No hay elementos disponibles.</div>';
+      return '<div class="reportLayout">' +
+        '<section><h2>Informes existentes</h2><div class="reportControls"><div><label>Buscar</label><input id="reportQuery" value="' + html(reportQuery) + '" placeholder="Nombre, proyecto, usuario..." /></div><div><label>Tipo</label><select id="reportType"><option value="all">Todos</option><option value="proyecto">Proyectos</option><option value="tarea">Tareas</option><option value="conjunto">Conjuntos</option></select></div><div><label>Comunidad</label><select id="reportCommunity"><option value="">Todas</option>' + reportCommunityOptions(reportCommunity) + '</select></div></div><div class="reportList" id="reportRows">' + reportRows + '</div></section>' +
+        '<section><div class="contentHead"><div><h2>Crear informe conjunto</h2><p class="muted">Selecciona hasta 40 elementos de una misma comunidad. Cada ficha incluye su historico completo.</p></div><span class="tabBadge" id="reportSelectedCount">' + selectedReportEntities.size + ' seleccionados</span></div>' +
+        '<div class="reportControls"><div><label>Titulo del informe</label><input id="collectionReportTitle" value="' + html(collectionReportTitle) + '" placeholder="Informe ejecutivo de seguimiento" /></div><div><label>Tipo</label><select id="reportEntityType"><option value="all">Tareas y proyectos</option><option value="project">Solo proyectos</option><option value="task">Solo tareas</option></select></div><div><label>Comunidad</label><select id="reportEntityCommunity"><option value="">Todas</option>' + reportCommunityOptions(reportEntityCommunity) + '</select></div></div>' +
+        '<div class="reportControls"><div><label>Buscar elementos</label><input id="reportEntityQuery" value="' + html(reportEntityQuery) + '" placeholder="Titulo, responsable, estado..." /></div><div class="toolbar"><button class="ghost" id="reportSelectVisible">Seleccionar visibles</button><button class="ghost" id="reportClearSelection">Quitar seleccion</button></div><div><button class="green" id="generateCollectionReport">Generar y abrir Word</button></div></div>' +
+        '<div class="entitySelector" id="reportEntityRows">' + entityRows + '</div><div class="muted" id="collectionReportMessage"></div></section></div>';
+    }
+
+    function bindReportsPanel() {
+      if (!reportsCenter.loaded) return;
+      $("reportType").value = reportType; $("reportCommunity").value = reportCommunity;
+      $("reportEntityType").value = reportEntityType; $("reportEntityCommunity").value = reportEntityCommunity;
+      const rerender = () => render();
+      $("reportQuery").addEventListener("change", event => { reportQuery = event.target.value; rerender(); });
+      $("reportQuery").addEventListener("keydown", event => { if (event.key === "Enter") { reportQuery = event.target.value; rerender(); } });
+      $("reportType").addEventListener("change", event => { reportType = event.target.value; rerender(); });
+      $("reportCommunity").addEventListener("change", event => { reportCommunity = event.target.value; rerender(); });
+      $("reportEntityQuery").addEventListener("change", event => { reportEntityQuery = event.target.value; rerender(); });
+      $("reportEntityQuery").addEventListener("keydown", event => { if (event.key === "Enter") { reportEntityQuery = event.target.value; rerender(); } });
+      $("collectionReportTitle").addEventListener("input", event => { collectionReportTitle = event.target.value; });
+      $("reportEntityType").addEventListener("change", event => { reportEntityType = event.target.value; rerender(); });
+      $("reportEntityCommunity").addEventListener("change", event => { reportEntityCommunity = event.target.value; rerender(); });
+      document.querySelectorAll("[data-report-open]").forEach(button => button.addEventListener("click", () => window.open("/api/report/download?id=" + encodeURIComponent(button.dataset.reportOpen), "_blank")));
+      document.querySelectorAll("[data-report-related]").forEach(button => button.addEventListener("click", () => openEntity(button.dataset.reportType, button.dataset.reportRelated, false).catch(error => alert(error.message))));
+      document.querySelectorAll("[data-report-entity]").forEach(input => input.addEventListener("change", event => {
+        if (event.target.checked) selectedReportEntities.add(event.target.dataset.reportEntity); else selectedReportEntities.delete(event.target.dataset.reportEntity);
+        event.target.closest(".entityChoice").classList.toggle("selected", event.target.checked);
+        $("reportSelectedCount").textContent = selectedReportEntities.size + " seleccionados";
+      }));
+      $("reportSelectVisible").addEventListener("click", () => { filteredReportEntities().forEach(row => selectedReportEntities.add(row.entity_type + ":" + row.entity_id)); render(); });
+      $("reportClearSelection").addEventListener("click", () => { selectedReportEntities.clear(); render(); });
+      $("generateCollectionReport").addEventListener("click", generateSelectedReport);
+    }
+
+    async function loadReportsCenter() {
+      try {
+        reportsCenter = { ...(await api("/api/reports-center")), loaded: true };
+        $("reportsTabCount").textContent = reportsCenter.reports.length;
+        if (currentView === "reports") render();
+      } catch (error) {
+        reportsCenter = { reports: [], entities: [], communities: [], loaded: true, error: error.message };
+        if (currentView === "reports") { render(); alert(error.message); }
+      }
+    }
+
+    async function generateSelectedReport() {
+      const selections = [...selectedReportEntities].map(key => { const parts = key.split(":"); return { type: parts[0], id: Number(parts[1]) }; });
+      if (!selections.length) { $("collectionReportMessage").textContent = "Selecciona al menos un elemento."; return; }
+      if (selections.length > 40) { $("collectionReportMessage").textContent = "El maximo es de 40 elementos."; return; }
+      const selectedRows = (reportsCenter.entities || []).filter(row => selectedReportEntities.has(row.entity_type + ":" + row.entity_id));
+      if (new Set(selectedRows.map(row => row.id_comunidad)).size > 1) { $("collectionReportMessage").textContent = "Selecciona elementos de una sola comunidad."; return; }
+      if (!confirm("Se generara un informe Word con " + selections.length + " fichas completas. Confirmas?")) return;
+      const reportWindow = window.open("", "_blank");
+      $("collectionReportMessage").textContent = "Generando informe...";
+      try {
+        collectionReportTitle = $("collectionReportTitle").value;
+        const result = await api("/api/report/collection", { method: "POST", body: JSON.stringify({ title: collectionReportTitle || "Informe conjunto", selections }) });
+        if (reportWindow) reportWindow.location = "/api/report/download?id=" + encodeURIComponent(result.report_id);
+        await loadReportsCenter();
+      } catch (error) {
+        if (reportWindow) reportWindow.close();
+        $("collectionReportMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
     }
 
     function workflowActionCard(row) {
@@ -4184,7 +4946,7 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["home", "map", "work", "review", "global-search", "documents", "notifications", "ai"].includes(currentView);
+      const specialView = ["home", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai"].includes(currentView);
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
@@ -4247,6 +5009,24 @@ function homePage() {
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = documentsPanelHtml();
         bindDocumentsPanel();
+        return;
+      }
+      if (currentView === "reports") {
+        $("contentTitle").textContent = "Centro de informes";
+        $("contentSubtitle").textContent = "Consulta informes existentes o crea uno conjunto con los elementos que elijas.";
+        $("visibleCount").textContent = reportsCenter.loaded ? reportsCenter.reports.length + " informes" : "Cargando...";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = reportsPanelHtml();
+        bindReportsPanel();
+        return;
+      }
+      if (currentView === "imports") {
+        $("contentTitle").textContent = "Importacion inteligente";
+        $("contentSubtitle").textContent = "Detecta varias actuaciones o reconstruye un historico completo antes de guardar.";
+        $("visibleCount").textContent = importAnalysis ? (importAnalysis.proposals || []).length + " propuestas" : "Sin analizar";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = importPanelHtml();
+        bindImportPanel();
         return;
       }
       if (currentView === "ai") {
@@ -4491,11 +5271,12 @@ function homePage() {
         showApp();
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
-        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "review", "ai"].includes(currentView))) currentView = "work";
+        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "review", "imports", "ai"].includes(currentView))) currentView = "work";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("importTab").classList.toggle("hidden", !canWrite());
         $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
         $("counts").innerHTML =
           countCard(user.rol === "Presidente" ? "Decisiones pendientes" : "Acciones pendientes", user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length) +
@@ -4510,6 +5291,7 @@ function homePage() {
         $("mapTabCount").textContent = (daily.map.items || []).length;
         $("reviewTabCount").textContent = (workflow.review.summary || {}).total || 0;
         $("documentsTabCount").textContent = (daily.documents || []).length;
+        $("reportsTabCount").textContent = reportsCenter.loaded ? reportsCenter.reports.length : (daily.documents || []).filter(row => row.document_type === "report").length;
         $("notificationTabCount").textContent = workflow.unread_notifications || 0;
         refreshFilterOptions();
         render();
@@ -4530,6 +5312,7 @@ function homePage() {
       $("priorityFilter").value = "";
       refreshFilterOptions();
       render();
+      if (view === "reports" && !reportsCenter.loaded) loadReportsCenter();
     }
 
     $("homeTab").addEventListener("click", () => switchView("home"));
@@ -4540,6 +5323,8 @@ function homePage() {
     $("reviewTab").addEventListener("click", () => switchView("review"));
     $("globalSearchTab").addEventListener("click", () => switchView("global-search"));
     $("documentsTab").addEventListener("click", () => switchView("documents"));
+    $("reportsTab").addEventListener("click", () => switchView("reports"));
+    $("importTab").addEventListener("click", () => switchView("imports"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
     $("search").addEventListener("input", render);
@@ -4730,6 +5515,42 @@ async function handle(req, res) {
       url.searchParams.get("community") || ""
     ));
   }
+  if (req.method === "POST" && url.pathname === "/api/import/extract") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede importar documentos." });
+    const fileName = String(req.headers["x-file-name"] || "").trim();
+    if (!fileName) return sendJson(res, 400, { ok: false, error: "Falta el nombre del documento." });
+    const bytes = await readRawBody(req);
+    return sendJson(res, 200, { ok: true, ...(await extractImportDocument(fileName, bytes)) });
+  }
+  if (req.method === "POST" && url.pathname === "/api/import/analyze") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede importar informacion." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await analyzeImportBatch(session, body.text || "", body.mode || "updates"));
+  }
+  if (req.method === "POST" && url.pathname === "/api/import/apply") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede aplicar importaciones." });
+    const body = await readBody(req);
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await applyImportBatch(session, body, String(pc)));
+  }
+  if (req.method === "GET" && url.pathname === "/api/reports-center") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await queryReportsCenter(session));
+  }
+  if (req.method === "POST" && url.pathname === "/api/report/collection") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await generateCollectionReport(session, body.selections || [], body.title || "Informe conjunto", String(pc)));
+  }
   if (req.method === "GET" && url.pathname === "/api/options") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -4866,7 +5687,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 11 : 1,
+      step: databaseExists ? 12 : 1,
       port,
       dataDir,
       databasePath,
