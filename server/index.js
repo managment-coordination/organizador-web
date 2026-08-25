@@ -3690,8 +3690,7 @@ function homePage() {
     }
     .topbar { max-width:none; min-height:52px; }
     .brand { position:relative; padding-left:55px; min-height:44px; display:flex; flex-direction:column; justify-content:center; }
-    .brand::before {
-      content:"OT";
+    .brandMark {
       position:absolute;
       inset:0 auto 0 0;
       width:43px;
@@ -3704,7 +3703,11 @@ function homePage() {
       font-size:13px;
       font-weight:900;
       border-bottom:3px solid var(--gold);
+      padding:0;
+      cursor:default;
     }
+    .brandMark:hover { filter:none; box-shadow:none; }
+    .brandMark:disabled { opacity:1; color:#fff; }
     .brand h1 { font-size:20px; font-weight:800; letter-spacing:0; }
     .brand p { margin-top:2px; color:var(--muted); font-size:12px; }
     .session { color:var(--muted); }
@@ -3781,6 +3784,7 @@ function homePage() {
     .sidebar .toolbar button { flex:1; min-width:92px; background:var(--gold); color:#221f18; }
     .sidebar .toolbar button.ghost { background:#2b2d2c; color:#fff; border-color:#4a4c4b; }
     .mobileNav { display:none; }
+    .mobileDrawer, .mobileDrawerBackdrop { display:none; }
     body:has(.modalBackdrop:not(.hidden)) { overflow:hidden; }
 
     .workspaceContent { min-width:0; padding:2px 0 20px; border:0; background:transparent; box-shadow:none; }
@@ -3931,7 +3935,7 @@ function homePage() {
       header { padding:8px 10px; }
       .topbar { min-height:46px; gap:7px; flex-direction:row; align-items:center; }
       .brand { min-height:39px; padding-left:49px; }
-      .brand::before { width:39px; height:39px; }
+      .brandMark { width:39px; height:39px; cursor:pointer; }
       .brand h1 { font-size:17px; }
       .brand p { display:none; }
       .session { width:auto; margin-left:auto; justify-content:flex-end; flex-wrap:nowrap; }
@@ -3945,6 +3949,7 @@ function homePage() {
       .count strong { font-size:21px; }
       .count span { font-size:11px; line-height:1.2; }
       .workbench { gap:9px; }
+      #appView:not([data-view="tasks"]):not([data-view="projects"]) .sidebar { display:none; }
       .sidebar {
         position:sticky;
         top:63px;
@@ -3959,10 +3964,7 @@ function homePage() {
         box-shadow:0 8px 22px rgba(25,26,25,.12);
       }
       .sidebar > h2, .tabs, .navDivider { display:none; }
-      .mobileNav { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; align-items:end; }
-      .mobileNavField { min-width:0; }
-      .mobileNav label { margin:0 0 3px; color:#4b4e4c; font-size:11px; }
-      .mobileNav select { padding:8px 30px 8px 9px; background:#fff; color:var(--ink); border-color:#bfc2bf; font-weight:750; }
+      .mobileNav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
       .mobileNav button { padding:8px 10px; background:#fff; color:#303331; border-color:#c7c9c7; font-size:12px; }
       .filters { display:none; grid-template-columns:1fr; margin-top:9px; padding-top:9px; border-top:1px solid #dedfdd; }
       .filters.mobile-open { display:grid; }
@@ -4035,6 +4037,51 @@ function homePage() {
       .mobileMoreWrap { grid-column:1 / -1; padding:2px 0; }
       .mobileMore { width:100%; min-height:46px; background:#fff; color:#303331; border-color:#bfc2bf; }
       .login { margin:28px auto; padding:20px 16px; }
+
+      .mobileDrawerBackdrop {
+        display:block;
+        position:fixed;
+        inset:0;
+        z-index:69;
+        background:rgba(10,11,10,.58);
+        opacity:0;
+        visibility:hidden;
+        pointer-events:none;
+        transition:opacity .2s ease, visibility .2s ease;
+      }
+      .mobileDrawer {
+        display:flex;
+        position:fixed;
+        inset:0 auto 0 0;
+        z-index:70;
+        width:min(86vw,330px);
+        height:100dvh;
+        padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);
+        flex-direction:column;
+        background:var(--charcoal);
+        color:#fff;
+        box-shadow:18px 0 50px rgba(0,0,0,.3);
+        transform:translateX(-105%);
+        visibility:hidden;
+        transition:transform .22s ease, visibility .22s ease;
+      }
+      body.mobile-drawer-open { overflow:hidden; }
+      body.mobile-drawer-open .mobileDrawerBackdrop { opacity:1; visibility:visible; pointer-events:auto; }
+      body.mobile-drawer-open .mobileDrawer { transform:translateX(0); visibility:visible; }
+      .mobileDrawerHead { min-height:68px; padding:11px 12px; display:flex; align-items:center; gap:10px; border-bottom:1px solid rgba(255,255,255,.13); }
+      .mobileDrawerMark { width:40px; height:40px; flex:0 0 40px; display:grid; place-items:center; border-radius:6px; border-bottom:3px solid var(--gold); background:#272927; font-size:13px; font-weight:900; }
+      .mobileDrawerTitle { min-width:0; flex:1; }
+      .mobileDrawerTitle strong { display:block; font-size:16px; }
+      .mobileDrawerTitle span { display:block; margin-top:2px; color:rgba(255,255,255,.6); font-size:11px; }
+      .mobileDrawerClose { width:44px; min-width:44px; padding:0; background:transparent; color:#fff; border-color:rgba(255,255,255,.2); font-size:25px; line-height:1; }
+      .mobileDrawerNav { min-height:0; flex:1; overflow-y:auto; padding:9px; display:grid; align-content:start; gap:4px; overscroll-behavior:contain; }
+      .mobileDrawerItem { width:100%; min-height:48px; padding:10px 11px; display:flex; justify-content:space-between; align-items:center; gap:10px; text-align:left; background:transparent; color:rgba(255,255,255,.78); border-color:transparent; }
+      .mobileDrawerItem.active { color:#fff; background:rgba(181,154,102,.2); border-color:rgba(181,154,102,.4); box-shadow:inset 3px 0 var(--gold); }
+      .mobileDrawerItem:hover { color:#fff; background:rgba(255,255,255,.07); }
+      .mobileDrawerBadge { min-width:28px; padding:3px 7px; border-radius:999px; text-align:center; background:rgba(48,95,127,.38); color:#e2eff7; font-size:11px; font-weight:850; }
+      .mobileDrawerDivider { height:1px; margin:7px 3px; background:rgba(255,255,255,.13); }
+      .mobileDrawerFoot { padding:10px 12px; border-top:1px solid rgba(255,255,255,.13); display:grid; gap:7px; color:rgba(255,255,255,.55); font-size:11px; }
+      .mobileDrawerRefresh { width:100%; min-height:44px; background:#2b2d2c; color:#fff; border-color:#4a4c4b; }
     }
   </style>
 </head>
@@ -4042,6 +4089,7 @@ function homePage() {
   <header>
     <div class="topbar">
       <div class="brand">
+        <button class="brandMark" id="mobileMenuToggle" type="button" aria-label="Abrir menu de navegacion" aria-expanded="false" title="Abrir menu">OT</button>
         <h1>${appName}</h1>
         <p>Entorno de gestion compartido</p>
       </div>
@@ -4052,6 +4100,16 @@ function homePage() {
       </div>
     </div>
   </header>
+  <div class="mobileDrawerBackdrop" id="mobileDrawerBackdrop"></div>
+  <aside class="mobileDrawer" id="mobileDrawer" aria-hidden="true" aria-label="Navegacion principal">
+    <div class="mobileDrawerHead">
+      <div class="mobileDrawerMark">OT</div>
+      <div class="mobileDrawerTitle"><strong>Organizador</strong><span>Selecciona una seccion</span></div>
+      <button class="mobileDrawerClose" id="mobileDrawerClose" type="button" aria-label="Cerrar menu" title="Cerrar">&times;</button>
+    </div>
+    <nav class="mobileDrawerNav" id="mobileDrawerNav"></nav>
+    <div class="mobileDrawerFoot"><button class="mobileDrawerRefresh" id="mobileDrawerReload" type="button">Actualizar datos</button><span>Las secciones se muestran segun tus permisos.</span></div>
+  </aside>
   <main>
     <section id="loginView" class="login hidden">
       <h2>Acceso</h2>
@@ -4078,10 +4136,6 @@ function homePage() {
         <section class="sidebar">
           <h2>Vista</h2>
           <div class="mobileNav">
-            <div class="mobileNavField">
-              <label for="mobileViewSelect">Seccion</label>
-              <select id="mobileViewSelect" aria-label="Seccion actual"></select>
-            </div>
             <button class="ghost hidden" id="mobileFiltersToggle" type="button">Filtros</button>
             <button class="ghost" id="mobileReload" type="button">Actualizar</button>
           </div>
@@ -4469,6 +4523,9 @@ function homePage() {
     }
 
     function showLogin(message = "") {
+      closeMobileDrawer();
+      $("mobileMenuToggle").disabled = true;
+      $("mobileMenuToggle").setAttribute("aria-label", "Organizador");
       $("loginView").classList.remove("hidden");
       $("appView").classList.add("hidden");
       $("logoutTop").classList.add("hidden");
@@ -5068,21 +5125,39 @@ function homePage() {
     }
 
     function syncMobileNavigation() {
-      const select = $("mobileViewSelect");
-      if (!select) return;
+      const drawer = $("mobileDrawerNav");
+      if (!drawer) return;
       const visibleTabs = [...document.querySelectorAll(".tabs .tab:not(.hidden)")];
-      const signature = visibleTabs.map(tab => tab.dataset.view + ":" + safe(tab.querySelector("span")?.textContent)).join("|");
-      if (select.dataset.signature !== signature) {
-        select.innerHTML = visibleTabs.map(tab => '<option value="' + html(tab.dataset.view) + '">' + html(safe(tab.querySelector("span")?.textContent)) + '</option>').join("");
-        select.dataset.signature = signature;
-      }
-      if ([...select.options].some(option => option.value === currentView)) select.value = currentView;
+      drawer.innerHTML = visibleTabs.map(tab => {
+        const view = tab.dataset.view;
+        const spans = [...tab.querySelectorAll("span")];
+        const label = safe(spans[0]?.textContent) || view;
+        const count = safe(spans[spans.length - 1]?.textContent);
+        const divider = ["map", "global-search"].includes(view) ? '<div class="mobileDrawerDivider" aria-hidden="true"></div>' : "";
+        const showBadge = /^\\d+$/.test(count) || view === "ai";
+        return divider + '<button class="mobileDrawerItem' + (view === currentView ? " active" : "") + '" type="button" data-mobile-view="' + html(view) + '"' + (view === currentView ? ' aria-current="page"' : "") + '><span>' + html(label) + '</span>' + (showBadge ? '<span class="mobileDrawerBadge">' + html(count) + '</span>' : "") + '</button>';
+      }).join("");
       const filtersAvailable = ["tasks", "projects"].includes(currentView);
       $("mobileFiltersToggle").classList.toggle("hidden", !filtersAvailable);
       if (!filtersAvailable) {
         $("listFilters").classList.remove("mobile-open");
         document.querySelector(".sidebar")?.classList.remove("filters-open");
       }
+    }
+
+    function openMobileDrawer() {
+      if (!window.matchMedia("(max-width: 700px)").matches || $("appView").classList.contains("hidden") || (state.usuario || {}).rol === "Seguridad") return;
+      syncMobileNavigation();
+      document.body.classList.add("mobile-drawer-open");
+      $("mobileDrawer").setAttribute("aria-hidden", "false");
+      $("mobileMenuToggle").setAttribute("aria-expanded", "true");
+      setTimeout(() => document.querySelector(".mobileDrawerItem.active")?.focus(), 30);
+    }
+
+    function closeMobileDrawer() {
+      document.body.classList.remove("mobile-drawer-open");
+      $("mobileDrawer").setAttribute("aria-hidden", "true");
+      $("mobileMenuToggle").setAttribute("aria-expanded", "false");
     }
 
     function mobilePage(rows, key, pageSize = 8) {
@@ -6113,6 +6188,8 @@ function homePage() {
       state = { usuario:user, proyectos:[], tareas:[], workflow:{actions:[],notifications:[],president_requests:[],review:{items:[],summary:{},communities:[]}}, daily:{metrics:{},map:{items:[],counts:{}},documents:[],communities:[]} };
       currentView = 'security';
       showApp();
+      $("mobileMenuToggle").disabled = true;
+      $("mobileMenuToggle").setAttribute("aria-label", "Organizador");
       $("appView").classList.add("security-only");
       $('counts').classList.add('hidden');
       $('sessionStatus').textContent = (user.nombre || '') + ' - Seguridad';
@@ -6554,6 +6631,8 @@ function homePage() {
         securityData.access = securityAccess;
         if (securityAccess.can_manage) await loadSecurityData(false);
         showApp();
+        $("mobileMenuToggle").disabled = false;
+        $("mobileMenuToggle").setAttribute("aria-label", "Abrir menu de navegacion");
         $("appView").classList.remove("security-only");
         $("counts").classList.remove("hidden");
         ["homeTab","projectTab","taskTab","assemblyTab","mapTab","workTab","reviewTab","globalSearchTab","documentsTab","reportsTab","importTab","notificationTab","aiTab"].forEach(id => $(id).classList.remove("hidden"));
@@ -6604,6 +6683,7 @@ function homePage() {
 
     function switchView(view) {
       currentView = view;
+      closeMobileDrawer();
       $("listFilters").classList.remove("mobile-open");
       document.querySelector(".sidebar")?.classList.remove("filters-open");
       $("mobileFiltersToggle").textContent = "Filtros";
@@ -6635,7 +6715,15 @@ function homePage() {
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
     $("adminTab").addEventListener("click", () => switchView("admin"));
-    $("mobileViewSelect").addEventListener("change", event => switchView(event.target.value));
+    $("mobileMenuToggle").addEventListener("click", openMobileDrawer);
+    $("mobileDrawerClose").addEventListener("click", closeMobileDrawer);
+    $("mobileDrawerBackdrop").addEventListener("click", closeMobileDrawer);
+    $("mobileDrawerReload").addEventListener("click", () => { closeMobileDrawer(); loadOverview(); });
+    $("mobileDrawerNav").addEventListener("click", event => {
+      const button = event.target.closest("button[data-mobile-view]");
+      if (button) switchView(button.dataset.mobileView);
+    });
+    document.addEventListener("keydown", event => { if (event.key === "Escape") closeMobileDrawer(); });
     $("mobileFiltersToggle").addEventListener("click", () => {
       const filters = $("listFilters");
       const open = !filters.classList.contains("mobile-open");
