@@ -77,6 +77,10 @@ El boton `Cambiar comunidad` de la cabecera permite modificar el contexto sin ce
 
 El centro de informes permite abrir los informes ya generados y crear un Word conjunto con las fichas seleccionadas. Por seguridad, todos los elementos de un mismo informe deben pertenecer a una unica comunidad. El documento incluye resumen ejecutivo, situacion, responsables, actuaciones cronologicas, siguiente paso, conclusion y anexos disponibles.
 
+## Interfaz web
+
+La version web utiliza una interfaz operativa comun para escritorio y movil: navegacion estable, tarjetas legibles, estados semanticos y formularios consistentes. La referencia visual de Marbella UNO se limita al lenguaje de diseno; ambos proyectos mantienen codigo, servicios y datos completamente independientes.
+
 ## Estructura
 
 ```text
