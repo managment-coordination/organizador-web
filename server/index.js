@@ -735,7 +735,7 @@ def dates_from_question(q):
         return f"{years[0]}-01-01", f"{years[0]}-12-31"
     return "", ""
 
-def response(answer, confidence=0.75, candidates=None, questions=None, facts=None):
+def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None):
     return {
         "handled": True,
         "source": "local-db",
@@ -745,6 +745,7 @@ def response(answer, confidence=0.75, candidates=None, questions=None, facts=Non
         "candidates": candidates or [],
         "questions": questions or [],
         "facts": facts or {},
+        "display": display or {},
     }
 
 def not_handled():
@@ -913,7 +914,8 @@ try:
                 print(json.dumps(response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55), ensure_ascii=False))
             else:
                 rows_text = []
-                for item in sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:8]:
+                budget_rows = sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:12]
+                for item in budget_rows[:8]:
                     rows_text.append(f"- {item.get('codigo','')} {item.get('categoria','')}: real {money(item.get('real'))} / presupuesto periodo {money(item.get('presupuesto'))} / desviacion {money(item.get('variacion'))} ({pct(item.get('variacion_pct'))})")
                 answer = "\\n".join([
                     f"Presupuesto segun ultimo informe: {report['titulo']} ({report['fecha_desde']} a {report['fecha_hasta']}).",
@@ -921,7 +923,32 @@ try:
                     *rows_text,
                     "Si quieres un periodo distinto, indicame fecha desde y fecha hasta."
                 ])
-                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}), ensure_ascii=False))
+                display = {
+                    "title": "Estado de presupuestos",
+                    "subtitle": f"{report['titulo']} · {report['fecha_desde']} a {report['fecha_hasta']}",
+                    "cards": [
+                        {"label": "Partidas revisadas", "value": str(len(budget))},
+                        {"label": "Mayor desviacion", "value": f"{budget_rows[0].get('codigo','')} {budget_rows[0].get('categoria','')}" if budget_rows else "Sin dato"},
+                        {"label": "Desviacion mayor", "value": money(budget_rows[0].get("variacion")) if budget_rows else "0,00 EUR"},
+                    ],
+                    "tables": [{
+                        "title": "Principales desviaciones",
+                        "columns": ["Codigo", "Categoria", "Presupuesto", "Real", "Desviacion", "%"],
+                        "rows": [
+                            {
+                                "Codigo": item.get("codigo", ""),
+                                "Categoria": item.get("categoria", ""),
+                                "Presupuesto": money(item.get("presupuesto")),
+                                "Real": money(item.get("real")),
+                                "Desviacion": money(item.get("variacion")),
+                                "%": pct(item.get("variacion_pct")),
+                            }
+                            for item in budget_rows
+                        ],
+                    }],
+                    "note": "Si quieres un periodo distinto, indica fecha desde y fecha hasta.",
+                }
+                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display), ensure_ascii=False))
 
     elif is_finance_question:
         start, end = dates_from_question(question)
@@ -950,7 +977,33 @@ try:
                 f"- Saldo banco final disponible: {money(saldo_fin['saldo']) if saldo_fin else 'no disponible'}",
                 "Nota: es una lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres."
             ])
-            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}), ensure_ascii=False))
+            display = {
+                "title": "Balance financiero provisional",
+                "subtitle": f"{start} a {end}",
+                "cards": [
+                    {"label": "Recibos emitidos", "value": money(ingresos_emitidos)},
+                    {"label": "Cobros registrados", "value": money(cobros)},
+                    {"label": "Gastos devengados", "value": money(gastos_devengados)},
+                    {"label": "Saldo final banco", "value": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+                ],
+                "tables": [{
+                    "title": "Magnitudes del periodo",
+                    "columns": ["Concepto", "Importe"],
+                    "rows": [
+                        {"Concepto": "Ingresos/recibos emitidos", "Importe": money(ingresos_emitidos)},
+                        {"Concepto": "Cobros registrados en deuda/recibos", "Importe": money(cobros)},
+                        {"Concepto": "Deuda pendiente generada en el periodo", "Importe": money(deuda_periodo)},
+                        {"Concepto": "Gastos devengados ordinarios", "Importe": money(gastos_devengados)},
+                        {"Concepto": "Gastos pagados ordinarios", "Importe": money(gastos_pagados)},
+                        {"Concepto": "Gastos ordinarios pendientes de pago", "Importe": money(pendientes)},
+                        {"Concepto": "Mejoras/inversiones grupo 610", "Importe": money(mejoras)},
+                        {"Concepto": "Saldo banco inicial disponible", "Importe": money(saldo_ini["saldo"]) if saldo_ini else "No disponible"},
+                        {"Concepto": "Saldo banco final disponible", "Importe": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+                    ],
+                }],
+                "note": "Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
+            }
+            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display), ensure_ascii=False))
 
     elif is_debt_question:
         years = re.findall(r"\\b(20\\d{2})\\b", question)
@@ -960,7 +1013,15 @@ try:
             total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
             overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
             answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}), ensure_ascii=False))
+            display = {
+                "title": f"Deuda pendiente {year}",
+                "cards": [
+                    {"label": "Deuda del ejercicio", "value": money(total["total"])},
+                    {"label": "Recibos pendientes", "value": str(total["recibos"])},
+                    {"label": "Deuda total registrada", "value": money(overall["total"])},
+                ],
+            }
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display), ensure_ascii=False))
             raise SystemExit
         owner_query = extract_owner_query(question)
         prop_query = extract_property_query(question)
@@ -980,17 +1041,51 @@ try:
             total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
             overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
             answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}), ensure_ascii=False))
+            display = {
+                "title": f"Deuda pendiente {year}",
+                "cards": [
+                    {"label": "Deuda del ejercicio", "value": money(total["total"])},
+                    {"label": "Recibos pendientes", "value": str(total["recibos"])},
+                    {"label": "Deuda total registrada", "value": money(overall["total"])},
+                ],
+            }
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display), ensure_ascii=False))
         elif len(owners) == 1:
             owner = owners[0]
             total, by_year, by_property = debt_for_owner(owner["id_propietario"])
             if total <= 0:
                 answer = f"{owner['nombre']} no tiene deuda pendiente registrada actualmente."
+                display = {
+                    "title": owner["nombre"],
+                    "subtitle": "Consulta de deuda",
+                    "cards": [{"label": "Deuda pendiente", "value": money(0)}],
+                }
             else:
                 year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
                 prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
                 answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)}.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
-            print(json.dumps(response(answer, 0.86, facts={"id_propietario": owner["id_propietario"], "deuda": total}), ensure_ascii=False))
+                display = {
+                    "title": owner["nombre"],
+                    "subtitle": "Consulta de deuda",
+                    "cards": [
+                        {"label": "Deuda total", "value": money(total)},
+                        {"label": "Ejercicios con deuda", "value": str(len(by_year))},
+                        {"label": "Propiedades afectadas", "value": str(len(by_property))},
+                    ],
+                    "tables": [
+                        {
+                            "title": "Desglose por ejercicio",
+                            "columns": ["Ejercicio", "Deuda", "Recibos"],
+                            "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
+                        },
+                        {
+                            "title": "Desglose por propiedad",
+                            "columns": ["Propiedad", "Deuda", "Recibos"],
+                            "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
+                        },
+                    ],
+                }
+            print(json.dumps(response(answer, 0.86, facts={"id_propietario": owner["id_propietario"], "deuda": total}, display=display), ensure_ascii=False))
         elif len(owners) > 1:
             answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
             print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"]), ensure_ascii=False))
@@ -1772,6 +1867,20 @@ function homePage() {
     .proposal { border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:10px; }
     .proposalHead { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center; }
     .confidence { font-weight:800; color:#1d4ed8; }
+    .answerView { display:grid; gap:12px; }
+    .answerHero { background:white; border:1px solid #dbeafe; border-left:6px solid var(--blue); border-radius:8px; padding:14px; }
+    .answerHero h3 { margin:0; font-size:21px; }
+    .answerHero p { margin:5px 0 0; color:var(--muted); }
+    .answerCards { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:9px; }
+    .answerCard { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:11px; }
+    .answerCard span { display:block; color:var(--muted); font-size:12px; font-weight:700; }
+    .answerCard strong { display:block; margin-top:4px; font-size:20px; overflow-wrap:anywhere; }
+    .answerTableWrap { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; overflow:auto; }
+    .answerTableWrap h3 { margin:0 0 8px; font-size:16px; }
+    .answerTable { width:100%; border-collapse:collapse; font-size:13px; min-width:560px; }
+    .answerTable th, .answerTable td { border-bottom:1px solid #e2e8f0; padding:8px; text-align:left; vertical-align:top; }
+    .answerTable th { background:#f8fafc; color:#334155; font-size:12px; }
+    .answerNote { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:10px; color:#7c2d12; }
     .hidden { display:none !important; }
     @media (max-width: 1100px) {
       .counts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1791,6 +1900,12 @@ function homePage() {
       .contentHead { flex-direction:column; }
       .toolbar button { flex:1 1 auto; }
       .detailGrid, .formGrid { grid-template-columns:1fr; }
+      .answerTable { min-width:0; }
+      .answerTable thead { display:none; }
+      .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
+      .answerTable tr { border:1px solid #e2e8f0; border-radius:8px; margin-bottom:8px; background:white; }
+      .answerTable td { border-bottom:1px solid #eef2f7; display:flex; justify-content:space-between; gap:12px; }
+      .answerTable td::before { content:attr(data-label); color:#64748b; font-weight:700; }
     }
   </style>
 </head>
@@ -2374,6 +2489,31 @@ function homePage() {
       return actions.map(([value, label]) => '<option value="' + value + '"' + (value === action ? " selected" : "") + '>' + label + '</option>').join("");
     }
 
+    function renderDisplay(display) {
+      if (!display || !Object.keys(display).length) return "";
+      const cards = (display.cards || []).length
+        ? '<div class="answerCards">' + display.cards.map(card =>
+            '<div class="answerCard"><span>' + html(card.label || "") + '</span><strong>' + html(card.value || "") + '</strong>' +
+            (card.muted ? '<small class="muted">' + html(card.muted) + '</small>' : '') + '</div>'
+          ).join("") + '</div>'
+        : "";
+      const tables = (display.tables || []).map(table => {
+        const columns = table.columns || [];
+        const rows = table.rows || [];
+        return '<div class="answerTableWrap">' +
+          '<h3>' + html(table.title || "Detalle") + '</h3>' +
+          '<table class="answerTable"><thead><tr>' + columns.map(col => '<th>' + html(col) + '</th>').join("") + '</tr></thead>' +
+          '<tbody>' + rows.map(row => '<tr>' + columns.map(col => '<td data-label="' + html(col) + '">' + html(row[col] || "") + '</td>').join("") + '</tr>').join("") + '</tbody></table>' +
+        '</div>';
+      }).join("");
+      return '<div class="answerView">' +
+        ((display.title || display.subtitle) ? '<div class="answerHero"><h3>' + html(display.title || "Respuesta") + '</h3>' + (display.subtitle ? '<p>' + html(display.subtitle) + '</p>' : '') + '</div>' : '') +
+        cards +
+        tables +
+        (display.note ? '<div class="answerNote">' + html(display.note) + '</div>' : '') +
+      '</div>';
+    }
+
     function renderAiProposal(proposal) {
       const payload = proposal.payload || {};
       const entityType = proposal.entity?.type || (proposal.action === "seguimiento_tarea" ? "task" : "project");
@@ -2387,13 +2527,26 @@ function homePage() {
         ? '<div class="detailBox"><strong>Necesito aclarar</strong>' + proposal.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>'
         : "";
       if (proposal.action === "consulta" && !payload.comentario && !payload.titulo) {
+        const displayHtml = renderDisplay(proposal.display || {});
         $("aiResult").innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Respuesta de consulta</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
           (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
-          (proposal.answer ? '<div class="detailBox"><strong>Respuesta</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
+          displayHtml +
+          (proposal.answer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.answer) + '</pre></details>' : '') +
           questionsHtml +
           candidatesHtml +
+          (proposal.answer ? '<div class="toolbar"><button class="ghost" id="copyAiAnswer">Copiar respuesta</button><span class="muted" id="copyAiMessage"></span></div>' : '') +
         '</div>';
+        if ($("copyAiAnswer")) {
+          $("copyAiAnswer").addEventListener("click", async () => {
+            try {
+              await navigator.clipboard.writeText(proposal.answer || "");
+              $("copyAiMessage").textContent = "Copiado.";
+            } catch {
+              $("copyAiMessage").textContent = "No se pudo copiar automaticamente.";
+            }
+          });
+        }
         return;
       }
       $("aiResult").innerHTML = '<div class="proposal">' +
