@@ -571,6 +571,336 @@ print(json.dumps({
   return runPythonJson(script);
 }
 
+function queryWorkflow(session) {
+  const script = `
+import json
+import sqlite3
+from datetime import date, datetime, timedelta
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+role = str(session.get("rol") or "")
+user_name = str(session.get("nombre") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+def rows(sql, params=()):
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+def community_filter(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1 = 0", []
+    marks = ",".join("?" for _ in allowed_ids)
+    return f" AND {alias}.id_comunidad IN ({marks})", allowed_ids
+
+aliases = [user_name]
+if user_name.lower() == "luis gallardo": aliases.append("Luis")
+if user_name.lower() == "elena cuenca": aliases.append("Elena")
+aliases = list(dict.fromkeys([a for a in aliases if a]))
+alias_marks = ",".join("?" for _ in aliases) or "?"
+
+action_filter, action_community_params = community_filter("a")
+action_user_sql = "" if role == "Superusuario" else f" AND a.usuario_destino IN ({alias_marks})"
+action_user_params = [] if role == "Superusuario" else aliases
+actions = rows("""
+    SELECT a.*, c.nombre AS comunidad,
+           COALESCE(t.titulo, p.nombre, a.titulo) AS elemento,
+           CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+           COALESCE(a.id_tarea, a.id_proyecto) AS entity_id,
+           COALESCE(t.estado, p.estado_general, '') AS estado_entidad,
+           COALESCE(t.prioridad, p.prioridad, '') AS prioridad_entidad,
+           COALESCE(t.responsable_proximo_paso, p.responsable_proximo_paso, a.usuario_destino) AS responsable_proximo_paso,
+           COALESCE(t.fecha_objetivo_proximo_paso, t.fecha_proxima_revision, p.fecha_objetivo_proximo_paso, '') AS fecha_objetivo
+    FROM acciones_pendientes a
+    LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
+    LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
+    LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+    WHERE a.estado='Pendiente'
+""" + action_user_sql + action_filter + " ORDER BY a.fecha_creacion, a.id_accion", tuple(action_user_params + action_community_params))
+
+notification_filter, notification_community_params = community_filter("n")
+notification_user_sql = "" if role == "Superusuario" else f" AND n.usuario_destino IN ({alias_marks})"
+notification_user_params = [] if role == "Superusuario" else aliases
+notifications = rows("""
+    SELECT n.*, c.nombre AS comunidad,
+           CASE WHEN n.id_tarea IS NOT NULL THEN 'task' WHEN n.id_proyecto IS NOT NULL THEN 'project' ELSE '' END AS entity_type,
+           COALESCE(n.id_tarea, n.id_proyecto) AS entity_id
+    FROM notificaciones n
+    LEFT JOIN comunidades c ON c.id_comunidad=n.id_comunidad
+    WHERE 1=1
+""" + notification_user_sql + notification_filter + " ORDER BY n.leida, n.fecha_creacion DESC, n.id_notificacion DESC LIMIT 100", tuple(notification_user_params + notification_community_params))
+
+president_filter, president_params = community_filter("s")
+president_requests = []
+if role == "Presidente":
+    president_requests = rows("""
+        SELECT s.*, c.nombre AS comunidad,
+               CASE WHEN s.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+               COALESCE(s.id_tarea, s.id_proyecto) AS entity_id,
+               COALESCE(t.titulo, p.nombre, s.titulo) AS elemento,
+               COALESCE(t.estado, p.estado_general, '') AS estado_entidad,
+               COALESCE(t.prioridad, p.prioridad, '') AS prioridad_entidad
+        FROM solicitudes_presidente s
+        LEFT JOIN tareas t ON t.id_tarea=s.id_tarea
+        LEFT JOIN proyectos p ON p.id_proyecto=s.id_proyecto
+        LEFT JOIN comunidades c ON c.id_comunidad=s.id_comunidad
+        WHERE s.estado='Pendiente'
+    """ + president_filter + " ORDER BY s.fecha_creacion, s.id_solicitud", tuple(president_params))
+
+task_filter, task_params = community_filter("t")
+project_filter, project_params = community_filter("p")
+review_tasks = []
+review_projects = []
+if role != "Presidente":
+    review_tasks = rows("""
+        SELECT 'task' AS entity_type, t.id_tarea AS entity_id, t.id_comunidad,
+               t.titulo AS elemento, t.estado, t.prioridad, t.responsable,
+               t.responsable_proximo_paso, t.proximo_paso,
+               COALESCE(t.fecha_objetivo_proximo_paso, t.fecha_proxima_revision, '') AS fecha_objetivo,
+               t.fecha_ultima_actualizacion, p.nombre AS proyecto, c.nombre AS comunidad,
+               (SELECT r.comentario FROM registros r WHERE r.id_tarea=t.id_tarea ORDER BY r.fecha_hora DESC, r.id_registro DESC LIMIT 1) AS ultimo_comentario
+        FROM tareas t
+        LEFT JOIN proyectos p ON p.id_proyecto=t.id_proyecto
+        LEFT JOIN comunidades c ON c.id_comunidad=t.id_comunidad
+        WHERE COALESCE(t.activa,1)=1 AND COALESCE(t.archivada,0)=0
+          AND COALESCE(t.estado,'') NOT IN ('Terminada','Finalizada','Archivada','Cancelada')
+    """ + task_filter, tuple(task_params))
+    review_projects = rows("""
+        SELECT 'project' AS entity_type, p.id_proyecto AS entity_id, p.id_comunidad,
+               p.nombre AS elemento, p.estado_general AS estado, p.prioridad,
+               p.responsable_principal AS responsable, p.responsable_proximo_paso,
+               p.observaciones AS proximo_paso, COALESCE(p.fecha_objetivo_proximo_paso,'') AS fecha_objetivo,
+               p.fecha_ultima_actualizacion, '' AS proyecto, c.nombre AS comunidad,
+               (SELECT r.comentario FROM registros_proyectos r WHERE r.id_proyecto=p.id_proyecto ORDER BY r.fecha_hora DESC, r.id_registro_proyecto DESC LIMIT 1) AS ultimo_comentario
+        FROM proyectos p
+        LEFT JOIN comunidades c ON c.id_comunidad=p.id_comunidad
+        WHERE COALESCE(p.activo,1)=1
+          AND COALESCE(p.estado_general,'') NOT IN ('Finalizado','Finalizada','Archivado','Cancelado')
+    """ + project_filter, tuple(project_params))
+
+active_users = [str(r[0]).strip().lower() for r in conn.execute("SELECT nombre FROM usuarios WHERE COALESCE(activo,1)=1") if r[0]]
+today = date.today()
+stale_limit = today - timedelta(days=7)
+
+def parse_day(value):
+    text = str(value or "").strip()[:10]
+    try: return date.fromisoformat(text)
+    except ValueError: return None
+
+def enrich(item):
+    reasons = []
+    state = str(item.get("estado") or "").lower()
+    next_owner = str(item.get("responsable_proximo_paso") or "").strip()
+    due = parse_day(item.get("fecha_objetivo"))
+    updated = parse_day(item.get("fecha_ultima_actualizacion"))
+    if due and due < today: reasons.append("Vencida")
+    if "bloque" in state: reasons.append("Bloqueada")
+    if "tercero" in state or (next_owner and next_owner.lower() not in active_users and next_owner.lower() not in [a.lower() for a in aliases]): reasons.append("Pendiente de tercero")
+    if next_owner.lower() in [a.lower() for a in aliases] or str(item.get("responsable") or "").lower() in [a.lower() for a in aliases]: reasons.append("Pendiente de mi")
+    if not updated or updated < stale_limit: reasons.append("Sin actualizar")
+    item["review_reasons"] = reasons or ["Seguimiento ordinario"]
+    item["review_score"] = (100 if "Bloqueada" in reasons else 0) + (80 if "Vencida" in reasons else 0) + (50 if "Pendiente de mi" in reasons else 0) + (30 if "Sin actualizar" in reasons else 0)
+    return item
+
+review_items = [enrich(item) for item in review_tasks + review_projects]
+review_items.sort(key=lambda x: (-x["review_score"], str(x.get("fecha_objetivo") or "9999-12-31"), str(x.get("elemento") or "")))
+summary = {
+    "total": len(review_items),
+    "vencidas": sum("Vencida" in x["review_reasons"] for x in review_items),
+    "mias": sum("Pendiente de mi" in x["review_reasons"] for x in review_items),
+    "terceros": sum("Pendiente de tercero" in x["review_reasons"] for x in review_items),
+    "bloqueadas": sum("Bloqueada" in x["review_reasons"] for x in review_items),
+    "sin_actualizar": sum("Sin actualizar" in x["review_reasons"] for x in review_items),
+}
+communities = rows("SELECT id_comunidad AS id, nombre FROM comunidades WHERE COALESCE(activo,1)=1 ORDER BY nombre") if role == "Superusuario" else list(session.get("comunidades") or [])
+conn.close()
+print(json.dumps({
+    "actions": actions,
+    "notifications": notifications,
+    "unread_notifications": sum(not bool(n.get("leida")) for n in notifications),
+    "president_requests": president_requests,
+    "review": {"items": review_items, "summary": summary, "communities": communities},
+}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function markNotifications(session, notificationId, markAll, pc) {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+notification_id = int(${JSON.stringify(notificationId || 0)})
+mark_all = ${markAll ? "True" : "False"}
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+aliases = [user]
+if user.lower() == "luis gallardo": aliases.append("Luis")
+if user.lower() == "elena cuenca": aliases.append("Elena")
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn = sqlite3.connect(path)
+with conn:
+    conditions = ["leida=0"]
+    params = []
+    if not mark_all:
+        conditions.append("id_notificacion=?")
+        params.append(notification_id)
+    if role != "Superusuario":
+        conditions.append("usuario_destino IN (" + ",".join("?" for _ in aliases) + ")")
+        params.extend(aliases)
+        if allowed_ids:
+            conditions.append("id_comunidad IN (" + ",".join("?" for _ in allowed_ids) + ")")
+            params.extend(allowed_ids)
+        else:
+            conditions.append("1=0")
+    cursor = conn.execute("UPDATE notificaciones SET leida=1, fecha_lectura=? WHERE " + " AND ".join(conditions), tuple([now] + params))
+    changed = cursor.rowcount
+    conn.execute("INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (now, user, pc, "Marcar notificaciones leidas web", "notificacion", notification_id or None, f"Marcadas: {changed}"))
+conn.close()
+print(json.dumps({"ok": True, "changed": changed}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function saveReviewSummary(session, payload, pc) {
+  const script = `
+import json
+import sqlite3
+from datetime import date, datetime
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+data = ${JSON.stringify(payload || {})}
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+if role == "Presidente": raise PermissionError("El perfil Presidente no realiza revisiones operativas.")
+community_id = int(data.get("id_comunidad") or 0) or None
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+if community_id and role != "Superusuario" and community_id not in allowed_ids: raise PermissionError("No tienes permiso para esa comunidad.")
+tasks = int(data.get("tasks") or 0)
+projects = int(data.get("projects") or 0)
+skipped = int(data.get("skipped") or 0)
+notes = str(data.get("observaciones") or "").strip()
+details = json.dumps({"proyectos_revisados": projects, "observaciones": notes}, ensure_ascii=False)
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn = sqlite3.connect(path)
+with conn:
+    cursor = conn.execute("""
+        INSERT INTO revisiones_diarias
+        (fecha,tareas_creadas,tareas_revisadas,tareas_terminadas,tareas_bloqueadas,tareas_saltadas,observaciones,usuario,pc,id_comunidad)
+        VALUES (?,0,?,0,0,?,?,?,?,?)
+    """, (date.today().isoformat(), tasks, skipped, details, user, pc, community_id))
+    review_id = int(cursor.lastrowid)
+    conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
+                 (now,user,pc,"Cerrar revision diaria web","revision_diaria",review_id,details))
+conn.close()
+print(json.dumps({"ok": True, "review_id": review_id}, ensure_ascii=False))
+`;
+  return runPythonJson(script);
+}
+
+function respondPresidentRequest(session, requestId, decision, comment, pc) {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+request_id = int(${JSON.stringify(requestId)})
+decision = ${JSON.stringify(decision)}
+comment = ${JSON.stringify(comment)}.strip()
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+if role != "Presidente": raise PermissionError("Solo el perfil Presidente puede responder estas solicitudes.")
+if decision not in {"Aprobada", "Rechazada", "Solicita aclaracion"}: raise ValueError("Respuesta no valida.")
+if not comment: raise ValueError("El comentario es obligatorio.")
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    with conn:
+        req = conn.execute("SELECT * FROM solicitudes_presidente WHERE id_solicitud=?", (request_id,)).fetchone()
+        if not req or req["estado"] != "Pendiente": raise ValueError("La solicitud ya no esta pendiente.")
+        if not allowed_ids or int(req["id_comunidad"] or 0) not in allowed_ids: raise PermissionError("No tienes permiso para esta comunidad.")
+        return_owner = str(req["responsable_retorno"] or req["solicitante"] or "").strip()
+        requested_step = str(req["proximo_paso_solicitado"] or "").strip()
+        if decision == "Aprobada": next_step = requested_step or "Continuar con la actuacion aprobada por el presidente."
+        elif decision == "Rechazada": next_step = "Revisar una alternativa tras el rechazo del presidente."
+        else: next_step = "Preparar y remitir la aclaracion solicitada por el presidente."
+        conn.execute("""
+            UPDATE solicitudes_presidente
+            SET estado=?, fecha_respuesta=?, usuario_respuesta=?, comentario_respuesta=?
+            WHERE id_solicitud=?
+        """, (decision, now, user, comment, request_id))
+        record_id = None
+        if req["id_tarea"]:
+            item = conn.execute("SELECT * FROM tareas WHERE id_tarea=?", (req["id_tarea"],)).fetchone()
+            cur = conn.execute("""
+                INSERT INTO registros
+                (id_tarea,id_proyecto,fecha_hora,tipo_registro,comentario,estado_anterior,estado_nuevo,
+                 prioridad_anterior,prioridad_nueva,responsable_anterior,responsable_nuevo,proximo_paso,
+                 fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (item["id_tarea"],item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",
+                  item["estado"],item["estado"],item["prioridad"],item["prioridad"],item["responsable"],return_owner,
+                  next_step,item["fecha_proxima_revision"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
+            record_id = int(cur.lastrowid)
+            conn.execute("UPDATE tareas SET responsable=?, responsable_proximo_paso=?, proximo_paso=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_tarea=?",
+                         (return_owner,return_owner,next_step,now,user,pc,item["id_tarea"]))
+            entity_type, entity_id, title = "tarea", int(item["id_tarea"]), str(item["titulo"])
+        else:
+            item = conn.execute("SELECT * FROM proyectos WHERE id_proyecto=?", (req["id_proyecto"],)).fetchone()
+            cur = conn.execute("""
+                INSERT INTO registros_proyectos
+                (id_proyecto,fecha_hora,tipo_registro,comentario,estado_anterior,estado_nuevo,prioridad_anterior,
+                 prioridad_nueva,responsable_anterior,responsable_nuevo,proximo_paso,fecha_proxima_revision,
+                 motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",item["estado_general"],
+                  item["estado_general"],item["prioridad"],item["prioridad"],item["responsable_principal"],return_owner,
+                  next_step,item["fecha_objetivo_proximo_paso"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
+            record_id = int(cur.lastrowid)
+            conn.execute("UPDATE proyectos SET responsable_principal=?, responsable_proximo_paso=?, observaciones=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_proyecto=?",
+                         (return_owner,return_owner,next_step,now,user,pc,item["id_proyecto"]))
+            entity_type, entity_id, title = "proyecto", int(item["id_proyecto"]), str(item["nombre"])
+        requester = str(req["solicitante"] or return_owner).strip()
+        conn.execute("""
+            INSERT INTO notificaciones
+            (id_comunidad,usuario_destino,tipo,titulo,mensaje,id_solicitud,id_tarea,id_proyecto,leida,fecha_creacion)
+            VALUES (?,?,?,?,?,?,?,?,0,?)
+        """, (req["id_comunidad"],requester,"Respuesta presidente",f"{decision}: {title}",comment,request_id,
+              req["id_tarea"],req["id_proyecto"],now))
+        if requester:
+            existing = conn.execute("SELECT id_accion FROM acciones_pendientes WHERE tipo_entidad=? AND COALESCE(id_tarea,0)=? AND COALESCE(id_proyecto,0)=? AND usuario_destino=? AND estado='Pendiente' LIMIT 1",
+                                    (entity_type, int(req["id_tarea"] or 0), int(req["id_proyecto"] or 0), requester)).fetchone()
+            if not existing:
+                conn.execute("""
+                    INSERT INTO acciones_pendientes
+                    (id_comunidad,tipo_entidad,id_tarea,id_proyecto,id_registro_origen,tipo_accion,usuario_destino,
+                     solicitante,titulo,detalle,estado,fecha_creacion,pc_creacion)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?)
+                """, (req["id_comunidad"],entity_type,req["id_tarea"],req["id_proyecto"],record_id,
+                      "Gestionar respuesta de presidencia",requester,user,title,next_step,now,pc))
+        conn.execute("UPDATE notificaciones SET leida=1, fecha_lectura=? WHERE id_solicitud=? AND usuario_destino='Presidente' AND leida=0", (now,request_id))
+        conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
+                     (now,user,pc,"Responder solicitud presidente web","solicitud_presidente",request_id,f"{decision}: {comment}"))
+    print(json.dumps({"ok": True, "decision": decision, "type": "task" if req["id_tarea"] else "project", "id": entity_id}, ensure_ascii=False))
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function queryAiContext(session) {
   const script = `
 import json
@@ -2276,6 +2606,19 @@ function homePage() {
     .uploadBox { border:2px dashed #94a3b8; border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:9px; }
     .uploadBox input { width:100%; }
     .reportMessage { min-height:20px; }
+    .tabBadge { min-width:24px; text-align:center; border-radius:999px; padding:2px 7px; background:#dbeafe; color:#1e3a8a; font-size:12px; font-weight:800; }
+    .tabBadge.alert { background:#fee2e2; color:#991b1b; }
+    .workflowCard { border-left-color:#2563eb; }
+    .workflowCard.overdue { border-left-color:#b91c1c; }
+    .workflowCard.thirdParty { border-left-color:#c2410c; }
+    .notificationCard { min-height:0; }
+    .notificationCard.unread { border-left-color:#2563eb; background:#f8fbff; }
+    .notificationCard.read { opacity:.78; }
+    .reviewSummary { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:8px; margin-bottom:12px; }
+    .reviewSummary .count { min-height:82px; }
+    .workflowControls { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; margin-bottom:12px; }
+    .specialPanel { display:block; min-width:0; }
+    .decisionBox { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; }
     .dangerText { color:#991b1b; font-weight:700; }
     .aiBox { display:grid; gap:12px; }
     .aiInput { min-height:220px; }
@@ -2315,6 +2658,8 @@ function homePage() {
       .contentHead { flex-direction:column; }
       .toolbar button { flex:1 1 auto; }
       .detailGrid, .formGrid { grid-template-columns:1fr; }
+      .workflowControls { grid-template-columns:1fr; }
+      .reviewSummary { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .answerTable { min-width:0; }
       .answerTable thead { display:none; }
       .answerTable, .answerTable tbody, .answerTable tr, .answerTable td { display:block; width:100%; }
@@ -2329,7 +2674,7 @@ function homePage() {
     <div class="topbar">
       <div class="brand">
         <h1>${appName}</h1>
-        <p>Paso 9 - Operativa web, informes y anexos centralizados</p>
+        <p>Paso 10 - Revision, acciones y notificaciones centralizadas</p>
       </div>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
@@ -2356,9 +2701,12 @@ function homePage() {
           <div class="tabs">
             <button class="tab active" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
+            <button class="tab" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
+            <button class="tab" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
+            <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
             <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
           </div>
-          <div class="filters">
+          <div class="filters" id="listFilters">
             <div>
               <label>Busqueda</label>
               <input id="search" placeholder="Nombre, responsable, comentario..." />
@@ -2556,13 +2904,36 @@ function homePage() {
         </div>
       </div>
     </div>
+    <div id="presidentDecisionModal" class="modalBackdrop hidden">
+      <div class="modal" style="width:min(680px,100%)">
+        <div class="modalHead">
+          <div><h2 id="presidentDecisionTitle">Responder solicitud</h2><p class="muted" id="presidentDecisionSubtitle"></p></div>
+          <button class="ghost" id="closePresidentDecision">Cerrar</button>
+        </div>
+        <div class="modalBody">
+          <div class="decisionBox" id="presidentDecisionContext"></div>
+          <label>Comentario obligatorio</label>
+          <textarea id="presidentDecisionComment" placeholder="Explica brevemente la decision o la aclaracion necesaria..."></textarea>
+          <div class="toolbar">
+            <button class="green" id="presidentApprove">Aprobar</button>
+            <button class="red" id="presidentReject">Rechazar</button>
+            <button class="secondary" id="presidentClarify">Solicitar aclaracion</button>
+          </div>
+          <div class="muted" id="presidentDecisionMessage"></div>
+        </div>
+      </div>
+    </div>
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
-    let state = { usuario: null, proyectos: [], tareas: [] };
+    let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "projects";
     let selectedEntity = null;
+    let selectedPresidentRequest = null;
+    let reviewProgress = { tasks: new Set(), projects: new Set() };
+    let reviewCommunity = "";
+    let reviewType = "all";
     let aiProposal = null;
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
@@ -2586,7 +2957,7 @@ function homePage() {
     }
 
     function activeRows() {
-      if (currentView === "ai") return [];
+      if (!["projects", "tasks"].includes(currentView)) return [];
       return currentView === "projects" ? state.proyectos : state.tareas;
     }
 
@@ -2687,6 +3058,8 @@ function homePage() {
 
     async function logout() {
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
+      state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } } };
+      currentView = "projects";
       showLogin("Sesion cerrada.");
     }
 
@@ -3119,13 +3492,18 @@ function homePage() {
       if (!confirm(summary)) return;
       $("recordMessage").textContent = "Guardando...";
       try {
+        const reviewedType = selectedEntity.type;
+        const reviewedId = selectedEntity.id;
         await api("/api/entity/record", {
           method: "POST",
           body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id, payload })
         });
+        if (currentView === "review") {
+          (reviewedType === "task" ? reviewProgress.tasks : reviewProgress.projects).add(Number(reviewedId));
+        }
         $("recordMessage").textContent = "Seguimiento guardado.";
         await loadOverview();
-        await openEntity(selectedEntity.type, selectedEntity.id, false);
+        await openEntity(reviewedType, reviewedId, false);
       } catch (error) {
         $("recordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
       }
@@ -3146,16 +3524,210 @@ function homePage() {
       fillSelect($("priorityFilter"), rows, row => row.prioridad, "Todas las prioridades");
     }
 
+    function setActiveNavigation(view) {
+      ["projectTab", "taskTab", "workTab", "reviewTab", "notificationTab", "aiTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ projects: "projectTab", tasks: "taskTab", work: "workTab", review: "reviewTab", notifications: "notificationTab", ai: "aiTab" })[view];
+      if (target) $(target).classList.add("active");
+    }
+
+    function workflowActionCard(row) {
+      const overdue = row.fecha_objetivo && row.fecha_objetivo.slice(0, 10) < new Date().toISOString().slice(0, 10);
+      const thirdParty = safe(row.estado_entidad).toLowerCase().includes("tercero");
+      return '<article class="card workflowCard ' + (overdue ? "overdue " : "") + (thirdParty ? "thirdParty" : "") + '">' +
+        '<h3>' + html(row.elemento || row.titulo) + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.tipo_entidad === "tarea" ? "Tarea" : "Proyecto") + '</span><span class="pill">' + html(row.tipo_accion || "Accion") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
+        '<div class="line"><strong>Para:</strong> ' + html(row.usuario_destino || "") + (row.solicitante ? ' | <strong>Solicita:</strong> ' + html(row.solicitante) : '') + '</div>' +
+        '<div class="line"><strong>Desde:</strong> ' + html(row.fecha_creacion || "") + '</div>' +
+        (row.fecha_objetivo ? '<div class="line"><strong>Fecha objetivo:</strong> ' + html(row.fecha_objetivo) + '</div>' : '') +
+        '<div class="nextStep"><div class="line"><strong>Accion solicitada:</strong> ' + html(row.detalle || "Sin detalle") + '</div></div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Resolver / actualizar</button></div>' +
+      '</article>';
+    }
+
+    function presidentRequestCard(row) {
+      return '<article class="card workflowCard overdue">' +
+        '<h3>' + html(row.elemento || row.titulo) + '</h3>' +
+        '<div class="meta"><span class="pill">Decision pendiente</span><span class="pill">' + html(row.comunidad || "") + '</span><span class="pill">' + html(row.fecha_creacion || "") + '</span></div>' +
+        '<div class="line"><strong>Solicitante:</strong> ' + html(row.solicitante || row.usuario_creacion || "") + '</div>' +
+        '<div class="nextStep"><div class="line"><strong>Solicitud:</strong> ' + html(row.ultimo_comentario || row.detalle || "") + '</div>' +
+        '<div class="line"><strong>Proximo paso solicitado:</strong> ' + html(row.proximo_paso_solicitado || "") + '</div></div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Ver contexto completo</button><button data-work-action="president" data-request-id="' + html(row.id_solicitud) + '">Responder</button></div>' +
+      '</article>';
+    }
+
+    function workPanelHtml() {
+      const isPresident = (state.usuario || {}).rol === "Presidente";
+      const rows = isPresident ? (state.workflow.president_requests || []) : (state.workflow.actions || []);
+      const content = rows.length ? rows.map(isPresident ? presidentRequestCard : workflowActionCard).join("") : '<div class="empty">No tienes acciones pendientes.</div>';
+      return '<div class="cards">' + content + '</div>';
+    }
+
+    function reviewCard(row) {
+      const reasons = (row.review_reasons || []).map(reason => '<span class="pill">' + html(reason) + '</span>').join("");
+      return '<article class="card workflowCard ' + ((row.review_reasons || []).includes("Vencida") ? "overdue" : "") + '">' +
+        '<h3>' + html(row.elemento) + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.entity_type === "task" ? "Tarea" : "Proyecto") + '</span>' + reasons + '</div>' +
+        '<div class="line"><strong>Comunidad:</strong> ' + html(row.comunidad || "") + '</div>' +
+        (row.proyecto ? '<div class="line"><strong>Proyecto:</strong> ' + html(row.proyecto) + '</div>' : '') +
+        '<div class="line"><strong>Estado:</strong> ' + html(row.estado || "") + ' | <strong>Prioridad:</strong> ' + html(row.prioridad || "") + '</div>' +
+        '<div class="line"><strong>Responsable:</strong> ' + html(row.responsable || "") + '</div>' +
+        '<div class="nextStep"><div class="line"><strong>Proximo paso:</strong> ' + html(row.proximo_paso || "Sin definir") + '</div>' +
+        (row.ultimo_comentario ? '<div class="line"><strong>Ultimo comentario:</strong> ' + html(row.ultimo_comentario) + '</div>' : '') + '</div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="review" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Revisar ahora</button></div>' +
+      '</article>';
+    }
+
+    function reviewPanelHtml() {
+      const review = state.workflow.review || { items: [], summary: {}, communities: [] };
+      const items = (review.items || []).filter(row =>
+        (!reviewCommunity || String(row.id_comunidad) === String(reviewCommunity)) &&
+        (reviewType === "all" || row.entity_type === reviewType)
+      );
+      const summary = {
+        vencidas: items.filter(row => (row.review_reasons || []).includes("Vencida")).length,
+        mias: items.filter(row => (row.review_reasons || []).includes("Pendiente de mi")).length,
+        terceros: items.filter(row => (row.review_reasons || []).includes("Pendiente de tercero")).length,
+        bloqueadas: items.filter(row => (row.review_reasons || []).includes("Bloqueada")).length,
+        sin_actualizar: items.filter(row => (row.review_reasons || []).includes("Sin actualizar")).length
+      };
+      const communities = (review.communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '"' + (String(row.id || row.id_comunidad) === String(reviewCommunity) ? " selected" : "") + '>' + html(row.nombre) + '</option>').join("");
+      return '<div class="reviewSummary">' +
+          countCard("Vencidas", summary.vencidas || 0) + countCard("Pendientes de mi", summary.mias || 0) + countCard("Pendientes de terceros", summary.terceros || 0) + countCard("Bloqueadas", summary.bloqueadas || 0) + countCard("Sin actualizar", summary.sin_actualizar || 0) +
+        '</div>' +
+        '<div class="workflowControls"><div><label>Comunidad</label><select id="reviewCommunity"><option value="">Todas las comunidades</option>' + communities + '</select></div>' +
+        '<div><label>Tipo</label><select id="reviewType"><option value="all"' + (reviewType === "all" ? " selected" : "") + '>Tareas y proyectos</option><option value="task"' + (reviewType === "task" ? " selected" : "") + '>Solo tareas</option><option value="project"' + (reviewType === "project" ? " selected" : "") + '>Solo proyectos</option></select></div>' +
+        '<div><label>Progreso de esta revision</label><div class="detailBox">' + (reviewProgress.tasks.size + reviewProgress.projects.size) + ' revisados</div></div></div>' +
+        '<div class="cards">' + (items.length ? items.map(reviewCard).join("") : '<div class="empty">No hay elementos para este filtro.</div>') + '</div>' +
+        '<section style="margin-top:12px"><h2>Cerrar revision de hoy</h2><textarea id="reviewNotes" placeholder="Observaciones generales opcionales..."></textarea><div class="toolbar"><button class="green" id="finishReview">Guardar resumen de revision</button><span class="muted" id="reviewMessage"></span></div></section>';
+    }
+
+    function notificationCard(row) {
+      const hasEntity = row.entity_type && row.entity_id;
+      return '<article class="card notificationCard ' + (row.leida ? "read" : "unread") + '">' +
+        '<h3>' + html(row.titulo) + '</h3>' +
+        '<div class="meta"><span class="pill">' + html(row.tipo || "Notificacion") + '</span><span class="pill">' + html(row.usuario_destino || "") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
+        '<div class="line">' + html(row.mensaje || "") + '</div><div class="line muted">' + html(row.fecha_creacion || "") + '</div>' +
+        '<div class="cardActions">' + (hasEntity ? '<button class="ghost" data-work-action="notification-open" data-notification-id="' + html(row.id_notificacion) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir elemento</button>' : '') + (!row.leida ? '<button data-work-action="notification-read" data-notification-id="' + html(row.id_notificacion) + '">Marcar leida</button>' : '') + '</div>' +
+      '</article>';
+    }
+
+    function notificationsPanelHtml() {
+      const rows = state.workflow.notifications || [];
+      return '<div class="toolbar"><button class="ghost" id="markAllNotifications">Marcar todas como leidas</button><span class="muted" id="notificationMessage"></span></div><div class="cards">' +
+        (rows.length ? rows.map(notificationCard).join("") : '<div class="empty">No hay notificaciones.</div>') + '</div>';
+    }
+
+    function bindReviewPanel() {
+      $("reviewCommunity").addEventListener("change", event => { reviewCommunity = event.target.value; render(); });
+      $("reviewType").addEventListener("change", event => { reviewType = event.target.value; render(); });
+      $("finishReview").addEventListener("click", finishDailyReview);
+    }
+
+    function bindNotificationsPanel() {
+      $("markAllNotifications").addEventListener("click", () => markNotification(0, true));
+    }
+
+    async function markNotification(id, all = false) {
+      try {
+        await api("/api/notifications/read", { method: "POST", body: JSON.stringify({ id, all }) });
+        await loadOverview();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    async function finishDailyReview() {
+      const total = reviewProgress.tasks.size + reviewProgress.projects.size;
+      if (!total && !confirm("No has guardado seguimientos durante esta revision. Quieres registrar igualmente el cierre?")) return;
+      $("reviewMessage").textContent = "Guardando resumen...";
+      try {
+        await api("/api/review/complete", { method: "POST", body: JSON.stringify({
+          id_comunidad: reviewCommunity || null,
+          tasks: reviewProgress.tasks.size,
+          projects: reviewProgress.projects.size,
+          skipped: 0,
+          observaciones: $("reviewNotes").value
+        }) });
+        reviewProgress = { tasks: new Set(), projects: new Set() };
+        $("reviewMessage").textContent = "Revision guardada.";
+        await loadOverview();
+      } catch (error) {
+        $("reviewMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
+    function openPresidentDecision(requestId) {
+      selectedPresidentRequest = (state.workflow.president_requests || []).find(row => String(row.id_solicitud) === String(requestId));
+      if (!selectedPresidentRequest) return;
+      $("presidentDecisionTitle").textContent = selectedPresidentRequest.elemento || selectedPresidentRequest.titulo;
+      $("presidentDecisionSubtitle").textContent = selectedPresidentRequest.comunidad || "";
+      $("presidentDecisionContext").innerHTML = '<strong>Solicitud</strong><p>' + html(selectedPresidentRequest.ultimo_comentario || selectedPresidentRequest.detalle || "") + '</p><strong>Proximo paso solicitado</strong><p>' + html(selectedPresidentRequest.proximo_paso_solicitado || "") + '</p>';
+      $("presidentDecisionComment").value = "";
+      $("presidentDecisionMessage").textContent = "";
+      $("presidentDecisionModal").classList.remove("hidden");
+    }
+
+    function closePresidentDecision() {
+      $("presidentDecisionModal").classList.add("hidden");
+      selectedPresidentRequest = null;
+    }
+
+    async function submitPresidentDecision(decision) {
+      if (!selectedPresidentRequest) return;
+      const comment = $("presidentDecisionComment").value;
+      if (!safe(comment)) {
+        $("presidentDecisionMessage").innerHTML = '<span class="dangerText">El comentario es obligatorio.</span>';
+        return;
+      }
+      if (!confirm("Se registrara la decision \\"" + decision + "\\" y se devolvera la responsabilidad al solicitante. Confirmas?")) return;
+      $("presidentDecisionMessage").textContent = "Guardando decision...";
+      try {
+        await api("/api/president/respond", { method: "POST", body: JSON.stringify({ id: selectedPresidentRequest.id_solicitud, decision, comment }) });
+        closePresidentDecision();
+        await loadOverview();
+      } catch (error) {
+        $("presidentDecisionMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      }
+    }
+
     function render() {
+      const specialView = ["work", "review", "notifications", "ai"].includes(currentView);
+      $("listFilters").classList.toggle("hidden", specialView);
+      $("cards").className = specialView ? "specialPanel" : "cards";
+      setActiveNavigation(currentView);
+      if (currentView === "work") {
+        const president = (state.usuario || {}).rol === "Presidente";
+        $("contentTitle").textContent = president ? "Decisiones de presidencia" : "Acciones pendientes";
+        $("contentSubtitle").textContent = president ? "Solicitudes que requieren aprobar, rechazar o pedir aclaracion." : "Trabajo dirigido a ti que requiere seguimiento o respuesta.";
+        $("visibleCount").textContent = president ? (state.workflow.president_requests || []).length + " pendientes" : (state.workflow.actions || []).length + " pendientes";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = workPanelHtml();
+        return;
+      }
+      if (currentView === "review") {
+        $("contentTitle").textContent = "Revision diaria ejecutiva";
+        $("contentSubtitle").textContent = "Prioriza vencidas, pendientes de ti, terceros, bloqueadas y elementos sin actualizar.";
+        $("visibleCount").textContent = ((((state.workflow.review || {}).summary || {}).total) || 0) + " elementos activos";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = reviewPanelHtml();
+        bindReviewPanel();
+        return;
+      }
+      if (currentView === "notifications") {
+        $("contentTitle").textContent = "Centro de notificaciones";
+        $("contentSubtitle").textContent = "Respuestas, aprobaciones, aclaraciones y nuevas acciones en una sola bandeja.";
+        $("visibleCount").textContent = (state.workflow.unread_notifications || 0) + " sin leer";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = notificationsPanelHtml();
+        bindNotificationsPanel();
+        return;
+      }
       if (currentView === "ai") {
         $("contentTitle").textContent = "IA operativa";
         $("contentSubtitle").textContent = "Pega una llamada, reunion o consulta. La IA propone y tu confirmas antes de guardar.";
         $("visibleCount").textContent = "";
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = aiPanelHtml();
-        $("projectTab").classList.remove("active");
-        $("taskTab").classList.remove("active");
-        $("aiTab").classList.add("active");
         bindAiPanel();
         return;
       }
@@ -3177,9 +3749,6 @@ function homePage() {
       $("visibleCount").textContent = rows.length + " de " + activeRows().length + " visibles";
       $("viewActions").classList.toggle("hidden", !canWrite());
       $("cards").innerHTML = rows.length ? rows.map(card).join("") : '<div class="empty">No hay elementos con esos filtros.</div>';
-      $("projectTab").classList.toggle("active", currentView === "projects");
-      $("taskTab").classList.toggle("active", currentView === "tasks");
-      $("aiTab").classList.remove("active");
     }
 
     function aiPanelHtml() {
@@ -3387,22 +3956,30 @@ function homePage() {
     async function loadOverview() {
       $("sessionStatus").textContent = "Cargando datos...";
       try {
-        const data = await api("/api/overview");
+        const firstSessionLoad = !state.usuario;
+        const [data, workflow] = await Promise.all([api("/api/overview"), api("/api/workflow")]);
+        data.workflow = workflow;
         state = data;
         showApp();
         const user = data.usuario || {};
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - acciones con confirmacion";
-        if (user.rol === "Presidente") currentView = "projects";
+        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "review", "ai"].includes(currentView))) currentView = "work";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
         $("counts").innerHTML =
-          countCard("Usuarios", data.counts.usuarios) +
-          countCard("Comunidades", data.counts.comunidades) +
+          countCard(user.rol === "Presidente" ? "Decisiones pendientes" : "Acciones pendientes", user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length) +
+          countCard("Notificaciones sin leer", workflow.unread_notifications || 0) +
           countCard("Proyectos activos", data.counts.proyectos_activos) +
           countCard("Tareas activas", data.counts.tareas_activas) +
-          countCard("Asambleas", data.counts.asambleas) +
-          countCard("Propiedades", data.counts.propiedades_contabilidad);
+          countCard("Comunidades", data.counts.comunidades) +
+          countCard("Elementos a revisar", (workflow.review.summary || {}).total || 0);
         $("projectTabCount").textContent = data.proyectos.length;
         $("taskTabCount").textContent = data.tareas.length;
+        $("workTabCount").textContent = user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length;
+        $("reviewTabCount").textContent = (workflow.review.summary || {}).total || 0;
+        $("notificationTabCount").textContent = workflow.unread_notifications || 0;
         refreshFilterOptions();
         render();
       } catch (error) {
@@ -3426,6 +4003,9 @@ function homePage() {
 
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
+    $("workTab").addEventListener("click", () => switchView("work"));
+    $("reviewTab").addEventListener("click", () => switchView("review"));
+    $("notificationTab").addEventListener("click", () => switchView("notifications"));
     $("aiTab").addEventListener("click", () => switchView("ai"));
     $("search").addEventListener("input", render);
     $("stateFilter").addEventListener("change", render);
@@ -3439,6 +4019,26 @@ function homePage() {
       render();
     });
     $("cards").addEventListener("click", event => {
+      const workflowButton = event.target.closest("button[data-work-action]");
+      if (workflowButton) {
+        const action = workflowButton.dataset.workAction;
+        if (action === "president") {
+          openPresidentDecision(workflowButton.dataset.requestId);
+          return;
+        }
+        if (action === "notification-read") {
+          markNotification(workflowButton.dataset.notificationId, false);
+          return;
+        }
+        if (action === "notification-open") {
+          markNotification(workflowButton.dataset.notificationId, false).then(() => openEntity(workflowButton.dataset.type, workflowButton.dataset.id, false)).catch(error => alert(error.message));
+          return;
+        }
+        if (["open", "record", "review"].includes(action)) {
+          openEntity(workflowButton.dataset.type, workflowButton.dataset.id, action !== "open").catch(error => alert(error.message));
+          return;
+        }
+      }
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       if (button.dataset.action === "report") {
@@ -3463,6 +4063,11 @@ function homePage() {
     $("createModal").addEventListener("click", event => { if (event.target.id === "createModal") closeCreateModal(); });
     $("createType").addEventListener("change", updateCreateForm);
     $("saveCreateEntity").addEventListener("click", saveCreateEntity);
+    $("closePresidentDecision").addEventListener("click", closePresidentDecision);
+    $("presidentDecisionModal").addEventListener("click", event => { if (event.target.id === "presidentDecisionModal") closePresidentDecision(); });
+    $("presidentApprove").addEventListener("click", () => submitPresidentDecision("Aprobada"));
+    $("presidentReject").addEventListener("click", () => submitPresidentDecision("Rechazada"));
+    $("presidentClarify").addEventListener("click", () => submitPresidentDecision("Solicita aclaracion"));
     $("recordState").addEventListener("change", updateBlockReasonVisibility);
     $("saveRecord").addEventListener("click", saveRecord);
     $("quickRecordAnalyze").addEventListener("click", analyzeQuickRecord);
@@ -3529,6 +4134,12 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await queryOverview(session));
   }
+  if (req.method === "GET" && url.pathname === "/api/workflow") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await queryWorkflow(session));
+  }
   if (req.method === "GET" && url.pathname === "/api/options") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -3587,6 +4198,32 @@ async function handle(req, res) {
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await updateEntity(session, type, id, {}, String(pc), true));
   }
+  if (req.method === "POST" && url.pathname === "/api/notifications/read") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const id = Number(body.id || 0);
+    const markAll = Boolean(body.all);
+    if (!markAll && !id) return sendJson(res, 400, { ok: false, error: "Notificacion no valida." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await markNotifications(session, id, markAll, String(pc)));
+  }
+  if (req.method === "POST" && url.pathname === "/api/review/complete") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await saveReviewSummary(session, body || {}, String(pc)));
+  }
+  if (req.method === "POST" && url.pathname === "/api/president/respond") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const body = await readBody(req);
+    const id = Number(body.id || 0);
+    if (!id) return sendJson(res, 400, { ok: false, error: "Solicitud no valida." });
+    const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
+    return sendJson(res, 200, await respondPresidentRequest(session, id, String(body.decision || ""), String(body.comment || ""), String(pc)));
+  }
   if (req.method === "POST" && url.pathname === "/api/entity/attachment") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -3639,7 +4276,7 @@ async function handle(req, res) {
     return sendJson(res, 200, {
       ok: true,
       app: appName,
-      step: databaseExists ? 9 : 1,
+      step: databaseExists ? 10 : 1,
       port,
       dataDir,
       databasePath,

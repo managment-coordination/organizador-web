@@ -14,6 +14,10 @@ La version web centraliza actualmente:
 - consulta, alta, edicion y archivo de tareas y proyectos;
 - seguimientos manuales e inteligentes con confirmacion;
 - centro IA para consultas estructuradas y propuestas operativas;
+- bandeja de acciones pendientes adaptada al usuario activo;
+- revision diaria ejecutiva con filtros por comunidad y tipo de elemento;
+- centro de notificaciones con lectura individual o conjunta;
+- decisiones de Presidencia con comentario obligatorio, historial y devolucion automatica de responsabilidad;
 - informes Word individuales de tareas y proyectos;
 - subida multiple, vista previa y descarga protegida de anexos;
 - datos y documentos persistentes en el servidor Ubuntu.
