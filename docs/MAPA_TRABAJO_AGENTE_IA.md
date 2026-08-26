@@ -24,22 +24,21 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 0 - Memoria del proyecto |
-| Estado tecnico | 99% |
-| Estado funcional | 98% |
-| Siguiente nucleo | Fase 1 - Agente de consulta fiable |
-| Accion permitida ahora | Mantener y reforzar documentacion del mapa |
-| Accion no permitida sin confirmacion | Empezar cambios de codigo del agente o modificar produccion |
-| Bloqueo actual | Falta confirmacion del usuario para cerrar Fase 0 al 100% |
-| Riesgo principal | Abrir ramificaciones antes de consolidar el agente de consulta fiable |
+| Nucleo activo | Fase 1 - Agente de consulta fiable |
+| Estado tecnico | 35% |
+| Estado funcional | 30% |
+| Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
+| Accion permitida ahora | Auditar Centro IA actual, endpoints, interfaz, fuentes internas y separacion consulta/entrada |
+| Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
+| Bloqueo actual | Ninguno |
+| Riesgo principal | Mezclar consultas con acciones operativas o responder sin evidencia interna |
 
-Proxima accion al recibir confirmacion:
+Proxima accion:
 
-1. Marcar Fase 0 como cerrada al 100%.
-2. Crear copia de seguridad antes de auditar el Centro IA.
-3. Iniciar Fase 1 con porcentaje de partida 30%.
-4. Auditar endpoints, interfaz y flujo actual de consultas IA.
-5. Separar consulta de entrada operativa y definir fuentes internas.
+1. Auditar endpoints, interfaz y flujo actual de consultas IA.
+2. Mapear fuentes internas disponibles.
+3. Detectar puntos donde una consulta se interpreta como entrada operativa.
+4. Documentar hallazgos y propuestas antes de modificar comportamiento sensible.
 
 ## Reglas de trabajo
 
@@ -524,7 +523,7 @@ Criterio de cierre:
 
 ### Fase 0 - Memoria del proyecto
 
-Estado: en curso.
+Estado: cerrada.
 
 Objetivo:
 
@@ -540,7 +539,7 @@ Cierre:
 
 ### Fase 1 - Agente de consulta fiable
 
-Estado: preparada, pendiente de confirmacion para iniciar.
+Estado: iniciada.
 
 Objetivo:
 
@@ -648,10 +647,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Commit `010fa7d` publicado en GitHub con control anti-bucle, bitacora y Fase 1 marcada como preparada | Confirmacion del usuario para cerrar al 100% |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade definicion de nucleo cerrado y plantilla de decision de ramificaciones | Commit y push de esta ampliacion |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade tablero actual con siguiente nucleo, accion permitida y bloqueo funcional | Commit y push de esta ampliacion |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 100% | Usuario confirma el mapa maestro. Se inicia Fase 1 con porcentaje base 30% | Auditar Centro IA actual |
+| 2026-08-26 | Fase 1 - Agente de consulta fiable | 35% tecnico | Auditoria inicial del Centro IA documentada en `docs/FASE_1_AUDITORIA_CENTRO_IA.md` | Implementar contrato comun de respuesta y fuentes internas |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
-- Nucleo activo: Fase 0 - Memoria del proyecto.
-- Avance del nucleo: 99% tecnico, 98% funcional.
-- Pendiente inmediato: recibir confirmacion del usuario para cerrar la Fase 0 y pasar a la Fase 1.
+- Nucleo activo: Fase 1 - Agente de consulta fiable.
+- Avance del nucleo: 35% tecnico, 30% funcional.
+- Pendiente inmediato: implementar contrato comun de respuesta IA, fuentes internas visibles, permisos reforzados y pruebas de no modificacion.
