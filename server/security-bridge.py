@@ -441,14 +441,23 @@ def overview() -> dict:
     severities = dictionaries(
         conn.execute(
             """SELECT gravedad AS label,COUNT(*) AS total FROM seguridad_incidencias
-               WHERE estado_revision<>'Descartada' GROUP BY gravedad ORDER BY total DESC"""
+               GROUP BY gravedad ORDER BY total DESC"""
         ).fetchall()
     )
     categories = dictionaries(
         conn.execute(
             """SELECT categoria_normalizada AS label,COUNT(*) AS total FROM seguridad_incidencias
-               WHERE estado_revision<>'Descartada' GROUP BY categoria_normalizada ORDER BY total DESC"""
+               GROUP BY categoria_normalizada ORDER BY total DESC"""
         ).fetchall()
+    )
+    document_summary = dict(
+        conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN estado_procesamiento IN ('Procesado','Sin incidencias') THEN 1 ELSE 0 END) AS examined,
+                      SUM(CASE WHEN estado_procesamiento='Error' THEN 1 ELSE 0 END) AS errors,
+                      COALESCE(SUM(incidencias_detectadas),0) AS detected_incidents
+               FROM seguridad_documentos"""
+        ).fetchone()
     )
     zones = dictionaries(
         conn.execute(
@@ -490,12 +499,16 @@ def overview() -> dict:
         "SELECT nombre FROM seguridad_categorias WHERE activa=1 ORDER BY orden,nombre"
     )]
     community_id = macro_community_id(conn)
+    pending = counts.get("Pendiente de revision", 0) + counts.get("En revision", 0)
+    total = sum(counts.values())
     conn.close()
     return {
         "ok": True,
         "counts": counts,
-        "total": sum(counts.values()),
-        "pending": counts.get("Pendiente de revision", 0) + counts.get("En revision", 0),
+        "total": total,
+        "pending": pending,
+        "reviewed": max(0, total - pending),
+        "document_summary": document_summary,
         "severities": severities,
         "categories": categories,
         "zones": zones,

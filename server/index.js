@@ -3892,12 +3892,18 @@ function homePage() {
     .securityReceipt.error { border-left-color:#b91c1c; }
     .securityMetrics { display:grid; grid-template-columns:repeat(5,minmax(125px,1fr)); gap:8px; }
     .securityDashboard { display:grid; grid-template-columns:minmax(260px,.72fr) minmax(0,1.5fr); gap:12px; align-items:start; }
+    .securityAnalytics { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(250px,.6fr); gap:12px; align-items:stretch; }
     .securityCharts { display:grid; gap:12px; }
     .securityChart { border:1px solid var(--line); border-radius:8px; padding:11px; background:white; }
     .securityChart h3 { margin:0 0 9px; font-size:15px; }
-    .securityBarRow { display:grid; grid-template-columns:minmax(105px,.8fr) minmax(100px,1fr) 34px; gap:7px; align-items:center; margin:6px 0; font-size:12px; }
+    .securityBarRow { display:grid; grid-template-columns:minmax(105px,.8fr) minmax(100px,1fr) 34px 48px; gap:7px; align-items:center; margin:7px 0; font-size:12px; }
     .securityBarTrack { height:9px; border-radius:4px; overflow:hidden; background:#e2e8f0; }
     .securityBarFill { height:100%; background:#2563eb; }
+    .securityBarPct { color:var(--muted); text-align:right; }
+    .securityBreakdown { border:1px solid var(--line); border-radius:8px; padding:11px; background:white; display:grid; align-content:start; gap:8px; }
+    .securityBreakdown h3 { margin:0; font-size:15px; }
+    .securityBreakdownRow { display:flex; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+    .securityBreakdownRow:last-child { border-bottom:0; }
     .securityFilters { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
     .securityIncidentList { display:grid; grid-template-columns:repeat(auto-fill,minmax(285px,1fr)); gap:9px; }
     .securityIncident { border:1px solid var(--line); border-left:6px solid #64748b; border-radius:8px; background:white; padding:11px; display:grid; gap:7px; cursor:pointer; min-width:0; }
@@ -3906,6 +3912,12 @@ function homePage() {
     .securityIncident.severity-Alta { border-left-color:#ea580c; }
     .securityIncident.severity-Media { border-left-color:#ca8a04; }
     .securityIncident.severity-Informativa { border-left-color:#64748b; }
+    .securityQueue { display:grid; gap:10px; }
+    .securityQueue + .securityQueue { border-top:1px solid var(--line); padding-top:14px; }
+    .securityQueueHead { display:flex; justify-content:space-between; gap:12px; align-items:flex-end; }
+    .securityQueueHead h2 { margin:0; font-size:19px; }
+    .securityQueueHead p { margin:3px 0 0; }
+    .securityReviewed .securityIncident { background:#f8fafc; }
     .securitySourceBox { border:1px solid var(--line); border-radius:8px; padding:10px; background:#f8fafc; display:grid; gap:7px; }
     .securityCandidate { border:1px solid var(--line); border-radius:7px; padding:9px; background:white; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
     .securityOriginal { background:#f8fafc; border:1px solid #e2e8f0; border-radius:7px; padding:10px; white-space:pre-wrap; line-height:1.4; }
@@ -3922,7 +3934,7 @@ function homePage() {
       .assemblyMetrics { grid-template-columns:repeat(3,minmax(115px,1fr)); }
       .assemblySplit { grid-template-columns:1fr; }
       .adminLayout { grid-template-columns:1fr; }
-      .securityDashboard { grid-template-columns:1fr; }
+      .securityDashboard, .securityAnalytics { grid-template-columns:1fr; }
       .securityMetrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
     }
     @media (max-width: 700px) {
@@ -4353,7 +4365,8 @@ function homePage() {
       .adminLayout { gap:9px; }
       .adminList { max-height:360px; }
       .securityDashboard { gap:9px; }
-      .securityBarRow { grid-template-columns:minmax(82px,.8fr) minmax(80px,1fr) 28px; }
+      .securityBarRow { grid-template-columns:minmax(82px,.8fr) minmax(80px,1fr) 28px 42px; }
+      .securityQueueHead { align-items:flex-start; }
       .answerCards { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .answerCard strong { font-size:18px; }
       .login { margin:18px auto; padding:17px 14px; }
@@ -6440,8 +6453,19 @@ function homePage() {
     }
 
     function securityChartHtml(title, rows) {
-      const total = Math.max(1, ...(rows || []).map(row => Number(row.total || 0)));
-      return '<div class="securityChart"><h3>' + html(title) + '</h3>' + ((rows || []).map(row => '<div class="securityBarRow"><span title="' + html(row.label || '') + '">' + html(row.label || 'Sin determinar') + '</span><div class="securityBarTrack"><div class="securityBarFill" style="width:' + Math.max(3, Math.round(Number(row.total || 0) * 100 / total)) + '%"></div></div><strong>' + html(String(row.total || 0)) + '</strong></div>').join('') || '<div class="muted">Sin datos.</div>') + '</div>';
+      const values = rows || [];
+      const maximum = Math.max(1, ...values.map(row => Number(row.total || 0)));
+      const total = Math.max(1, values.reduce((sum,row) => sum + Number(row.total || 0), 0));
+      const colors = ['#2563eb','#0f766e','#d97706','#be123c','#7c3aed','#15803d','#c2410c','#475569'];
+      return '<div class="securityChart"><h3>' + html(title) + '</h3>' + (values.map((row,index) => {
+        const value = Number(row.total || 0);
+        const percentage = Math.round(value * 100 / total);
+        return '<div class="securityBarRow"><span title="' + html(row.label || '') + '">' + html(row.label || 'Sin determinar') + '</span><div class="securityBarTrack"><div class="securityBarFill" style="width:' + Math.max(3, Math.round(value * 100 / maximum)) + '%;background:' + colors[index % colors.length] + '"></div></div><strong>' + html(String(value)) + '</strong><span class="securityBarPct">' + percentage + '%</span></div>';
+      }).join('') || '<div class="muted">Sin datos.</div>') + '</div>';
+    }
+
+    function securityIncidentCardHtml(row) {
+      return '<article class="securityIncident severity-' + slug(row.gravedad) + '" data-security-incident="' + row.id_incidencia + '"><h3>' + html(row.titulo) + '</h3><div class="meta"><span class="pill">' + html(row.gravedad) + '</span><span class="pill">' + html(row.estado_revision) + '</span><span class="pill">' + html(row.categoria_normalizada) + '</span></div><div class="line"><strong>Zona:</strong> ' + html(row.zona || row.ubicacion || 'Sin determinar') + '</div><div class="line"><strong>Fecha:</strong> ' + html(row.fecha_hora_suceso || 'Sin fecha') + '</div>' + (row.numero_reporte ? '<div class="line"><strong>Reporte:</strong> #' + html(row.numero_reporte) + '</div>' : '') + (row.revisor ? '<div class="line"><strong>Revisi&oacute;n:</strong> ' + html(row.revisor) + '</div>' : '') + '</article>';
     }
 
     function filteredSecurityIncidents() {
@@ -6465,9 +6489,21 @@ function homePage() {
       const statusOptions = [...new Set((data.incidents || []).map(row => row.estado_revision).filter(Boolean))];
       const categoryOptions = data.category_options || [];
       const filters = securityData.filters || {};
-      const cards = incidents.map(row => '<article class="securityIncident severity-' + slug(row.gravedad) + '" data-security-incident="' + row.id_incidencia + '"><h3>' + html(row.titulo) + '</h3><div class="meta"><span class="pill">' + html(row.gravedad) + '</span><span class="pill">' + html(row.estado_revision) + '</span><span class="pill">' + html(row.categoria_normalizada) + '</span></div><div class="line"><strong>Zona:</strong> ' + html(row.zona || row.ubicacion || 'Sin determinar') + '</div><div class="line"><strong>Fecha:</strong> ' + html(row.fecha_hora_suceso || 'Sin fecha') + '</div>' + (row.numero_reporte ? '<div class="line"><strong>Reporte:</strong> #' + html(row.numero_reporte) + '</div>' : '') + (row.revisor ? '<div class="line"><strong>Revision:</strong> ' + html(row.revisor) + '</div>' : '') + '</article>').join('');
+      const pendingStates = new Set(['Pendiente de revision','En revision']);
+      const pendingRows = incidents.filter(row => pendingStates.has(row.estado_revision));
+      const reviewedRows = incidents.filter(row => !pendingStates.has(row.estado_revision));
+      const pendingCards = pendingRows.map(securityIncidentCardHtml).join('');
+      const reviewedCards = reviewedRows.map(securityIncidentCardHtml).join('');
+      const documentSummary = data.document_summary || {};
+      const reviewCounts = [
+        ['Pendientes de revisi&oacute;n', data.counts['Pendiente de revision'] || 0],
+        ['En revisi&oacute;n', data.counts['En revision'] || 0],
+        ['Revisadas / gestionadas', data.reviewed || 0],
+        ['Descartadas', data.counts.Descartada || 0],
+      ];
+      const reviewBreakdown = '<div class="securityBreakdown"><h3>Estado de la revisi&oacute;n</h3>' + reviewCounts.map(row => '<div class="securityBreakdownRow"><span>' + row[0] + '</span><strong>' + html(String(row[1])) + '</strong></div>').join('') + '<p class="muted">' + html(String(documentSummary.total || 0)) + ' documentos cargados' + (Number(documentSummary.errors || 0) ? ' &middot; ' + html(String(documentSummary.errors)) + ' con error' : '') + '.</p></div>';
       const documents = (data.documents || []).slice(0, 20).map(row => '<div class="reportRow"><div><h3>' + html(row.nombre_original) + '</h3><div class="muted">' + html(row.tipo_documento || 'Documento') + ' · ' + html(row.fecha_carga || '') + ' · ' + html(String(row.incidencias_nuevas || 0)) + ' nuevas / ' + html(String(row.incidencias_duplicadas || 0)) + ' repetidas</div></div><a href="/api/security/document?id=' + row.id_documento + '&inline=1" target="_blank"><button class="ghost">Abrir</button></a></div>').join('');
-      return '<div class="securityShell">' + securityUploaderHtml() + '<div class="securityMetrics">' + countCard('Pendientes',String(data.pending || 0)) + countCard('Críticas',String((data.severities.find(row => row.label === 'Critica') || {}).total || 0)) + countCard('Altas',String((data.severities.find(row => row.label === 'Alta') || {}).total || 0)) + countCard('Incidencias',String(data.total || 0)) + countCard('Documentos',String((data.documents || []).length)) + '</div><div class="securityDashboard"><div class="securityCharts">' + securityChartHtml('Por categoría',data.categories) + securityChartHtml('Por zona',data.zones) + securityChartHtml('Por gravedad',data.severities) + '</div><div><div class="securityFilters"><input id="securityQuery" placeholder="Buscar incidencia, zona o reporte" value="' + html(filters.query || '') + '" /><select id="securityStatus"><option value="">Todos los estados</option>' + statusOptions.map(value => '<option' + (value === filters.status ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select><select id="securitySeverity"><option value="">Todas las gravedades</option>' + (data.severity_options || []).map(value => '<option' + (value === filters.severity ? ' selected' : '') + '>' + html(value === 'Critica' ? 'Crítica' : value) + '</option>').join('') + '</select><select id="securityCategory"><option value="">Todas las categorías</option>' + categoryOptions.map(value => '<option' + (value === filters.category ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select></div><div class="securityIncidentList">' + (cards || '<div class="empty">No hay incidencias con estos filtros.</div>') + '</div></div></div><section><div class="contentHead"><div><h2>Partes protegidos</h2><p class="muted">Aperturas y descargas quedan auditadas.</p></div></div><div class="reportList">' + (documents || '<div class="empty">No hay documentos cargados.</div>') + '</div></section></div>';
+      return '<div class="securityShell"><div class="securityMetrics">' + countCard('Partes examinados',String(documentSummary.examined || 0)) + countCard('Incidencias detectadas',String(data.total || 0)) + countCard('Pendientes de revisar',String(data.pending || 0)) + countCard('Revisadas',String(data.reviewed || 0)) + countCard('Tipos de incidencia',String((data.categories || []).length)) + '</div><div class="securityAnalytics">' + securityChartHtml('Incidencias por clasificación',data.categories) + reviewBreakdown + '</div>' + securityUploaderHtml() + '<div class="securityFilters"><input id="securityQuery" placeholder="Buscar incidencia, zona o reporte" value="' + html(filters.query || '') + '" /><select id="securityStatus"><option value="">Todos los estados</option>' + statusOptions.map(value => '<option' + (value === filters.status ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select><select id="securitySeverity"><option value="">Todas las gravedades</option>' + (data.severity_options || []).map(value => '<option' + (value === filters.severity ? ' selected' : '') + '>' + html(value === 'Critica' ? 'Crítica' : value) + '</option>').join('') + '</select><select id="securityCategory"><option value="">Todas las categorías</option>' + categoryOptions.map(value => '<option' + (value === filters.category ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select></div><section class="securityQueue"><div class="securityQueueHead"><div><h2>Pendientes de revisar</h2><p class="muted">Incidencias que requieren validaci&oacute;n de Luis o Elena.</p></div><span class="pill">' + html(String(pendingRows.length)) + '</span></div><div class="securityIncidentList">' + (pendingCards || '<div class="empty">No hay incidencias pendientes con estos filtros.</div>') + '</div></section><section class="securityQueue securityReviewed"><div class="securityQueueHead"><div><h2>Partes revisados</h2><p class="muted">Hist&oacute;rico de incidencias ya clasificadas o gestionadas.</p></div><span class="pill">' + html(String(reviewedRows.length)) + '</span></div><div class="securityIncidentList">' + (reviewedCards || '<div class="empty">No hay partes revisados con estos filtros.</div>') + '</div></section><section><div class="contentHead"><div><h2>Documentos protegidos</h2><p class="muted">Aperturas y descargas quedan auditadas.</p></div></div><div class="reportList">' + (documents || '<div class="empty">No hay documentos cargados.</div>') + '</div></section></div>';
     }
 
     function bindSecurityPanel() {
