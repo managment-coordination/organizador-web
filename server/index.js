@@ -1626,6 +1626,7 @@ function localAiProposal(text, context) {
       source: "local",
       confidence: matches.length ? 0.55 : 0.25,
       action: "consulta",
+      query_domain: "trabajo",
       answer: matches.length
         ? "He encontrado posibles coincidencias:\n" + matches.map((m) => `- ${m.kind === "project" ? "Proyecto" : "Tarea"} ${m.id}: ${m.titulo} | Estado: ${m.estado || ""} | Responsable: ${m.responsable || ""}`).join("\n")
         : "No he encontrado una coincidencia clara en proyectos o tareas visibles.",
@@ -2259,13 +2260,14 @@ def dates_from_question(q):
         return f"{years[0]}-01-01", f"{years[0]}-12-31"
     return "", ""
 
-def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None, sources=None, data_status=None):
+def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None, sources=None, data_status=None, query_domain=None):
     status = data_status or ("incompleto" if questions else "confirmado")
     return {
         "handled": True,
         "source": "local-db",
         "confidence": confidence,
         "action": "consulta",
+        "query_domain": query_domain or globals().get("query_domain", "general"),
         "answer": answer,
         "data_status": status,
         "sources": sources or [],
@@ -2286,6 +2288,21 @@ def community_scope(alias):
 def not_handled():
     return {"handled": False}
 
+def detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question):
+    if email_query:
+        return "propietarios_contacto"
+    if is_budget_question:
+        return "presupuesto"
+    if is_finance_question:
+        return "contabilidad"
+    if is_debt_question:
+        return "deuda"
+    if is_owner_question:
+        return "propiedad"
+    if is_work_question:
+        return "trabajo"
+    return "general"
+
 def normalize_property_query(value):
     q = norm(value)
     replacements = {
@@ -2304,7 +2321,7 @@ def normalize_property_query(value):
     return re.sub(r"\\s+", " ", q).strip()
 
 def extract_email_query(value):
-    match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", str(value or ""), re.I)
+    match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+[.][A-Z]{2,}", str(value or ""), re.I)
     return match.group(0).strip().lower() if match else ""
 
 def rows(sql, params=()):
@@ -2525,8 +2542,9 @@ try:
     is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
     email_query = extract_email_query(question)
+    query_domain = detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question)
 
-    if email_query:
+    if query_domain == "propietarios_contacto":
         owners = owners_for_email(email_query)
         if not owners:
             answer = f"No he encontrado ningun propietario activo vinculado al correo {email_query}."
@@ -2572,7 +2590,7 @@ try:
             print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display, sources=source_refs("contacts", "owners", "owner_properties", "properties"), data_status="confirmado"), ensure_ascii=False))
         raise SystemExit
 
-    elif is_budget_question:
+    elif query_domain == "presupuesto":
         report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
         if not report:
             print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto"), ensure_ascii=False))
@@ -2619,7 +2637,7 @@ try:
                 }
                 print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display, sources=source_refs("accounting_reports"), data_status="confirmado"), ensure_ascii=False))
 
-    elif is_finance_question:
+    elif query_domain == "contabilidad":
         start, end = dates_from_question(question)
         if not start or not end:
             print(json.dumps(response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"], sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="incompleto"), ensure_ascii=False))
@@ -2674,7 +2692,7 @@ try:
             }
             print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="inferido"), ensure_ascii=False))
 
-    elif is_debt_question:
+    elif query_domain == "deuda":
         years = re.findall(r"\\b(20\\d{2})\\b", question)
         requested_year = int(years[0]) if years else None
         minimum_debt = 0
@@ -2830,7 +2848,7 @@ try:
         else:
             print(json.dumps(response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"], sources=source_refs("receipts", "owners", "properties"), data_status="incompleto"), ensure_ascii=False))
 
-    elif is_owner_question:
+    elif query_domain == "propiedad":
         prop_query = extract_property_query(question)
         props = find_properties(prop_query or question)
         if len(props) == 1:
@@ -2852,7 +2870,7 @@ try:
         else:
             print(json.dumps(response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
 
-    elif is_work_question:
+    elif query_domain == "trabajo":
         term = re.sub(r"(?i)\\b(como|va|van|estado|del|de|la|el|proyecto|tarea|quien|responsable|proximo|paso|lista|busca|pendientes?)\\b", " ", question)
         term = re.sub(r"[?¿]", " ", term).strip()
         like = "%" + norm(term).replace(" ", "%") + "%"
@@ -2953,6 +2971,7 @@ async function answerAiQuery(session, text) {
         source: "local",
         confidence: 0.2,
         action: "consulta",
+        query_domain: "general",
         answer: "No he podido identificar con seguridad los datos que necesitas. Formula la pregunta indicando el propietario, propiedad, tarea, proyecto, periodo o partida presupuestaria.",
         candidates: local.candidates || [],
         questions: ["Dato o elemento exacto que quieres consultar"],
@@ -2976,6 +2995,7 @@ async function answerAiQuery(session, text) {
     ...result,
     handled: true,
     action: "consulta",
+    query_domain: result.query_domain || "general",
     data_status: result.data_status || ((result.questions || []).length ? "incompleto" : "inferido"),
     sources: Array.isArray(result.sources) ? result.sources : [],
   };
@@ -7229,8 +7249,18 @@ function homePage() {
     function renderAiEvidence(proposal) {
       const status = proposal.data_status || "";
       const statusLabel = { confirmado: "Dato confirmado", inferido: "Dato inferido", incompleto: "Dato incompleto" }[status] || status;
+      const domain = proposal.query_domain || "";
+      const domainLabel = {
+        propietarios_contacto: "Propietarios / contacto",
+        propiedad: "Propiedad",
+        deuda: "Deuda",
+        contabilidad: "Contabilidad",
+        presupuesto: "Presupuesto",
+        trabajo: "Tareas / proyectos",
+        general: "General",
+      }[domain] || domain;
       const sources = proposal.sources || [];
-      if (!statusLabel && !sources.length) return "";
+      if (!statusLabel && !domainLabel && !sources.length) return "";
       const sourcesHtml = sources.length
         ? '<div><strong>Fuentes internas</strong>' + sources.map(source =>
             '<div class="line"><span class="pill">' + html(source.module || "fuente") + '</span> ' +
@@ -7238,6 +7268,7 @@ function homePage() {
           ).join("") + '</div>'
         : "";
       return '<div class="detailBox">' +
+        (domainLabel ? '<div><strong>Dominio detectado:</strong> ' + html(domainLabel) + '</div>' : '') +
         (statusLabel ? '<div><strong>Estado del dato:</strong> ' + html(statusLabel) + '</div>' : '') +
         sourcesHtml +
       '</div>';

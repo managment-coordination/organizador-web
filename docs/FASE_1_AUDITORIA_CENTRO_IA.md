@@ -229,6 +229,39 @@ Limitaciones pendientes:
 - Las consultas contables se tratan como fuente comun; si hay contabilidad por varias comunidades, habra que aplicar alcance por comunidad de forma explicita.
 - La IA todavia no ejecuta acciones automaticas; eso pertenece a Fase 2 y requiere confirmacion editable y auditoria.
 
+## Segundo ajuste implementado
+
+Fecha: 2026-08-26.
+
+Porcentaje:
+
+- Antes: 45% tecnico / 35% funcional.
+- Despues: 50% tecnico / 40% funcional.
+
+Cambios realizados:
+
+- Se anade `detect_query_domain(...)` como primer enrutador explicito de consultas.
+- Cada respuesta del Centro IA declara `query_domain`: propietarios/contacto, propiedad, deuda, contabilidad, presupuesto, trabajo o general.
+- La interfaz muestra el dominio detectado junto al estado del dato y las fuentes internas.
+- Se anade `scripts/smoke-ai-query.mjs` para probar consultas reales contra una base local sin arrancar servidor.
+- Se corrige el extractor de correo para que las preguntas con email entren por propietarios/contacto.
+- Se corrigen los scripts de prueba para interpretar el template JS como lo ejecuta Node, evitando falsos negativos por escapes.
+
+Pruebas ejecutadas contra `data/ai-audit.db`:
+
+- `quien es el propietario con email icogo23@hotmail.com`: dominio `propietarios_contacto`, dato confirmado, propietario encontrado.
+- `que deuda tiene PROMAGA`: dominio `deuda`, dato confirmado, resumen y desglose por ejercicio/propiedad.
+- `dame listado de deudores`: dominio `deuda`, dato confirmado, listado estructurado.
+- `que cantidad de deuda pertenece a 2026`: dominio `deuda`, dato confirmado, deuda del ejercicio.
+- `estado del proyecto isletas`: dominio `trabajo`, dato confirmado, proyecto encontrado.
+
+Pendiente para cerrar Fase 1:
+
+- Extraer cada dominio a una funcion o modulo propio.
+- Integrar consultas de asambleas y seguridad.
+- Anadir pruebas automatizadas con aserciones, no solo smoke manual.
+- Revisar codificacion de algunos datos importados que aparecen con caracteres corruptos en respuestas de deuda.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`

@@ -25,8 +25,8 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 1 - Agente de consulta fiable |
-| Estado tecnico | 45% |
-| Estado funcional | 35% |
+| Estado tecnico | 50% |
+| Estado funcional | 40% |
 | Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
 | Accion permitida ahora | Separar consultas por dominio, ampliar fuentes internas y probar preguntas reales |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
@@ -650,10 +650,11 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 100% | Usuario confirma el mapa maestro. Se inicia Fase 1 con porcentaje base 30% | Auditar Centro IA actual |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 35% tecnico | Auditoria inicial del Centro IA documentada en `docs/FASE_1_AUDITORIA_CENTRO_IA.md` | Implementar contrato comun de respuesta y fuentes internas |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 45% tecnico / 35% funcional | Contrato `data_status` + `sources`, fuentes visibles en UI, permisos reforzados en `/api/ai/analyze`, filtro de comunidad en consultas de trabajo y check Python anadido | Separar por dominios y completar pruebas funcionales con preguntas reales |
+| 2026-08-26 | Fase 1 - Agente de consulta fiable | 50% tecnico / 40% funcional | Enrutador `query_domain`, dominio visible en respuesta, smoke test reutilizable y pruebas reales de email, deuda por propietario, deuda por ejercicio y proyecto | Extraer cada dominio a funcion/modulo propio e integrar asambleas/seguridad |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
 - Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 45% tecnico, 35% funcional.
-- Pendiente inmediato: separar consultas por dominio, ampliar asambleas/seguridad y ejecutar bateria funcional de preguntas reales.
+- Avance del nucleo: 50% tecnico, 40% funcional.
+- Pendiente inmediato: extraer cada dominio a funcion/modulo propio, ampliar asambleas/seguridad y ejecutar bateria funcional completa.
