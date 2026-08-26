@@ -20,6 +20,27 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 - riesgos o bloqueos;
 - si ha aparecido alguna ramificacion.
 
+## Tablero actual
+
+| Campo | Estado |
+| --- | --- |
+| Nucleo activo | Fase 0 - Memoria del proyecto |
+| Estado tecnico | 99% |
+| Estado funcional | 98% |
+| Siguiente nucleo | Fase 1 - Agente de consulta fiable |
+| Accion permitida ahora | Mantener y reforzar documentacion del mapa |
+| Accion no permitida sin confirmacion | Empezar cambios de codigo del agente o modificar produccion |
+| Bloqueo actual | Falta confirmacion del usuario para cerrar Fase 0 al 100% |
+| Riesgo principal | Abrir ramificaciones antes de consolidar el agente de consulta fiable |
+
+Proxima accion al recibir confirmacion:
+
+1. Marcar Fase 0 como cerrada al 100%.
+2. Crear copia de seguridad antes de auditar el Centro IA.
+3. Iniciar Fase 1 con porcentaje de partida 30%.
+4. Auditar endpoints, interfaz y flujo actual de consultas IA.
+5. Separar consulta de entrada operativa y definir fuentes internas.
+
 ## Reglas de trabajo
 
 1. Antes de cada cambio relevante se crea copia de seguridad.
@@ -626,6 +647,7 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 98% | Commit `e89cd28` publicado en GitHub con README y mapa maestro | Confirmacion del usuario para cerrar al 100% |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Commit `010fa7d` publicado en GitHub con control anti-bucle, bitacora y Fase 1 marcada como preparada | Confirmacion del usuario para cerrar al 100% |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade definicion de nucleo cerrado y plantilla de decision de ramificaciones | Commit y push de esta ampliacion |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade tablero actual con siguiente nucleo, accion permitida y bloqueo funcional | Commit y push de esta ampliacion |
 
 ## Ultima actualizacion
 
