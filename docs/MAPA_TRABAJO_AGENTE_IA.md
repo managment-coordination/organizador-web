@@ -588,11 +588,11 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | Fecha | Nucleo | Avance | Evidencia | Pendiente |
 | --- | --- | --- | --- | --- |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 98% | Commit `e89cd28` publicado en GitHub con README y mapa maestro | Confirmacion del usuario para cerrar al 100% |
-| 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Se anade control anti-bucle, bitacora y Fase 1 marcada como preparada | Commit y push de esta ampliacion |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Commit `010fa7d` publicado en GitHub con control anti-bucle, bitacora y Fase 1 marcada como preparada | Confirmacion del usuario para cerrar al 100% |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
 - Nucleo activo: Fase 0 - Memoria del proyecto.
 - Avance del nucleo: 99% tecnico, 98% funcional.
-- Pendiente inmediato: publicar esta ampliacion y recibir confirmacion del usuario para cerrar la Fase 0 y pasar a la Fase 1.
+- Pendiente inmediato: recibir confirmacion del usuario para cerrar la Fase 0 y pasar a la Fase 1.
