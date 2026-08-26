@@ -25,19 +25,19 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 1 - Agente de consulta fiable |
-| Estado tecnico | 50% |
-| Estado funcional | 40% |
+| Estado tecnico | 70% |
+| Estado funcional | 60% |
 | Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
 | Accion permitida ahora | Separar consultas por dominio, ampliar fuentes internas y probar preguntas reales |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
 | Bloqueo actual | Ninguno |
-| Riesgo principal | Responder consultas complejas sin suficiente trazabilidad por dominio |
+| Riesgo principal | Mantener demasiada logica de consulta dentro de una funcion monolitica |
 
 Proxima accion:
 
-1. Dividir el asistente de consulta por dominios: propietarios, deuda, contabilidad, tareas/proyectos, asambleas y seguridad.
-2. Completar consultas de asambleas y seguridad dentro del Centro IA.
-3. Probar preguntas representativas con datos reales.
+1. Extraer cada dominio de consulta a funciones internas claras.
+2. Validar permisos por comunidad con usuarios no superusuario.
+3. Revisar codificacion de datos importados que aparecen corruptos en algunas respuestas.
 4. Mantener las acciones automaticas fuera de alcance hasta Fase 2.
 
 ## Reglas de trabajo
@@ -651,10 +651,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 35% tecnico | Auditoria inicial del Centro IA documentada en `docs/FASE_1_AUDITORIA_CENTRO_IA.md` | Implementar contrato comun de respuesta y fuentes internas |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 45% tecnico / 35% funcional | Contrato `data_status` + `sources`, fuentes visibles en UI, permisos reforzados en `/api/ai/analyze`, filtro de comunidad en consultas de trabajo y check Python anadido | Separar por dominios y completar pruebas funcionales con preguntas reales |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 50% tecnico / 40% funcional | Enrutador `query_domain`, dominio visible en respuesta, smoke test reutilizable y pruebas reales de email, deuda por propietario, deuda por ejercicio y proyecto | Extraer cada dominio a funcion/modulo propio e integrar asambleas/seguridad |
+| 2026-08-26 | Fase 1 - Agente de consulta fiable | 60% tecnico / 50% funcional | Consultas IA de asambleas y seguridad integradas con dominio, fuentes, permisos y pruebas de punto/asamblea/incidencias | Modularizar consultas y crear pruebas con aserciones |
+| 2026-08-26 | Fase 1 - Agente de consulta fiable | 70% tecnico / 60% funcional | `scripts/assert-ai-query.mjs` valida 10 consultas: propietario/email, propiedad exacta, deuda, listado, presupuesto, balance, trabajo, asambleas y seguridad; incluye permiso negativo de Seguridad | Modularizar consultas y probar permisos por comunidad |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
 - Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 50% tecnico, 40% funcional.
-- Pendiente inmediato: extraer cada dominio a funcion/modulo propio, ampliar asambleas/seguridad y ejecutar bateria funcional completa.
+- Avance del nucleo: 70% tecnico, 60% funcional.
+- Pendiente inmediato: modularizar consultas, validar permisos por comunidad y revisar codificacion historica de datos importados.

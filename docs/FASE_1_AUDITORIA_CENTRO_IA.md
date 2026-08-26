@@ -262,6 +262,66 @@ Pendiente para cerrar Fase 1:
 - Anadir pruebas automatizadas con aserciones, no solo smoke manual.
 - Revisar codificacion de algunos datos importados que aparecen con caracteres corruptos en respuestas de deuda.
 
+## Tercer ajuste implementado
+
+Fecha: 2026-08-26.
+
+Porcentaje:
+
+- Antes: 50% tecnico / 40% funcional.
+- Despues: 60% tecnico / 50% funcional.
+
+Cambios realizados:
+
+- Se anaden fuentes internas de asambleas: `asambleas`, `asamblea_puntos`, `asamblea_asistencia` y `asamblea_votos`.
+- Se anaden fuentes internas de seguridad: `seguridad_incidencias` y `seguridad_documentos`.
+- El Centro IA responde consultas de la ultima asamblea visible, asistencia, proxys, puntos y resultado de un punto concreto.
+- El Centro IA responde consultas de seguridad con resumen de partes, incidencias, estados, categorias e incidencias pendientes.
+- La consulta de seguridad respeta permisos: Superusuario, Seguridad o usuarios con `usuario_permisos.gestionar_seguridad`.
+- La interfaz muestra los nuevos dominios `Asambleas` y `Seguridad`.
+
+Pruebas ejecutadas contra `data/ai-audit.db`:
+
+- `resumen de la ultima asamblea`: dominio `asambleas`, dato confirmado, puntos/asistencia/proxys.
+- `resultado del punto 3 de la ultima asamblea`: dominio `asambleas`, dato confirmado, votos registrados.
+- `que incidencias de seguridad estan pendientes`: dominio `seguridad`, dato confirmado para usuario autorizado.
+- Misma consulta de seguridad con rol `Presidente`: acceso denegado, sin fuentes expuestas.
+
+Pendiente para cerrar Fase 1:
+
+- Convertir `scripts/smoke-ai-query.mjs` en prueba con aserciones por dominio, estado y fuentes.
+- Probar presupuesto, balance y permisos por comunidad.
+- Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
+- Corregir en una fase posterior la codificacion historica de algunos datos importados que muestran caracteres corruptos.
+
+## Cuarto ajuste implementado
+
+Fecha: 2026-08-26.
+
+Porcentaje:
+
+- Antes: 60% tecnico / 50% funcional.
+- Despues: 70% tecnico / 60% funcional.
+
+Cambios realizados:
+
+- Se anade `scripts/assert-ai-query.mjs` con aserciones automaticas sobre dominio, estado del dato, contenido minimo y fuentes.
+- La bateria cubre 10 consultas principales: email, propietario por propiedad exacta, deuda por propietario, deuda por ejercicio, listado deudores, presupuesto, balance, trabajo, asamblea, punto de asamblea y seguridad.
+- Incluye una prueba negativa: el rol Presidente no puede consultar Seguridad ni recibe fuentes internas.
+
+Pruebas ejecutadas:
+
+- `npm run check`.
+- `node scripts/check-ai-python.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+- `git diff --check`.
+
+Pendiente para cerrar Fase 1:
+
+- Probar permisos por comunidad con usuarios no superusuario y comunidades limitadas.
+- Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
+- Revisar codificacion historica de datos importados.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`

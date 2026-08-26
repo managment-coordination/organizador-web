@@ -20,6 +20,7 @@ const pythonSource = templateSource
   .replace(/path = \$\{JSON\.stringify\(databasePath\)\}/, 'path = "data/organizador_tareas.db"')
   .replace(/question = \$\{JSON\.stringify\(text\)\}/, 'question = "consulta de prueba"')
   .replace(/role = \$\{JSON\.stringify\(session\?\.rol \|\| ""\)\}/, 'role = "Superusuario"')
+  .replace(/session_user_id = \$\{JSON\.stringify\(Number\(session\?\.id_usuario \|\| 0\)\)\}/, "session_user_id = 1")
   .replace(/allowed_ids = \$\{JSON\.stringify\(\(session\?\.comunidades \|\| \[\]\)\.map\(\(community\) => Number\(community\.id_comunidad\)\)\.filter\(Boolean\)\)\}/, "allowed_ids = [1]");
 
 const outputPath = path.join(os.tmpdir(), "organizador_query_smart_assistant_check.py");

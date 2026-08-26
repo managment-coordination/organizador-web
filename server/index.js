@@ -2204,6 +2204,7 @@ from datetime import datetime
 path = ${JSON.stringify(databasePath)}
 question = ${JSON.stringify(text)}
 role = ${JSON.stringify(session?.rol || "")}
+session_user_id = ${JSON.stringify(Number(session?.id_usuario || 0))}
 allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
 
 def norm(value):
@@ -2234,6 +2235,12 @@ AI_SOURCES = {
     "task_records": {"module": "tareas", "table": "registros", "description": "Seguimientos de tareas visibles segun permisos"},
     "projects": {"module": "proyectos", "table": "proyectos", "description": "Proyectos visibles segun permisos"},
     "project_records": {"module": "proyectos", "table": "registros_proyectos", "description": "Seguimientos de proyectos visibles segun permisos"},
+    "assemblies": {"module": "asambleas", "table": "asambleas", "description": "Asambleas visibles segun permisos"},
+    "assembly_points": {"module": "asambleas", "table": "asamblea_puntos", "description": "Puntos del orden del dia"},
+    "assembly_attendance": {"module": "asambleas", "table": "asamblea_asistencia", "description": "Asistencia, representaciones y quorum"},
+    "assembly_votes": {"module": "asambleas", "table": "asamblea_votos", "description": "Votos registrados por punto"},
+    "security_incidents": {"module": "seguridad", "table": "seguridad_incidencias", "description": "Incidencias extraidas de partes de Seguridad"},
+    "security_documents": {"module": "seguridad", "table": "seguridad_documentos", "description": "Partes de Seguridad importados"},
 }
 
 def source_refs(*keys):
@@ -2285,12 +2292,28 @@ def community_scope(alias):
     marks = ",".join("?" for _ in allowed_ids)
     return f" AND {alias}.id_comunidad IN ({marks})", allowed_ids
 
+def table_exists(name):
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+    return bool(row)
+
+def can_query_security():
+    if role in ("Superusuario", "Seguridad"):
+        return True
+    if not session_user_id or not table_exists("usuario_permisos"):
+        return False
+    row = conn.execute("SELECT gestionar_seguridad FROM usuario_permisos WHERE id_usuario=?", (session_user_id,)).fetchone()
+    return bool(row and row["gestionar_seguridad"])
+
 def not_handled():
     return {"handled": False}
 
-def detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question):
+def detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question, is_assembly_question, is_security_question):
     if email_query:
         return "propietarios_contacto"
+    if is_security_question:
+        return "seguridad"
+    if is_assembly_question:
+        return "asambleas"
     if is_budget_question:
         return "presupuesto"
     if is_finance_question:
@@ -2541,8 +2564,10 @@ try:
     is_debt_question = any(token in q_norm for token in ["DEUDA", "DEUDOR", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb or (is_list_request and "DEBEN" in q_norm)
     is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
+    is_assembly_question = any(token in q_norm for token in ["ASAMBLEA", "JUNTA", "QUORUM", "VOTACION", "VOTOS", "ACTA"]) or bool(re.search(r"\\bPUNTO\\s+\\d+\\b", q_norm))
+    is_security_question = any(token in q_norm for token in ["SEGURIDAD", "VIGILANCIA", "INCIDENCIA", "INCIDENCIAS", "PARTE", "PARTES"]) and not is_work_question
     email_query = extract_email_query(question)
-    query_domain = detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question)
+    query_domain = detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question, is_assembly_question, is_security_question)
 
     if query_domain == "propietarios_contacto":
         owners = owners_for_email(email_query)
@@ -2589,6 +2614,151 @@ try:
             }
             print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display, sources=source_refs("contacts", "owners", "owner_properties", "properties"), data_status="confirmado"), ensure_ascii=False))
         raise SystemExit
+
+    elif query_domain == "seguridad":
+        if not table_exists("seguridad_incidencias") or not table_exists("seguridad_documentos"):
+            print(json.dumps(response("El modulo de Seguridad aun no tiene tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Seguridad"], sources=source_refs("security_incidents", "security_documents"), data_status="incompleto"), ensure_ascii=False))
+        elif not can_query_security():
+            print(json.dumps(response("Tu perfil no tiene permiso para consultar incidencias de Seguridad.", 0.99, sources=[], data_status="incompleto"), ensure_ascii=False))
+        else:
+            pending_statuses = ("Pendiente de revision", "En revision")
+            total_docs = first("SELECT COUNT(*) AS total, COALESCE(SUM(incidencias_detectadas),0) AS incidencias FROM seguridad_documentos")
+            counts = rows("SELECT estado_revision AS estado, COUNT(*) AS total FROM seguridad_incidencias GROUP BY estado_revision ORDER BY total DESC")
+            categories = rows("SELECT categoria_normalizada AS categoria, COUNT(*) AS total FROM seguridad_incidencias WHERE estado_revision<>'Descartada' GROUP BY categoria_normalizada ORDER BY total DESC LIMIT 10")
+            incidents = rows("""
+                SELECT id_incidencia,titulo,gravedad,estado_revision,zona,ubicacion,fecha_hora_suceso,categoria_normalizada
+                FROM seguridad_incidencias
+                WHERE estado_revision IN (?,?)
+                ORDER BY CASE gravedad WHEN 'Critica' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
+                         COALESCE(fecha_hora_suceso,fecha_creacion) DESC
+                LIMIT 20
+            """, pending_statuses)
+            pending = sum(int(row.get("total") or 0) for row in counts if row.get("estado") in pending_statuses)
+            answer = f"Seguridad tiene {pending} incidencia(s) pendiente(s) o en revision. Hay {int(total_docs.get('total') or 0)} parte(s) importado(s) y {int(total_docs.get('incidencias') or 0)} incidencia(s) detectada(s) en documentos."
+            display = {
+                "title": "Resumen de Seguridad",
+                "subtitle": "Incidencias pendientes y clasificacion",
+                "cards": [
+                    {"label": "Pendientes / en revision", "value": str(pending)},
+                    {"label": "Partes importados", "value": str(int(total_docs.get("total") or 0))},
+                    {"label": "Incidencias detectadas", "value": str(int(total_docs.get("incidencias") or 0))},
+                    {"label": "Categorias con incidencias", "value": str(len(categories))},
+                ],
+                "tables": [
+                    {
+                        "title": "Estados de revision",
+                        "columns": ["Estado", "Total"],
+                        "rows": [{"Estado": row.get("estado") or "Sin estado", "Total": str(row.get("total") or 0)} for row in counts],
+                    },
+                    {
+                        "title": "Categorias",
+                        "columns": ["Categoria", "Total"],
+                        "rows": [{"Categoria": row.get("categoria") or "Otros", "Total": str(row.get("total") or 0)} for row in categories],
+                    },
+                    {
+                        "title": "Incidencias pendientes",
+                        "columns": ["ID", "Titulo", "Gravedad", "Estado", "Zona", "Ubicacion", "Fecha"],
+                        "rows": [{
+                            "ID": str(row.get("id_incidencia") or ""),
+                            "Titulo": row.get("titulo") or "",
+                            "Gravedad": row.get("gravedad") or "",
+                            "Estado": row.get("estado_revision") or "",
+                            "Zona": row.get("zona") or "",
+                            "Ubicacion": row.get("ubicacion") or "",
+                            "Fecha": row.get("fecha_hora_suceso") or "",
+                        } for row in incidents],
+                    },
+                ],
+                "note": "Consulta de solo lectura. Para crear tareas o proyectos desde una incidencia hay que entrar al modulo Seguridad y confirmar la accion.",
+            }
+            print(json.dumps(response(answer, 0.86, facts={"pendientes": pending, "partes": total_docs.get("total"), "incidencias_detectadas": total_docs.get("incidencias")}, display=display, sources=source_refs("security_incidents", "security_documents"), data_status="confirmado"), ensure_ascii=False))
+
+    elif query_domain == "asambleas":
+        required = ["asambleas", "asamblea_puntos", "asamblea_asistencia", "asamblea_votos"]
+        if not all(table_exists(name) for name in required):
+            print(json.dumps(response("El modulo de Asambleas aun no tiene todas las tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Asambleas"], sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="incompleto"), ensure_ascii=False))
+        else:
+            scope, params = community_scope("a")
+            assembly = first("""
+                SELECT a.*, COALESCE(c.nombre,'') AS comunidad,
+                       (SELECT COUNT(*) FROM asamblea_puntos p WHERE p.id_asamblea=a.id_asamblea AND p.activo=1) AS total_puntos,
+                       (SELECT COUNT(*) FROM asamblea_asistencia s WHERE s.id_asamblea=a.id_asamblea) AS total_asistencia,
+                       (SELECT COUNT(*) FROM asamblea_proxys x WHERE x.id_asamblea=a.id_asamblea AND COALESCE(x.estado,'')<>'Eliminado') AS total_proxys
+                FROM asambleas a
+                LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+                WHERE 1=1
+            """ + scope + " ORDER BY COALESCE(a.fecha,'') DESC,a.id_asamblea DESC LIMIT 1", tuple(params))
+            if not assembly:
+                print(json.dumps(response("No he encontrado asambleas visibles para tu usuario.", 0.5, questions=["Asamblea o comunidad"], sources=source_refs("assemblies"), data_status="incompleto"), ensure_ascii=False))
+            else:
+                assembly_id = int(assembly["id_asamblea"])
+                point_match = re.search(r"\\bPUNTO\\s+(\\d+)\\b", q_norm)
+                if point_match:
+                    point_order = int(point_match.group(1))
+                    point = first("SELECT * FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 AND orden=?", (assembly_id, point_order))
+                    if not point:
+                        print(json.dumps(response(f"La ultima asamblea visible no tiene punto {point_order}.", 0.55, questions=["Numero de punto correcto"], sources=source_refs("assemblies", "assembly_points"), data_status="incompleto"), ensure_ascii=False))
+                    else:
+                        votes = rows("""
+                            SELECT voto, COUNT(*) AS votos
+                            FROM asamblea_votos
+                            WHERE id_asamblea=? AND id_punto=?
+                            GROUP BY voto
+                        """, (assembly_id, int(point["id_punto"])))
+                        vote_map = {str(row.get("voto") or "sin"): int(row.get("votos") or 0) for row in votes}
+                        answer = f"En la asamblea {assembly['nombre']}, el punto {point['orden']} es: {point['titulo']}. Votos registrados: si {vote_map.get('si',0)}, no {vote_map.get('no',0)}, abstencion {vote_map.get('abs',0)}, sin voto registrado {vote_map.get('sin',0)}."
+                        display = {
+                            "title": f"Punto {point['orden']} - {point['titulo']}",
+                            "subtitle": f"{assembly['nombre']} | {assembly['fecha'] or 'sin fecha'}",
+                            "cards": [
+                                {"label": "Tipo mayoria", "value": point.get("tipo_mayoria") or "simple"},
+                                {"label": "A favor", "value": str(vote_map.get("si", 0))},
+                                {"label": "En contra", "value": str(vote_map.get("no", 0))},
+                                {"label": "Abstenciones", "value": str(vote_map.get("abs", 0))},
+                            ],
+                            "tables": [{
+                                "title": "Resultado registrado",
+                                "columns": ["Voto", "Total"],
+                                "rows": [{"Voto": label, "Total": str(vote_map.get(key, 0))} for key, label in [("si", "A favor"), ("no", "En contra"), ("abs", "Abstencion"), ("sin", "Sin registrar")]],
+                            }],
+                            "note": "Resumen de votos registrados. Para validez formal debe revisarse con quorum, coeficientes y acta.",
+                        }
+                        print(json.dumps(response(answer, 0.82, facts={"id_asamblea": assembly_id, "id_punto": point["id_punto"], "votos": vote_map}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_votes"), data_status="confirmado"), ensure_ascii=False))
+                else:
+                    attendance = rows("""
+                        SELECT tipo, COUNT(*) AS votos, COALESCE(SUM(CASE WHEN COALESCE(sin_voto,0)=0 THEN 1 ELSE 0 END),0) AS con_voto
+                        FROM asamblea_asistencia
+                        WHERE id_asamblea=?
+                        GROUP BY tipo
+                    """, (assembly_id,))
+                    points = rows("SELECT orden,titulo,tipo_mayoria FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 ORDER BY orden,id_punto", (assembly_id,))
+                    without_vote = first("SELECT COUNT(*) AS total FROM asamblea_asistencia WHERE id_asamblea=? AND COALESCE(sin_voto,0)=1", (assembly_id,))
+                    total_attendance = sum(int(row.get("votos") or 0) for row in attendance)
+                    answer = f"La ultima asamblea visible es {assembly['nombre']} ({assembly['fecha'] or 'sin fecha'}), estado {assembly['estado'] or 'sin estado'}. Tiene {assembly['total_puntos']} punto(s), {total_attendance} asistente(s)/representado(s) y {assembly['total_proxys']} proxy(s) importado(s)."
+                    display = {
+                        "title": assembly["nombre"],
+                        "subtitle": f"{assembly['comunidad']} | {assembly['fecha'] or 'sin fecha'} | {assembly['estado'] or 'sin estado'}",
+                        "cards": [
+                            {"label": "Puntos", "value": str(assembly.get("total_puntos") or 0)},
+                            {"label": "Asistencia", "value": str(total_attendance)},
+                            {"label": "Proxys", "value": str(assembly.get("total_proxys") or 0)},
+                            {"label": "Sin derecho a voto", "value": str(without_vote.get("total") or 0)},
+                        ],
+                        "tables": [
+                            {
+                                "title": "Asistencia",
+                                "columns": ["Tipo", "Total", "Con derecho a voto"],
+                                "rows": [{"Tipo": row.get("tipo") or "Sin tipo", "Total": str(row.get("votos") or 0), "Con derecho a voto": str(row.get("con_voto") or 0)} for row in attendance],
+                            },
+                            {
+                                "title": "Orden del dia",
+                                "columns": ["Punto", "Titulo", "Mayoria"],
+                                "rows": [{"Punto": str(row.get("orden") or ""), "Titulo": row.get("titulo") or "", "Mayoria": row.get("tipo_mayoria") or ""} for row in points],
+                            },
+                        ],
+                        "note": "Consulta de la ultima asamblea visible para tu usuario. Indica un numero de punto para consultar sus votos registrados.",
+                    }
+                    print(json.dumps(response(answer, 0.84, facts={"id_asamblea": assembly_id}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="confirmado"), ensure_ascii=False))
 
     elif query_domain == "presupuesto":
         report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
@@ -7257,6 +7427,8 @@ function homePage() {
         contabilidad: "Contabilidad",
         presupuesto: "Presupuesto",
         trabajo: "Tareas / proyectos",
+        asambleas: "Asambleas",
+        seguridad: "Seguridad",
         general: "General",
       }[domain] || domain;
       const sources = proposal.sources || [];
