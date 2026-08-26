@@ -25,20 +25,20 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 1 - Agente de consulta fiable |
-| Estado tecnico | 35% |
-| Estado funcional | 30% |
+| Estado tecnico | 45% |
+| Estado funcional | 35% |
 | Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
-| Accion permitida ahora | Auditar Centro IA actual, endpoints, interfaz, fuentes internas y separacion consulta/entrada |
+| Accion permitida ahora | Separar consultas por dominio, ampliar fuentes internas y probar preguntas reales |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
 | Bloqueo actual | Ninguno |
-| Riesgo principal | Mezclar consultas con acciones operativas o responder sin evidencia interna |
+| Riesgo principal | Responder consultas complejas sin suficiente trazabilidad por dominio |
 
 Proxima accion:
 
-1. Auditar endpoints, interfaz y flujo actual de consultas IA.
-2. Mapear fuentes internas disponibles.
-3. Detectar puntos donde una consulta se interpreta como entrada operativa.
-4. Documentar hallazgos y propuestas antes de modificar comportamiento sensible.
+1. Dividir el asistente de consulta por dominios: propietarios, deuda, contabilidad, tareas/proyectos, asambleas y seguridad.
+2. Completar consultas de asambleas y seguridad dentro del Centro IA.
+3. Probar preguntas representativas con datos reales.
+4. Mantener las acciones automaticas fuera de alcance hasta Fase 2.
 
 ## Reglas de trabajo
 
@@ -649,10 +649,11 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade tablero actual con siguiente nucleo, accion permitida y bloqueo funcional | Commit y push de esta ampliacion |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 100% | Usuario confirma el mapa maestro. Se inicia Fase 1 con porcentaje base 30% | Auditar Centro IA actual |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 35% tecnico | Auditoria inicial del Centro IA documentada en `docs/FASE_1_AUDITORIA_CENTRO_IA.md` | Implementar contrato comun de respuesta y fuentes internas |
+| 2026-08-26 | Fase 1 - Agente de consulta fiable | 45% tecnico / 35% funcional | Contrato `data_status` + `sources`, fuentes visibles en UI, permisos reforzados en `/api/ai/analyze`, filtro de comunidad en consultas de trabajo y check Python anadido | Separar por dominios y completar pruebas funcionales con preguntas reales |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
 - Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 35% tecnico, 30% funcional.
-- Pendiente inmediato: implementar contrato comun de respuesta IA, fuentes internas visibles, permisos reforzados y pruebas de no modificacion.
+- Avance del nucleo: 45% tecnico, 35% funcional.
+- Pendiente inmediato: separar consultas por dominio, ampliar asambleas/seguridad y ejecutar bateria funcional de preguntas reales.

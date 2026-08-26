@@ -1629,6 +1629,11 @@ function localAiProposal(text, context) {
       answer: matches.length
         ? "He encontrado posibles coincidencias:\n" + matches.map((m) => `- ${m.kind === "project" ? "Proyecto" : "Tarea"} ${m.id}: ${m.titulo} | Estado: ${m.estado || ""} | Responsable: ${m.responsable || ""}`).join("\n")
         : "No he encontrado una coincidencia clara en proyectos o tareas visibles.",
+      data_status: matches.length ? "confirmado" : "incompleto",
+      sources: [
+        { module: "proyectos", table: "proyectos", description: "Catalogo de proyectos visible segun permisos" },
+        { module: "tareas", table: "tareas", description: "Catalogo de tareas visible segun permisos" },
+      ],
       candidates: matches.map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
     };
   }
@@ -2214,6 +2219,25 @@ def money(value):
 def pct(value):
     return f"{float(value or 0):.2f}%".replace(".", ",")
 
+AI_SOURCES = {
+    "owners": {"module": "propietarios", "table": "cf_propietarios", "description": "Propietarios activos importados"},
+    "properties": {"module": "propiedades", "table": "cf_propiedades", "description": "Propiedades activas importadas"},
+    "owner_properties": {"module": "propiedades", "table": "cf_propietario_propiedad", "description": "Relacion actual propietario-propiedad"},
+    "contacts": {"module": "propietarios", "table": "cf_contactos_propietario", "description": "Contactos activos de propietarios"},
+    "receipts": {"module": "contabilidad", "table": "cf_recibos", "description": "Recibos actualmente importados"},
+    "debt_movements": {"module": "contabilidad", "table": "cf_movimientos_deuda", "description": "Movimientos de deuda y cobros importados"},
+    "accounting_reports": {"module": "contabilidad", "table": "informes_contables", "description": "Ultimos informes contables calculados"},
+    "expense_invoices": {"module": "contabilidad", "table": "cf_gastos_facturas", "description": "Gastos/facturas importados con fecha de alta y pago"},
+    "bank_lines": {"module": "contabilidad", "table": "cf_extractos_banco_lineas", "description": "Lineas de extractos bancarios importadas"},
+    "tasks": {"module": "tareas", "table": "tareas", "description": "Tareas visibles segun permisos"},
+    "task_records": {"module": "tareas", "table": "registros", "description": "Seguimientos de tareas visibles segun permisos"},
+    "projects": {"module": "proyectos", "table": "proyectos", "description": "Proyectos visibles segun permisos"},
+    "project_records": {"module": "proyectos", "table": "registros_proyectos", "description": "Seguimientos de proyectos visibles segun permisos"},
+}
+
+def source_refs(*keys):
+    return [AI_SOURCES[key] for key in keys if key in AI_SOURCES]
+
 def parse_date(value):
     value = str(value or "").strip()
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
@@ -2235,18 +2259,29 @@ def dates_from_question(q):
         return f"{years[0]}-01-01", f"{years[0]}-12-31"
     return "", ""
 
-def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None):
+def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None, sources=None, data_status=None):
+    status = data_status or ("incompleto" if questions else "confirmado")
     return {
         "handled": True,
         "source": "local-db",
         "confidence": confidence,
         "action": "consulta",
         "answer": answer,
+        "data_status": status,
+        "sources": sources or [],
         "candidates": candidates or [],
         "questions": questions or [],
         "facts": facts or {},
         "display": display or {},
     }
+
+def community_scope(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1=0", []
+    marks = ",".join("?" for _ in allowed_ids)
+    return f" AND {alias}.id_comunidad IN ({marks})", allowed_ids
 
 def not_handled():
     return {"handled": False}
@@ -2500,7 +2535,7 @@ try:
                 "subtitle": email_query,
                 "note": "La busqueda se ha realizado por coincidencia exacta entre los contactos activos de propietarios.",
             }
-            print(json.dumps(response(answer, 0.92, facts={"email": email_query, "propietarios": 0}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.92, facts={"email": email_query, "propietarios": 0}, display=display, sources=source_refs("contacts", "owners"), data_status="confirmado"), ensure_ascii=False))
         else:
             owner_rows = []
             all_properties = []
@@ -2534,18 +2569,18 @@ try:
                 }],
                 "note": "Coincidencia exacta obtenida de los contactos activos importados.",
             }
-            print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display, sources=source_refs("contacts", "owners", "owner_properties", "properties"), data_status="confirmado"), ensure_ascii=False))
         raise SystemExit
 
     elif is_budget_question:
         report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
         if not report:
-            print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55), ensure_ascii=False))
+            print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto"), ensure_ascii=False))
         else:
             data = json.loads(report["resultado_json"] or "{}")
             budget = data.get("presupuesto") or []
             if not budget:
-                print(json.dumps(response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55), ensure_ascii=False))
+                print(json.dumps(response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto"), ensure_ascii=False))
             else:
                 rows_text = []
                 budget_rows = sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:12]
@@ -2582,12 +2617,12 @@ try:
                     }],
                     "note": "Si quieres un periodo distinto, indica fecha desde y fecha hasta.",
                 }
-                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display), ensure_ascii=False))
+                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display, sources=source_refs("accounting_reports"), data_status="confirmado"), ensure_ascii=False))
 
     elif is_finance_question:
         start, end = dates_from_question(question)
         if not start or not end:
-            print(json.dumps(response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"]), ensure_ascii=False))
+            print(json.dumps(response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"], sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="incompleto"), ensure_ascii=False))
         else:
             ingresos_emitidos = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?)", (start, end))["total"]
             cobros = first("SELECT COALESCE(SUM(-importe),0) AS total FROM cf_movimientos_deuda WHERE tipo_movimiento = 'Cobro' AND date(fecha) BETWEEN date(?) AND date(?)", (start, end))["total"]
@@ -2637,7 +2672,7 @@ try:
                 }],
                 "note": "Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
             }
-            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="inferido"), ensure_ascii=False))
 
     elif is_debt_question:
         years = re.findall(r"\\b(20\\d{2})\\b", question)
@@ -2667,7 +2702,7 @@ try:
                     {"label": "Deuda total registrada", "value": money(overall["total"])},
                 ],
             }
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado"), ensure_ascii=False))
             raise SystemExit
         owner_query = extract_owner_query(question)
         prop_query = extract_property_query(question)
@@ -2680,7 +2715,7 @@ try:
                 owners = owner_for_property(props[0]["id_propiedad"])
             elif len(props) > 1 and "PROPIETARIO" in q_norm:
                 answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
-                print(json.dumps(response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"]), ensure_ascii=False))
+                print(json.dumps(response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
                 raise SystemExit
         if not owners and owner_query and is_debt_question:
             owners = find_owners(owner_query)
@@ -2711,7 +2746,7 @@ try:
                 }],
                 "note": "Listado ordenado de mayor a menor deuda pendiente segun los recibos actualmente importados.",
             }
-            print(json.dumps(response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display, sources=source_refs("receipts", "owners"), data_status="confirmado"), ensure_ascii=False))
             raise SystemExit
         if years and not owners:
             year = int(years[0])
@@ -2726,7 +2761,7 @@ try:
                     {"label": "Deuda total registrada", "value": money(overall["total"])},
                 ],
             }
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado"), ensure_ascii=False))
         elif len(owners) == 1:
             owner = owners[0]
             total, by_year, by_property, receipts = debt_for_owner(owner["id_propietario"], requested_year, debt_property_id)
@@ -2788,12 +2823,12 @@ try:
                     "tables": debt_tables,
                     "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Datos obtenidos de los recibos actualmente importados."),
                 }
-            print(json.dumps(response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado"), ensure_ascii=False))
         elif len(owners) > 1:
             answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
-            print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"]), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"], sources=source_refs("owners"), data_status="incompleto"), ensure_ascii=False))
         else:
-            print(json.dumps(response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"]), ensure_ascii=False))
+            print(json.dumps(response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"], sources=source_refs("receipts", "owners", "properties"), data_status="incompleto"), ensure_ascii=False))
 
     elif is_owner_question:
         prop_query = extract_property_query(question)
@@ -2810,39 +2845,39 @@ try:
                 ])
             else:
                 answer = f"La propiedad {prop['codigo_propiedad']} existe, pero no tiene propietario activo vinculado."
-            print(json.dumps(response(answer, 0.88, facts={"id_propiedad": prop["id_propiedad"]}), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.88, facts={"id_propiedad": prop["id_propiedad"]}, sources=source_refs("properties", "owner_properties", "owners"), data_status="confirmado"), ensure_ascii=False))
         elif len(props) > 1:
             answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:10]])
-            print(json.dumps(response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"]), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
         else:
-            print(json.dumps(response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"]), ensure_ascii=False))
+            print(json.dumps(response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
 
     elif is_work_question:
         term = re.sub(r"(?i)\\b(como|va|van|estado|del|de|la|el|proyecto|tarea|quien|responsable|proximo|paso|lista|busca|pendientes?)\\b", " ", question)
         term = re.sub(r"[?¿]", " ", term).strip()
         like = "%" + norm(term).replace(" ", "%") + "%"
+        project_scope, project_params = community_scope("p")
+        task_scope, task_params = community_scope("t")
         project_matches = rows("""
             SELECT 'Proyecto' AS tipo, id_proyecto AS id, nombre AS titulo, estado_general AS estado,
                    responsable_principal AS responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
                    fecha_ultima_actualizacion, COALESCE(observaciones,'') AS contexto
             FROM proyectos
             WHERE COALESCE(activo,1)=1 AND (? = '%%' OR UPPER(nombre) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
-            ORDER BY fecha_ultima_actualizacion DESC LIMIT 6
-        """, (like, like, like))
+        """ + project_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + project_params))
         task_matches = rows("""
             SELECT 'Tarea' AS tipo, id_tarea AS id, titulo, estado,
                    responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
                    fecha_ultima_actualizacion, COALESCE(proximo_paso,'') AS contexto
             FROM tareas
             WHERE COALESCE(activa,1)=1 AND COALESCE(archivada,0)=0 AND (? = '%%' OR UPPER(titulo) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
-            ORDER BY fecha_ultima_actualizacion DESC LIMIT 6
-        """, (like, like, like))
+        """ + task_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + task_params))
         matches = project_matches + task_matches
         if matches:
             answer = "He encontrado estos elementos operativos:\\n" + "\\n".join([f"- {m['tipo']} {m['id']}: {m['titulo']} | Estado: {m['estado'] or 'sin estado'} | Responsable: {m['responsable'] or 'sin responsable'} | Proximo: {m['responsable_proximo_paso'] or 'sin dato'} | Paso: {(m['contexto'] or 'sin proximo paso')[:220]}" for m in matches[:8]])
-            print(json.dumps(response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]]), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]], sources=source_refs("projects", "tasks", "project_records", "task_records"), data_status="confirmado"), ensure_ascii=False))
         else:
-            print(json.dumps(response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"]), ensure_ascii=False))
+            print(json.dumps(response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"], sources=source_refs("projects", "tasks"), data_status="incompleto"), ensure_ascii=False))
     else:
         print(json.dumps(not_handled(), ensure_ascii=False))
 finally:
@@ -2937,7 +2972,13 @@ async function answerAiQuery(session, text) {
     }
   }
 
-  result = { ...result, handled: true, action: "consulta" };
+  result = {
+    ...result,
+    handled: true,
+    action: "consulta",
+    data_status: result.data_status || ((result.questions || []).length ? "incompleto" : "inferido"),
+    sources: Array.isArray(result.sources) ? result.sources : [],
+  };
   try {
     const saved = await runAiHistoryCommand(session, "save", { pregunta: cleanText, respuesta: result });
     result.history_id = saved.id_consulta;
@@ -7185,6 +7226,23 @@ function homePage() {
       '</div>';
     }
 
+    function renderAiEvidence(proposal) {
+      const status = proposal.data_status || "";
+      const statusLabel = { confirmado: "Dato confirmado", inferido: "Dato inferido", incompleto: "Dato incompleto" }[status] || status;
+      const sources = proposal.sources || [];
+      if (!statusLabel && !sources.length) return "";
+      const sourcesHtml = sources.length
+        ? '<div><strong>Fuentes internas</strong>' + sources.map(source =>
+            '<div class="line"><span class="pill">' + html(source.module || "fuente") + '</span> ' +
+            html((source.table || "") + (source.description ? " - " + source.description : "")) + '</div>'
+          ).join("") + '</div>'
+        : "";
+      return '<div class="detailBox">' +
+        (statusLabel ? '<div><strong>Estado del dato:</strong> ' + html(statusLabel) + '</div>' : '') +
+        sourcesHtml +
+      '</div>';
+    }
+
     function downloadAnswerTable(display, tableIndex) {
       const table = (display?.tables || [])[Number(tableIndex)];
       if (!table) return;
@@ -7247,12 +7305,14 @@ function homePage() {
       }
       if (proposal.action === "consulta" && !payload.comentario && !payload.titulo) {
         const displayHtml = renderDisplay(proposal.display || {});
+        const evidenceHtml = renderAiEvidence(proposal);
         const copyButtonId = resultId + "CopyAnswer";
         const copyMessageId = resultId + "CopyMessage";
         resultContainer.innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Respuesta de consulta</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
           (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
           displayHtml +
+          evidenceHtml +
           (proposal.answer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.answer) + '</pre></details>' : '') +
           questionsHtml +
           candidatesHtml +
@@ -8182,6 +8242,7 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede preparar cambios operativos." });
     const body = await readBody(req);
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await analyzeWithAi(session, body.text || "", body.target || null));

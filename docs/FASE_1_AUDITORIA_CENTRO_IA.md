@@ -203,6 +203,32 @@ Toda respuesta de consulta deberia devolver como minimo:
 5. Reforzar `/api/ai/analyze` para que respete las restricciones de rol de propuesta operativa.
 6. Crear pruebas representativas.
 
+## Primer ajuste implementado
+
+Fecha: 2026-08-26.
+
+Porcentaje:
+
+- Antes: 35% tecnico / 30% funcional.
+- Despues: 45% tecnico / 35% funcional.
+
+Cambios realizados:
+
+- Se anade un registro interno `AI_SOURCES` con las fuentes principales de propietarios, propiedades, deuda, contabilidad, tareas y proyectos.
+- Las respuestas de consulta incluyen `data_status`: `confirmado`, `inferido` o `incompleto`.
+- Las respuestas de consulta incluyen `sources` para mostrar al usuario las tablas/fuentes internas usadas.
+- La interfaz muestra un bloque de evidencia con estado del dato y fuentes internas.
+- Las consultas de tareas y proyectos aplican filtro de comunidad segun permisos del usuario activo.
+- `POST /api/ai/analyze` queda restringido a `Superusuario`, `Administrador` y `Usuario`, igual que la preparacion operativa.
+- Se anade `scripts/check-ai-python.mjs` para compilar el bloque Python embebido de `querySmartAssistant` y detectar errores de sintaxis antes de desplegar.
+
+Limitaciones pendientes:
+
+- `querySmartAssistant` sigue siendo una funcion grande; debe separarse por dominio para mantenimiento y control de permisos.
+- Asambleas y seguridad existen como modulos, pero aun no estan integrados como fuentes generales del Centro IA.
+- Las consultas contables se tratan como fuente comun; si hay contabilidad por varias comunidades, habra que aplicar alcance por comunidad de forma explicita.
+- La IA todavia no ejecuta acciones automaticas; eso pertenece a Fase 2 y requiere confirmacion editable y auditoria.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`
