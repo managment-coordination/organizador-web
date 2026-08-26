@@ -76,6 +76,62 @@ def update_log(conn, assembly_id, kind, comment):
            (id_asamblea,fecha_hora,tipo,comentario,usuario,pc) VALUES (?,?,?,?,?,?)""",
         (int(assembly_id), timestamp, str(kind or "Seguimiento"), str(comment or ""), USER, PC),
     )
+
+
+def ensure_minutes_schema(conn):
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS asamblea_actas (
+             id_acta INTEGER PRIMARY KEY AUTOINCREMENT,
+             id_asamblea INTEGER NOT NULL UNIQUE,
+             estado TEXT NOT NULL DEFAULT 'Borrador',
+             transcripcion TEXT NOT NULL DEFAULT '',
+             fuente_transcripcion TEXT NOT NULL DEFAULT '',
+             convocante TEXT NOT NULL DEFAULT '',
+             secretario TEXT NOT NULL DEFAULT '',
+             hora_cierre TEXT NOT NULL DEFAULT '',
+             introduccion_es TEXT NOT NULL DEFAULT '',
+             introduccion_en TEXT NOT NULL DEFAULT '',
+             cierre_es TEXT NOT NULL DEFAULT '',
+             cierre_en TEXT NOT NULL DEFAULT '',
+             puntos_json TEXT NOT NULL DEFAULT '[]',
+             advertencias_json TEXT NOT NULL DEFAULT '[]',
+             generado_ia INTEGER NOT NULL DEFAULT 0,
+             fecha_creacion TEXT NOT NULL,
+             fecha_actualizacion TEXT NOT NULL,
+             usuario_actualizacion TEXT NOT NULL DEFAULT '',
+             pc_actualizacion TEXT NOT NULL DEFAULT '',
+             FOREIGN KEY(id_asamblea) REFERENCES asambleas(id_asamblea)
+           )"""
+    )
+
+
+def decoded_json(value, fallback):
+    try:
+        parsed = json.loads(str(value or ""))
+        return parsed if isinstance(parsed, type(fallback)) else fallback
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
+def minutes_row(conn, assembly_id, create=True):
+    ensure_minutes_schema(conn)
+    row = conn.execute("SELECT * FROM asamblea_actas WHERE id_asamblea=?", (int(assembly_id),)).fetchone()
+    if not row and create:
+        timestamp = now()
+        conn.execute(
+            """INSERT INTO asamblea_actas
+               (id_asamblea,fecha_creacion,fecha_actualizacion,usuario_actualizacion,pc_actualizacion)
+               VALUES (?,?,?,?,?)""",
+            (int(assembly_id), timestamp, timestamp, USER, PC),
+        )
+        row = conn.execute("SELECT * FROM asamblea_actas WHERE id_asamblea=?", (int(assembly_id),)).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["puntos"] = decoded_json(result.pop("puntos_json", "[]"), [])
+    result["advertencias"] = decoded_json(result.pop("advertencias_json", "[]"), [])
+    result["generado_ia"] = bool(result.get("generado_ia"))
+    return result
     conn.execute(
         """UPDATE asambleas SET fecha_ultima_actualizacion=?,usuario_ultima_actualizacion=?,pc_ultima_actualizacion=?
            WHERE id_asamblea=?""",
@@ -515,6 +571,104 @@ def delete_document():
     return result
 
 
+def get_minutes():
+    assembly_id = int(DATA.get("id") or 0)
+    conn = connection()
+    require_visible(assembly_id, conn)
+    with conn:
+        minutes = minutes_row(conn, assembly_id, True)
+    conn.close()
+    return {"minutes": minutes}
+
+
+def save_minutes():
+    require_write()
+    assembly_id = int(DATA.get("id") or 0)
+    conn = connection()
+    assembly = require_visible(assembly_id, conn)
+    allowed_states = {"Borrador", "Revisada", "Cerrada"}
+    state = str(DATA.get("estado") or "Borrador").strip()
+    if state not in allowed_states:
+        raise ValueError("Estado del acta no valido.")
+    points = DATA.get("puntos") or []
+    if not isinstance(points, list):
+        raise ValueError("El contenido de los puntos no es valido.")
+    valid_point_ids = {
+        int(row["id_punto"])
+        for row in conn.execute(
+            "SELECT id_punto FROM asamblea_puntos WHERE id_asamblea=? AND activo=1", (assembly_id,)
+        ).fetchall()
+    }
+    normalized_points = []
+    for point in points:
+        point_id = int(point.get("id_punto") or 0)
+        if point_id not in valid_point_ids:
+            continue
+        normalized_points.append({
+            "id_punto": point_id,
+            "debate_es": str(point.get("debate_es") or "").strip(),
+            "acuerdo_es": str(point.get("acuerdo_es") or "").strip(),
+            "debate_en": str(point.get("debate_en") or "").strip(),
+            "acuerdo_en": str(point.get("acuerdo_en") or "").strip(),
+        })
+    if state == "Cerrada":
+        missing = []
+        if not str(assembly.get("fecha") or "").strip(): missing.append("fecha")
+        if not str(assembly.get("lugar_celebracion") or assembly.get("ubicacion") or "").strip(): missing.append("lugar")
+        if not str(assembly.get("hora_inicio") or "").strip(): missing.append("hora de inicio")
+        if not str(assembly.get("presidente") or "").strip(): missing.append("presidente")
+        if not str(DATA.get("convocante") or "").strip(): missing.append("convocante")
+        if not str(DATA.get("secretario") or assembly.get("administrador") or "").strip(): missing.append("secretario/administrador")
+        if not str(DATA.get("hora_cierre") or "").strip(): missing.append("hora de cierre")
+        attendance_count = conn.execute("SELECT COUNT(*) FROM asamblea_asistencia WHERE id_asamblea=?", (assembly_id,)).fetchone()[0]
+        if not attendance_count: missing.append("asistencia")
+        incomplete = [
+            point for point in normalized_points
+            if not all(str(point.get(field) or "").strip() for field in ("debate_es", "acuerdo_es", "debate_en", "acuerdo_en"))
+        ]
+        if len(normalized_points) != len(valid_point_ids) or incomplete:
+            missing.append("desarrollo y acuerdo bilingue de todos los puntos")
+        if missing:
+            raise ValueError("No se puede cerrar el acta. Falta: " + ", ".join(missing) + ".")
+    warnings = DATA.get("advertencias") or []
+    if not isinstance(warnings, list):
+        warnings = []
+    timestamp = now()
+    with conn:
+        ensure_minutes_schema(conn)
+        conn.execute(
+            """INSERT INTO asamblea_actas
+               (id_asamblea,estado,transcripcion,fuente_transcripcion,convocante,secretario,hora_cierre,
+                introduccion_es,introduccion_en,cierre_es,cierre_en,puntos_json,advertencias_json,generado_ia,
+                fecha_creacion,fecha_actualizacion,usuario_actualizacion,pc_actualizacion)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id_asamblea) DO UPDATE SET
+                 estado=excluded.estado,transcripcion=excluded.transcripcion,
+                 fuente_transcripcion=excluded.fuente_transcripcion,convocante=excluded.convocante,
+                 secretario=excluded.secretario,hora_cierre=excluded.hora_cierre,
+                 introduccion_es=excluded.introduccion_es,introduccion_en=excluded.introduccion_en,
+                 cierre_es=excluded.cierre_es,cierre_en=excluded.cierre_en,
+                 puntos_json=excluded.puntos_json,advertencias_json=excluded.advertencias_json,
+                 generado_ia=excluded.generado_ia,fecha_actualizacion=excluded.fecha_actualizacion,
+                 usuario_actualizacion=excluded.usuario_actualizacion,pc_actualizacion=excluded.pc_actualizacion""",
+            (
+                assembly_id, state, str(DATA.get("transcripcion") or ""),
+                str(DATA.get("fuente_transcripcion") or ""), str(DATA.get("convocante") or ""),
+                str(DATA.get("secretario") or ""), str(DATA.get("hora_cierre") or ""),
+                str(DATA.get("introduccion_es") or ""), str(DATA.get("introduccion_en") or ""),
+                str(DATA.get("cierre_es") or ""), str(DATA.get("cierre_en") or ""),
+                json.dumps(normalized_points, ensure_ascii=False),
+                json.dumps([str(item)[:1000] for item in warnings], ensure_ascii=False),
+                1 if DATA.get("generado_ia") else 0, timestamp, timestamp, USER, PC,
+            ),
+        )
+        update_log(conn, assembly_id, "Acta", f"Borrador del acta guardado en estado {state}.")
+        audit(conn, "Guardar borrador acta web", "asamblea", assembly_id, state)
+        minutes = minutes_row(conn, assembly_id, False)
+    conn.close()
+    return {"ok": True, "minutes": minutes}
+
+
 ACTIONS = {
     "list": list_assemblies, "detail": assembly_detail, "create": create_assembly,
     "update": update_assembly, "save_points": save_points, "add_update": add_update,
@@ -522,6 +676,7 @@ ACTIONS = {
     "attendance_remove": remove_attendance, "moroso_set": set_moroso,
     "vote_set": lambda: set_vote(False), "vote_bulk": lambda: set_vote(True),
     "document_add": add_document, "document_info": document_info, "document_delete": delete_document,
+    "minutes_get": get_minutes, "minutes_save": save_minutes,
 }
 
 

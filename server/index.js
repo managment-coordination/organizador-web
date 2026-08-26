@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
+import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
 import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -127,7 +128,7 @@ function readBody(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 200000) {
+      if (body.length > 1000000) {
         reject(new Error("Solicitud demasiado grande."));
         req.destroy();
       }
@@ -2106,6 +2107,86 @@ async function externalAiProposal(text, context) {
   return parsed;
 }
 
+function fallbackAssemblyMinutes(detail) {
+  const item = detail.assembly || {};
+  return {
+    introduccion_es: `En el lugar, fecha y hora indicados se constituye la asamblea ${item.nombre || ""}. La Presidencia declara abierta la sesion y se procede al examen del orden del dia.`,
+    introduccion_en: `At the place, date and time stated, the meeting ${item.nombre || ""} is constituted. The President opens the session and the agenda is considered.`,
+    cierre_es: "No habiendo mas asuntos que tratar, se levanta la sesion a la hora indicada, quedando el acta pendiente de revision y firma.",
+    cierre_en: "There being no further business, the meeting is closed at the stated time, with the minutes pending review and signature.",
+    puntos: (detail.points || []).map((point) => ({
+      id_punto: Number(point.id_punto),
+      debate_es: `Se examina el punto relativo a: ${point.titulo}. El contenido concreto debe revisarse con la transcripcion antes de cerrar el acta.`,
+      acuerdo_es: `Resultado registrado por la aplicacion: ${point.result?.approved ? "APROBADO" : "NO APROBADO"}.`,
+      debate_en: `The meeting considers the agenda item: ${point.titulo}. The specific content must be checked against the transcript before the minutes are closed.`,
+      acuerdo_en: `Result recorded by the application: ${point.result?.approved ? "APPROVED" : "NOT APPROVED"}.`,
+    })),
+    advertencias: ["Borrador base creado sin IA externa. Revise la transcripcion y complete el desarrollo de cada punto."],
+    source: "local",
+  };
+}
+
+async function externalAssemblyMinutes(detail, minutes) {
+  if (!aiApiKey || aiProvider === "local") return fallbackAssemblyMinutes(detail);
+  const item = detail.assembly || {};
+  const points = (detail.points || []).map((point, index) => ({
+    id_punto: Number(point.id_punto),
+    numero: index + 1,
+    titulo: point.titulo,
+    resultado_registrado: point.result?.base_votes ? (point.result.approved ? "APROBADO" : "NO APROBADO") : "SIN VOTACION",
+  }));
+  const system = [
+    "Eres un asistente de redaccion de actas de comunidades de propietarios en Espana.",
+    "Devuelve exclusivamente JSON valido y bilingue espanol/ingles.",
+    "Redacta de forma formal, objetiva, clara y concisa. Resume el debate; no transcribas literalmente.",
+    "No inventes intervenciones, acuerdos, cifras, asistentes, votos, coeficientes ni fundamentos legales.",
+    "Los resultados registrados son inalterables. Nunca recalcules ni contradigas APROBADO, NO APROBADO o SIN VOTACION.",
+    "Distingue exposicion/debate de acuerdo. Si falta informacion, indicalo en advertencias.",
+    "Estructura exacta: {introduccion_es,introduccion_en,cierre_es,cierre_en,puntos:[{id_punto,debate_es,acuerdo_es,debate_en,acuerdo_en}],advertencias:[string]}.",
+  ].join("\n");
+  const privateFreeContext = {
+    asamblea: item.nombre,
+    comunidad: item.comunidad,
+    fecha: item.fecha,
+    convocatoria: item.convocatoria,
+    lugar: item.lugar_celebracion || item.ubicacion,
+    puntos,
+  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 150000);
+  let response;
+  try {
+    response = await fetch(`${aiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Authorization": `Bearer ${aiApiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: aiModel,
+        temperature: 0.1,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: `Datos generales y resultados bloqueados:\n${JSON.stringify(privateFreeContext)}\n\nTranscripcion para resumir:\n${String(minutes.transcripcion || "").slice(0, 400000)}` },
+        ],
+        response_format: { type: "json_object" },
+      }),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`IA externa no disponible (${response.status}).`);
+  const data = await response.json();
+  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
+  const validIds = new Set(points.map((point) => Number(point.id_punto)));
+  parsed.puntos = Array.isArray(parsed.puntos) ? parsed.puntos.filter((point) => validIds.has(Number(point.id_punto))).map((point) => ({
+    id_punto: Number(point.id_punto),
+    debate_es: String(point.debate_es || "").trim(), acuerdo_es: String(point.acuerdo_es || "").trim(),
+    debate_en: String(point.debate_en || "").trim(), acuerdo_en: String(point.acuerdo_en || "").trim(),
+  })) : [];
+  parsed.advertencias = Array.isArray(parsed.advertencias) ? parsed.advertencias.map((warning) => String(warning).slice(0, 1000)) : [];
+  parsed.source = aiProvider;
+  return parsed;
+}
+
 function querySmartAssistant(session, text) {
   const script = `
 import json
@@ -3847,6 +3928,22 @@ function homePage() {
     .assemblySplit { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(0,1.4fr); gap:12px; align-items:start; }
     .assemblyPane { border:1px solid var(--line); border-radius:8px; padding:12px; background:white; min-width:0; }
     .assemblyPane h3 { margin:0 0 10px; }
+    .minutesLayout { display:grid; gap:12px; }
+    .minutesReadiness { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
+    .minutesCheck { display:flex; align-items:flex-start; gap:8px; padding:9px 10px; border:1px solid var(--line); border-radius:6px; background:#f8fafc; }
+    .minutesCheck.ok { border-color:#a7d7c5; background:#f0fdf4; }
+    .minutesCheck.warn { border-color:#f2c48d; background:#fff7ed; }
+    .minutesCheck strong { display:block; font-size:13px; }
+    .minutesCheck span { font-size:12px; color:var(--muted); }
+    .minutesSourceGrid { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr); gap:12px; align-items:start; }
+    .minutesTranscript { min-height:260px; resize:vertical; }
+    .minutesPoint { border:1px solid var(--line); border-left:5px solid var(--teal); border-radius:7px; padding:12px; background:#fff; display:grid; gap:10px; }
+    .minutesPointHead { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .minutesPointHead h3 { margin:0; font-size:16px; }
+    .minutesLocked { padding:8px 10px; border-radius:6px; background:#eef5f7; color:#164e63; font-size:12px; font-weight:700; }
+    .minutesLanguages { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .minutesLanguages textarea { min-height:120px; }
+    .minutesWarningList { margin:0; padding-left:20px; color:#92400e; }
     .agendaList, .attendanceList, .voteGroups { display:grid; gap:8px; }
     .agendaItem { border:1px solid var(--line); border-radius:8px; padding:10px; background:white; display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:10px; align-items:start; }
     .agendaNumber { width:30px; height:30px; border-radius:50%; background:#0f766e; color:white; display:grid; place-items:center; font-weight:900; }
@@ -3933,6 +4030,7 @@ function homePage() {
       .mapSectionBody { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .assemblyMetrics { grid-template-columns:repeat(3,minmax(115px,1fr)); }
       .assemblySplit { grid-template-columns:1fr; }
+      .minutesSourceGrid, .minutesLanguages { grid-template-columns:1fr; }
       .adminLayout { grid-template-columns:1fr; }
       .securityDashboard, .securityAnalytics { grid-template-columns:1fr; }
       .securityMetrics { grid-template-columns:repeat(3,minmax(0,1fr)); }
@@ -4771,6 +4869,7 @@ function homePage() {
     let assembliesData = { assemblies: [], loaded: false };
     let selectedAssemblyId = 0;
     let assemblyDetail = null;
+    let assemblyMinutes = null;
     let assemblySection = "summary";
     let assemblyOwnerQuery = "";
     let selectedAssemblyPoint = 0;
@@ -5690,7 +5789,7 @@ function homePage() {
     }
 
     function assemblyTabsHtml() {
-      const tabs = [["summary","Resumen"],["registration","Registro"],["voting","Votacion"],["documents","Documentos y proxys"],["history","Historial"]];
+      const tabs = [["summary","Resumen"],["registration","Registro"],["voting","Votacion"],["documents","Documentos y proxys"],["minutes","Acta"],["history","Historial"]];
       if (canWrite()) tabs.push(["configuration", "Configuracion"]);
       return '<div class="assemblyTabs">' + tabs.map(row => '<button data-assembly-section="' + row[0] + '" class="' + (assemblySection === row[0] ? "active" : "") + '">' + row[1] + '</button>').join("") + '</div>';
     }
@@ -5803,9 +5902,41 @@ function homePage() {
       return (canWrite() ? '<div class="assemblyPane"><h3>Anadir seguimiento de asamblea</h3><div class="formGrid"><div><label>Tipo</label><input id="assemblyUpdateType" value="Seguimiento" /></div></div><label>Comentario</label><textarea id="assemblyUpdateComment"></textarea><div class="toolbar"><button class="green" id="saveAssemblyUpdate">Guardar seguimiento</button><span class="muted" id="assemblyUpdateMessage"></span></div></div>' : '') + '<div class="history">' + content + '</div>';
     }
 
+    function assemblyMinutesHtml(detail) {
+      const item = detail.assembly || {};
+      const minutes = assemblyMinutes || {};
+      const draftMap = new Map((minutes.puntos || []).map(row => [Number(row.id_punto), row]));
+      const checks = [
+        [Boolean(item.fecha), "Fecha", item.fecha || "Pendiente"],
+        [Boolean(item.lugar_celebracion || item.ubicacion), "Lugar", item.lugar_celebracion || item.ubicacion || "Pendiente"],
+        [Boolean(item.hora_inicio), "Hora de inicio", item.hora_inicio || "Pendiente"],
+        [Boolean(item.presidente), "Presidente", item.presidente || "Pendiente"],
+        [Boolean(minutes.secretario || item.administrador), "Secretario / Administrador", minutes.secretario || item.administrador || "Pendiente"],
+        [Boolean(minutes.hora_cierre), "Hora de cierre", minutes.hora_cierre || "Pendiente"],
+        [(detail.attendance || []).length > 0, "Asistencia", (detail.attendance || []).length + " registros"],
+        [(detail.points || []).length > 0, "Orden del dia", (detail.points || []).length + " puntos"],
+      ];
+      const readiness = checks.map(row => '<div class="minutesCheck ' + (row[0] ? "ok" : "warn") + '"><strong>' + (row[0] ? "OK" : "Falta") + '</strong><div><strong>' + html(row[1]) + '</strong><span>' + html(row[2]) + '</span></div></div>').join("");
+      const warnings = (minutes.advertencias || []).length ? '<div class="assemblyPane"><h3>Observaciones del borrador</h3><ul class="minutesWarningList">' + minutes.advertencias.map(value => '<li>' + html(value) + '</li>').join("") + '</ul></div>' : '';
+      const qualifiedMajorities = (detail.points || []).filter(point => !["", "simple"].includes(safe(point.tipo_mayoria).toLowerCase()));
+      const majorityNotice = qualifiedMajorities.length ? '<div class="assemblyPane"><h3>Control de mayorias cualificadas</h3><p class="answerNote">Antes de cerrar el acta, revisa la base legal y el posible computo de propietarios ausentes en: ' + qualifiedMajorities.map((point,index) => "P" + ((detail.points || []).indexOf(point)+1) + " (" + point.tipo_mayoria + ")").join(", ") + '.</p></div>' : '';
+      const states = ["Borrador","Revisada","Cerrada"].map(value => '<option' + (value === (minutes.estado || "Borrador") ? " selected" : "") + '>' + value + '</option>').join("");
+      const points = (detail.points || []).map((point,index) => {
+        const draft = draftMap.get(Number(point.id_punto)) || {};
+        const result = point.result || {};
+        const locked = result.base_votes ? (result.approved ? "APROBADO" : "NO APROBADO") + " | " + (result.si?.votes || 0) + " a favor, " + (result.no?.votes || 0) + " en contra, " + (result.abs?.votes || 0) + " abstenciones" : "SIN VOTACION REGISTRADA";
+        return '<article class="minutesPoint" data-minutes-point="' + point.id_punto + '"><div class="minutesPointHead"><div><h3>P' + (index+1) + '. ' + html(point.titulo) + '</h3><div class="muted">Mayoria configurada: ' + html(point.tipo_mayoria || "simple") + '</div></div><span class="pill ' + (result.approved ? "state-Finalizado" : "state-Pendiente") + '">' + html(resultLabel(result)) + '</span></div><div class="minutesLocked">Resultado bloqueado desde el registro: ' + html(locked) + '</div><div class="minutesLanguages"><div><label>Exposicion y debate (ES)</label><textarea data-minutes-field="debate_es">' + html(draft.debate_es || "") + '</textarea><label>Acuerdo (ES)</label><textarea data-minutes-field="acuerdo_es">' + html(draft.acuerdo_es || "") + '</textarea></div><div><label>Discussion (EN)</label><textarea data-minutes-field="debate_en">' + html(draft.debate_en || "") + '</textarea><label>Resolution (EN)</label><textarea data-minutes-field="acuerdo_en">' + html(draft.acuerdo_en || "") + '</textarea></div></div></article>';
+      }).join("");
+      return '<div class="minutesLayout"><div class="assemblyPane"><div class="contentHead"><div><h3>Control previo del acta</h3><p class="muted">Datos que formaran parte del documento.</p></div><span class="pill ' + ((minutes.estado || "Borrador") === "Cerrada" ? "state-Finalizado" : "state-Pendiente") + '">' + html(minutes.estado || "Borrador") + '</span></div><div class="minutesReadiness">' + readiness + '</div></div>' +
+        '<div class="minutesSourceGrid"><div class="assemblyPane"><h3>Transcripcion de la sesion</h3><input id="minutesTranscriptFile" type="file" accept=".txt,.md,text/plain" /><textarea id="minutesTranscript" class="minutesTranscript" placeholder="Pega aqui la transcripcion completa">' + html(minutes.transcripcion || "") + '</textarea><div class="muted" id="minutesTranscriptName">' + html(minutes.fuente_transcripcion || "") + '</div></div><div class="assemblyPane"><h3>Datos de cierre</h3><label>Estado del acta</label><select id="minutesState">' + states + '</select><label>Convocante</label><input id="minutesConvener" value="' + html(minutes.convocante || item.presidente || "") + '" /><label>Secretario / Administrador</label><input id="minutesSecretary" value="' + html(minutes.secretario || item.administrador || "") + '" /><label>Hora de cierre</label><input id="minutesClosingTime" type="time" value="' + html(minutes.hora_cierre || "") + '" /><div class="toolbar"><button class="green" id="saveAssemblyMinutes">Guardar borrador</button><span class="muted" id="minutesMessage"></span></div></div></div>' +
+        '<details class="assemblyPane" open><summary><strong>Apertura y cierre bilingues</strong></summary><div class="minutesLanguages" style="margin-top:10px"><div><label>Introduccion (ES)</label><textarea id="minutesIntroEs">' + html(minutes.introduccion_es || "") + '</textarea><label>Cierre (ES)</label><textarea id="minutesCloseEs">' + html(minutes.cierre_es || "") + '</textarea></div><div><label>Introduction (EN)</label><textarea id="minutesIntroEn">' + html(minutes.introduccion_en || "") + '</textarea><label>Closing (EN)</label><textarea id="minutesCloseEn">' + html(minutes.cierre_en || "") + '</textarea></div></div></details>' + majorityNotice + warnings +
+        '<div class="minutesLayout">' + (points || '<div class="empty">No hay puntos configurados.</div>') + '</div>' +
+        '<div class="assemblyPane"><div class="toolbar"><button class="green" id="generateAssemblyMinutes">Preparar borrador con IA</button><button id="saveAssemblyMinutesBottom">Guardar cambios</button><button class="ghost" id="exportAssemblyMinutes">Exportar Word</button><span class="muted" id="minutesBottomMessage"></span></div></div></div>';
+    }
+
     function assemblyDetailHtml(detail) {
       const item = detail.assembly || {};
-      const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySection === "configuration" ? assemblyEditHtml(detail) : assemblySummaryHtml(detail);
+      const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "minutes" ? assemblyMinutesHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySection === "configuration" ? assemblyEditHtml(detail) : assemblySummaryHtml(detail);
       return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button>' + (canWrite() ? '<button class="green" id="assemblyEditShortcut">Editar</button>' : '') + '<button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
     }
 
@@ -5831,9 +5962,15 @@ function homePage() {
     async function loadAssemblyDetail(id = selectedAssemblyId) {
       selectedAssemblyId = Number(id || 0);
       assemblyDetail = null;
+      assemblyMinutes = null;
       render();
       try {
-        assemblyDetail = await api("/api/assembly/detail?id=" + encodeURIComponent(selectedAssemblyId));
+        const [detail, minutesResponse] = await Promise.all([
+          api("/api/assembly/detail?id=" + encodeURIComponent(selectedAssemblyId)),
+          api("/api/assembly/minutes?id=" + encodeURIComponent(selectedAssemblyId)),
+        ]);
+        assemblyDetail = detail;
+        assemblyMinutes = minutesResponse.minutes || {};
         if (!selectedAssemblyPoint && assemblyDetail.points?.length) selectedAssemblyPoint = Number(assemblyDetail.points[0].id_punto);
         render();
       } catch (error) { selectedAssemblyId = 0; render(); alert(error.message); }
@@ -5847,7 +5984,7 @@ function homePage() {
       document.querySelectorAll("[data-assembly-open]").forEach(card => card.addEventListener("click", () => { assemblySection="summary"; selectedAssemblyPoint=0; loadAssemblyDetail(card.dataset.assemblyOpen); }));
       if ($("createAssemblyButton")) $("createAssemblyButton").addEventListener("click", createAssemblyFromForm);
       if (!selectedAssemblyId || !assemblyDetail) return;
-      $("backAssemblies").addEventListener("click", () => { selectedAssemblyId=0; assemblyDetail=null; assemblySection="summary"; render(); });
+      $("backAssemblies").addEventListener("click", () => { selectedAssemblyId=0; assemblyDetail=null; assemblyMinutes=null; assemblySection="summary"; render(); });
       $("reloadAssembly").addEventListener("click", () => loadAssemblyDetail());
       if ($("assemblyEditShortcut")) $("assemblyEditShortcut").addEventListener("click", () => { assemblySection="configuration"; render(); });
       document.querySelectorAll("[data-assembly-section]").forEach(button => button.addEventListener("click", () => { assemblySection=button.dataset.assemblySection; render(); }));
@@ -5867,6 +6004,11 @@ function homePage() {
       document.querySelectorAll("[data-assembly-document-open]").forEach(button => button.addEventListener("click", () => window.open("/api/assembly/document?id=" + encodeURIComponent(button.dataset.assemblyDocumentOpen) + "&inline=1","_blank")));
       document.querySelectorAll("[data-assembly-document-delete]").forEach(button => button.addEventListener("click", () => deleteAssemblyDocument(button.dataset.assemblyDocumentDelete)));
       if ($("saveAssemblyUpdate")) $("saveAssemblyUpdate").addEventListener("click", saveAssemblyUpdate);
+      if ($("minutesTranscriptFile")) $("minutesTranscriptFile").addEventListener("change", loadMinutesTranscriptFile);
+      if ($("saveAssemblyMinutes")) $("saveAssemblyMinutes").addEventListener("click", () => saveAssemblyMinutes(false));
+      if ($("saveAssemblyMinutesBottom")) $("saveAssemblyMinutesBottom").addEventListener("click", () => saveAssemblyMinutes(false));
+      if ($("generateAssemblyMinutes")) $("generateAssemblyMinutes").addEventListener("click", generateAssemblyMinutes);
+      if ($("exportAssemblyMinutes")) $("exportAssemblyMinutes").addEventListener("click", exportAssemblyMinutes);
     }
 
     async function createAssemblyFromForm() {
@@ -5892,6 +6034,63 @@ function homePage() {
     async function uploadAssemblyDocuments(){const files=[...($("assemblyDocumentFiles").files||[])];if(!files.length){$("assemblyDocumentMessage").textContent="Selecciona archivos.";return;}$("assemblyDocumentMessage").textContent="Subiendo 0 de "+files.length+"...";try{for(let index=0;index<files.length;index++){const query=new URLSearchParams({id:selectedAssemblyId,folder:$("assemblyDocumentFolder").value||"General",description:$("assemblyDocumentDescription").value||""});const response=await fetch("/api/assembly/document/upload?"+query.toString(),{method:"POST",body:files[index],credentials:"same-origin",headers:{"x-file-name":encodeURIComponent(files[index].name)}});const body=await response.json();if(!response.ok)throw new Error(body.error||"Error subiendo archivo.");$("assemblyDocumentMessage").textContent="Subiendo "+(index+1)+" de "+files.length+"...";}await loadAssemblyDetail();}catch(error){$("assemblyDocumentMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
     async function deleteAssemblyDocument(id){if(!confirm("Eliminar este documento de la asamblea?"))return;try{await api("/api/assembly/document/delete",{method:"POST",body:JSON.stringify({id})});await loadAssemblyDetail();}catch(error){alert(error.message);}}
     async function saveAssemblyUpdate(){try{$("assemblyUpdateMessage").textContent="Guardando...";await assemblyApi("add_update",{id:selectedAssemblyId,tipo:$("assemblyUpdateType").value,comentario:$("assemblyUpdateComment").value});await loadAssemblyDetail();}catch(error){$("assemblyUpdateMessage").innerHTML='<span class="dangerText">'+html(error.message)+'</span>';}}
+
+    function collectAssemblyMinutes() {
+      const points = [...document.querySelectorAll("[data-minutes-point]")].map(row => {
+        const value = (field) => row.querySelector('[data-minutes-field="' + field + '"]').value;
+        return { id_punto:Number(row.dataset.minutesPoint), debate_es:value("debate_es"), acuerdo_es:value("acuerdo_es"), debate_en:value("debate_en"), acuerdo_en:value("acuerdo_en") };
+      });
+      return {
+        id:selectedAssemblyId, estado:$("minutesState").value, transcripcion:$("minutesTranscript").value,
+        fuente_transcripcion:safe($("minutesTranscriptName").textContent), convocante:$("minutesConvener").value,
+        secretario:$("minutesSecretary").value, hora_cierre:$("minutesClosingTime").value,
+        introduccion_es:$("minutesIntroEs").value, introduccion_en:$("minutesIntroEn").value,
+        cierre_es:$("minutesCloseEs").value, cierre_en:$("minutesCloseEn").value,
+        puntos, advertencias:assemblyMinutes?.advertencias || [], generado_ia:Boolean(assemblyMinutes?.generado_ia),
+      };
+    }
+
+    async function loadMinutesTranscriptFile(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      if (!/\.(txt|md)$/i.test(file.name)) { alert("Selecciona una transcripcion TXT o Markdown."); return; }
+      const text = await file.text();
+      $("minutesTranscript").value = text;
+      $("minutesTranscriptName").textContent = file.name;
+    }
+
+    async function saveAssemblyMinutes(quiet = false) {
+      const message = $("minutesMessage") || $("minutesBottomMessage");
+      try {
+        if (message && !quiet) message.textContent = "Guardando...";
+        const result = await api("/api/assembly/minutes/save", { method:"POST", body:JSON.stringify(collectAssemblyMinutes()) });
+        assemblyMinutes = result.minutes || {};
+        if (!quiet) render();
+        return true;
+      } catch (error) {
+        if (message) message.innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+        return false;
+      }
+    }
+
+    async function generateAssemblyMinutes() {
+      const payload = collectAssemblyMinutes();
+      if (safe(payload.transcripcion).length < 80) { alert("Incluye primero la transcripcion de la sesion."); return; }
+      if (!confirm("Se enviaran al proveedor de IA la transcripcion, los datos generales y los titulos de los puntos. Los nombres de asistentes, votos y coeficientes no se enviaran. Continuar?")) return;
+      const message = $("minutesBottomMessage") || $("minutesMessage");
+      try {
+        message.textContent = "Preparando el borrador bilingue...";
+        const result = await api("/api/assembly/minutes/generate", { method:"POST", body:JSON.stringify(payload) });
+        assemblyMinutes = result.minutes || {};
+        render();
+      } catch (error) { message.innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
+    }
+
+    async function exportAssemblyMinutes() {
+      const saved = await saveAssemblyMinutes(true);
+      if (!saved) return;
+      window.location.href = "/api/assembly/minutes/export?id=" + encodeURIComponent(selectedAssemblyId);
+    }
 
     async function adminApi(action, data = {}) {
       return api("/api/admin/action", { method:"POST", body:JSON.stringify({ action, data }) });
@@ -7666,6 +7865,60 @@ async function handle(req, res) {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     return sendJson(res, 200, await runAssemblyCommand(session, "detail", { id: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/assembly/minutes") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    return sendJson(res, 200, await runAssemblyCommand(session, "minutes_get", { id: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/assembly/minutes/save") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede editar el acta." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await runAssemblyCommand(session, "minutes_save", body, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/assembly/minutes/generate") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede generar el borrador." });
+    const body = await readBody(req);
+    const assemblyId = Number(body.id || 0);
+    const detail = await runAssemblyCommand(session, "detail", { id: assemblyId }, String(req.socket.remoteAddress || "web"));
+    const current = (await runAssemblyCommand(session, "minutes_get", { id: assemblyId }, String(req.socket.remoteAddress || "web"))).minutes || {};
+    const source = { ...current, ...body, id: assemblyId };
+    if (String(source.transcripcion || "").trim().length < 80) return sendJson(res, 400, { ok: false, error: "Incluye una transcripcion suficiente antes de preparar el borrador." });
+    const proposal = await externalAssemblyMinutes(detail, source);
+    const byId = new Map((proposal.puntos || []).map((point) => [Number(point.id_punto), point]));
+    const existingById = new Map((current.puntos || []).map((point) => [Number(point.id_punto), point]));
+    const points = (detail.points || []).map((point) => ({
+      ...(existingById.get(Number(point.id_punto)) || {}),
+      ...(byId.get(Number(point.id_punto)) || {}),
+      id_punto: Number(point.id_punto),
+    }));
+    const saved = await runAssemblyCommand(session, "minutes_save", {
+      ...source,
+      estado: "Borrador",
+      introduccion_es: proposal.introduccion_es || current.introduccion_es || "",
+      introduccion_en: proposal.introduccion_en || current.introduccion_en || "",
+      cierre_es: proposal.cierre_es || current.cierre_es || "",
+      cierre_en: proposal.cierre_en || current.cierre_en || "",
+      puntos: points,
+      advertencias: proposal.advertencias || [],
+      generado_ia: proposal.source !== "local",
+    }, String(req.socket.remoteAddress || "web"));
+    return sendJson(res, 200, { ok: true, minutes: saved.minutes, source: proposal.source || "local" });
+  }
+  if (req.method === "GET" && url.pathname === "/api/assembly/minutes/export") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const assemblyId = Number(url.searchParams.get("id") || 0);
+    const detail = await runAssemblyCommand(session, "detail", { id: assemblyId }, String(req.socket.remoteAddress || "web"));
+    const minutes = (await runAssemblyCommand(session, "minutes_get", { id: assemblyId }, String(req.socket.remoteAddress || "web"))).minutes || {};
+    const report = await buildAssemblyMinutes({ detail, minutes });
+    const target = path.join(reportsDir, report.filename);
+    fs.writeFileSync(target, report.buffer);
+    return sendFile(res, target, report.filename, false);
   }
   if (req.method === "POST" && url.pathname === "/api/assembly/action") {
     const session = readSession(req);

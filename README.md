@@ -60,7 +60,11 @@ El perfil `Presidente` no accede a la gestion general de asambleas. El resto de 
 
 La edicion de los datos generales y del orden del dia se abre desde el boton `Editar` de la cabecera o desde la pestana `Configuracion` de la ficha.
 
-Quedan para el siguiente bloque especifico de Asambleas la importacion web de censo, morosos y PDF de proxy, el generador del formulario para Google Sites, la exportacion del acta y el sistema opcional de votacion movil por QR y PIN.
+La pestana `Acta` conserva un borrador independiente por asamblea. Permite cargar una transcripcion TXT, revisar los datos de cierre, preparar con IA un texto bilingue editable y exportar un Word con cuerpo espanol/ingles, resultados por punto, firmas, detalle individual de votos y documentos del expediente. La IA no recibe nombres de asistentes, votos ni coeficientes y nunca calcula el resultado: esos datos se incorporan al Word directamente desde el registro de la asamblea.
+
+Un acta puede guardarse incompleta como `Borrador`. Para marcarla como `Cerrada` deben constar los datos esenciales de celebracion, asistencia, cargos, cierre y contenido bilingue de todos los puntos. Los acuerdos con mayoria cualificada muestran una advertencia de revision legal antes del cierre.
+
+Quedan para el siguiente bloque especifico de Asambleas la importacion web de censo, morosos y PDF de proxy, el generador del formulario para Google Sites y el sistema opcional de votacion movil por QR y PIN.
 
 ## Administracion
 
