@@ -2187,6 +2187,10 @@ def normalize_property_query(value):
     q = re.sub(r"\\bCB\\s*(\\d+)\\b", r"CB \\1", q)
     return re.sub(r"\\s+", " ", q).strip()
 
+def extract_email_query(value):
+    match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", str(value or ""), re.I)
+    return match.group(0).strip().lower() if match else ""
+
 def rows(sql, params=()):
     return [dict(r) for r in conn.execute(sql, params)]
 
@@ -2297,6 +2301,29 @@ def owner_for_property(prop_id):
         ORDER BY o.nombre
     """, (prop_id,))
 
+def owners_for_email(email):
+    return rows("""
+        SELECT DISTINCT o.id_propietario, o.codigo_netfincas, o.nombre, o.nif,
+               c.tipo, c.valor, c.principal
+        FROM cf_contactos_propietario c
+        JOIN cf_propietarios o ON o.id_propietario = c.id_propietario
+        WHERE LOWER(TRIM(c.valor)) = LOWER(TRIM(?))
+          AND COALESCE(c.activo, 1) = 1
+          AND COALESCE(o.activo, 1) = 1
+        ORDER BY COALESCE(c.principal, 0) DESC, o.nombre
+    """, (email,))
+
+def properties_for_owner(owner_id):
+    return rows("""
+        SELECT p.id_propiedad, p.codigo_propiedad, p.zona, p.subzona, p.coeficiente
+        FROM cf_propietario_propiedad pp
+        JOIN cf_propiedades p ON p.id_propiedad = pp.id_propiedad
+        WHERE pp.id_propietario = ?
+          AND COALESCE(pp.activo, 1) = 1
+          AND COALESCE(p.activa, 1) = 1
+        ORDER BY p.codigo_propiedad
+    """, (owner_id,))
+
 def debt_conditions(owner_id=None, year=None, property_id=None):
     clauses = ["COALESCE(r.deuda,0) > 0"]
     params = []
@@ -2381,8 +2408,55 @@ try:
     is_debt_question = any(token in q_norm for token in ["DEUDA", "DEUDOR", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb or (is_list_request and "DEBEN" in q_norm)
     is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
+    email_query = extract_email_query(question)
 
-    if is_budget_question:
+    if email_query:
+        owners = owners_for_email(email_query)
+        if not owners:
+            answer = f"No he encontrado ningun propietario activo vinculado al correo {email_query}."
+            display = {
+                "title": "Correo sin coincidencias",
+                "subtitle": email_query,
+                "note": "La busqueda se ha realizado por coincidencia exacta entre los contactos activos de propietarios.",
+            }
+            print(json.dumps(response(answer, 0.92, facts={"email": email_query, "propietarios": 0}, display=display), ensure_ascii=False))
+        else:
+            owner_rows = []
+            all_properties = []
+            for owner in owners:
+                properties = properties_for_owner(owner["id_propietario"])
+                property_codes = [p["codigo_propiedad"] for p in properties]
+                owner_rows.append({
+                    "Propietario": owner["nombre"],
+                    "Codigo Netfincas": owner.get("codigo_netfincas") or "",
+                    "Propiedades": ", ".join(property_codes) or "Sin propiedades activas",
+                })
+                all_properties.extend(properties)
+            if len(owners) == 1:
+                owner = owners[0]
+                property_text = ", ".join(p["codigo_propiedad"] for p in all_properties) or "ninguna propiedad activa"
+                answer = f"El correo {email_query} pertenece a {owner['nombre']} (codigo Netfincas {owner.get('codigo_netfincas') or 'sin codigo'}). Propiedades activas: {property_text}."
+            else:
+                answer = f"El correo {email_query} esta vinculado a {len(owners)} propietarios activos. Revisa el detalle mostrado."
+            display = {
+                "title": "Propietario por correo electronico" if len(owners) == 1 else "Propietarios vinculados al correo",
+                "subtitle": email_query,
+                "cards": [
+                    {"label": "Propietarios", "value": str(len(owners))},
+                    {"label": "Propiedades activas", "value": str(len(all_properties))},
+                    {"label": "Contacto principal", "value": "Si" if any(bool(o.get("principal")) for o in owners) else "No"},
+                ],
+                "tables": [{
+                    "title": "Coincidencias",
+                    "columns": ["Propietario", "Codigo Netfincas", "Propiedades"],
+                    "rows": owner_rows,
+                }],
+                "note": "Coincidencia exacta obtenida de los contactos activos importados.",
+            }
+            print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display), ensure_ascii=False))
+        raise SystemExit
+
+    elif is_budget_question:
         report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
         if not report:
             print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55), ensure_ascii=False))
