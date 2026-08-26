@@ -94,6 +94,10 @@ Luis, Elena, el Superusuario y cualquier usuario con el permiso `Gestionar Segur
 
 Al abrir una incidencia se reserva durante 30 minutos para el revisor. Otro gestor puede verla, pero no modificarla. Desde la ficha se puede confirmar, descartar, marcar informativa o resuelta, vincularla, crear una tarea/proyecto o añadir un seguimiento. Los documentos originales son protegidos y su apertura queda auditada; los datos personales no se copian a las fichas operativas.
 
+## Mapa maestro IA
+
+La evolucion hacia plataforma central inteligente queda documentada en `docs/MAPA_TRABAJO_AGENTE_IA.md`. Ese documento actua como memoria de trabajo: fija objetivos, porcentajes, nucleos pendientes, reglas de confirmacion y control de ramificaciones para evitar desviaciones o bucles de desarrollo.
+
 ## Estructura
 
 ```text
