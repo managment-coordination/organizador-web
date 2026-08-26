@@ -51,6 +51,17 @@ Decision necesaria:
 
 Regla practica: si una ramificacion no bloquea el nucleo actual, no se desarrolla en ese momento. Se anota, se explica y se espera confirmacion expresa del usuario.
 
+## Control anti-bucle
+
+El proyecto puede crecer en muchas direcciones, pero cada avance debe proteger el objetivo principal. Para evitar bucles infinitos:
+
+- cada sesion debe tener un nucleo activo;
+- cada nucleo debe tener un criterio de cierre comprobable;
+- las mejoras visuales, comodidades y automatizaciones se aceptan solo si refuerzan un nucleo;
+- las ideas laterales se guardan en el registro de ramificaciones;
+- no se inicia una ramificacion si no resuelve un bloqueo real o si el usuario no la confirma;
+- si una mejora necesita mas informacion, se deja documentada la duda y se continua con el trabajo principal que si pueda avanzar.
+
 ## Checklist antes de modificar codigo o datos
 
 - Confirmar nucleo activo.
@@ -472,6 +483,8 @@ Cierre:
 
 ### Fase 1 - Agente de consulta fiable
 
+Estado: preparada, pendiente de confirmacion para iniciar.
+
 Objetivo:
 
 - separar definitivamente consulta de entrada operativa;
@@ -570,9 +583,16 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | --- | --- | --- | --- |
 | 2026-08-26 | 0 | Crear mapa maestro del agente y reglas de avance | Confirmado |
 
+## Bitacora de avance
+
+| Fecha | Nucleo | Avance | Evidencia | Pendiente |
+| --- | --- | --- | --- | --- |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 98% | Commit `e89cd28` publicado en GitHub con README y mapa maestro | Confirmacion del usuario para cerrar al 100% |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Se anade control anti-bucle, bitacora y Fase 1 marcada como preparada | Commit y push de esta ampliacion |
+
 ## Ultima actualizacion
 
 - Fecha: 2026-08-26.
 - Nucleo activo: Fase 0 - Memoria del proyecto.
-- Avance del nucleo: 98%.
-- Pendiente inmediato: confirmacion del usuario para cerrar la Fase 0 y pasar a la Fase 1.
+- Avance del nucleo: 99% tecnico, 98% funcional.
+- Pendiente inmediato: publicar esta ampliacion y recibir confirmacion del usuario para cerrar la Fase 0 y pasar a la Fase 1.
