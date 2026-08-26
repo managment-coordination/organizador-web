@@ -62,6 +62,42 @@ El proyecto puede crecer en muchas direcciones, pero cada avance debe proteger e
 - no se inicia una ramificacion si no resuelve un bloqueo real o si el usuario no la confirma;
 - si una mejora necesita mas informacion, se deja documentada la duda y se continua con el trabajo principal que si pueda avanzar.
 
+## Definicion de nucleo cerrado
+
+Un nucleo solo se considera cerrado cuando existen evidencias concretas:
+
+- el alcance trabajado coincide con el objetivo del nucleo;
+- los cambios estan documentados en este mapa o en el README correspondiente;
+- los datos sensibles siguen fuera de GitHub;
+- el flujo critico ha sido probado o se ha explicado por que no aplica prueba tecnica;
+- si toca produccion, existe copia de seguridad y verificacion posterior;
+- los permisos por rol/comunidad se han revisado cuando el nucleo afecta datos reales;
+- las ramificaciones aparecidas estan anotadas con decision;
+- el usuario confirma el cierre funcional si el nucleo afecta a uso real de la app.
+
+## Plantilla para decidir ramificaciones
+
+Antes de construir una mejora lateral se debe responder:
+
+```text
+Ramificacion:
+Origen:
+Nucleo afectado:
+Aporta al objetivo central:
+Bloquea el nucleo actual:
+Riesgo si se hace ahora:
+Riesgo si se deja para despues:
+Decision propuesta:
+Confirmacion del usuario:
+```
+
+Decisiones posibles:
+
+- `hacer ahora`: solo si desbloquea el nucleo activo o evita rehacer trabajo importante;
+- `aparcar`: si es util pero no bloquea;
+- `rechazar`: si es superflua, duplica funcionalidad o complica la app sin aportar valor real;
+- `investigar`: si falta informacion critica antes de decidir.
+
 ## Checklist antes de modificar codigo o datos
 
 - Confirmar nucleo activo.
@@ -589,6 +625,7 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | --- | --- | --- | --- | --- |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 98% | Commit `e89cd28` publicado en GitHub con README y mapa maestro | Confirmacion del usuario para cerrar al 100% |
 | 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico | Commit `010fa7d` publicado en GitHub con control anti-bucle, bitacora y Fase 1 marcada como preparada | Confirmacion del usuario para cerrar al 100% |
+| 2026-08-26 | Fase 0 - Memoria del proyecto | 99% tecnico reforzado | Se anade definicion de nucleo cerrado y plantilla de decision de ramificaciones | Commit y push de esta ampliacion |
 
 ## Ultima actualizacion
 
