@@ -3799,9 +3799,11 @@ function homePage() {
     .adminMetrics { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; }
     .adminLayout { display:grid; grid-template-columns:minmax(280px,.8fr) minmax(420px,1.3fr); gap:12px; align-items:start; }
     .adminList { display:grid; gap:7px; max-height:560px; overflow:auto; }
+    .adminUserListItem { display:grid; gap:6px; }
     .adminRow { width:100%; text-align:left; border:1px solid var(--line); background:white; color:var(--text); padding:10px; display:grid; gap:5px; }
     .adminRow.selected { border-color:#2563eb; background:#eff6ff; box-shadow:inset 4px 0 #2563eb; }
     .adminRow.inactive { opacity:.6; }
+    .adminInlineActions { display:flex; flex-wrap:wrap; gap:7px; padding:0 4px 7px 8px; border-left:4px solid var(--blue); }
     .communityChecks { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; border:1px solid var(--line); border-radius:8px; padding:9px; max-height:230px; overflow:auto; }
     .communityCheck { display:flex; gap:8px; align-items:flex-start; padding:6px; }
     .communityCheck input { width:18px; min-height:18px; }
@@ -5820,7 +5822,9 @@ function homePage() {
 
     function adminUserRow(user) {
       const communities = (user.community_ids || []).map(id => adminData.communities.find(row => Number(row.id_comunidad) === Number(id))?.nombre).filter(Boolean);
-      return '<button class="adminRow ' + (Number(user.id_usuario) === Number(selectedAdminUserId) ? "selected " : "") + (user.activo ? "" : "inactive") + '" data-admin-user="' + user.id_usuario + '"><div><strong>' + html(user.nombre) + '</strong> <span class="pill">' + html(user.rol) + '</span></div><div class="muted">' + html(communities.length ? communities.join(", ") : (user.rol === "Superusuario" ? "Todas las comunidades" : "Sin comunidades asignadas")) + '</div><div class="meta"><span>' + html(user.password_status) + '</span>' + (user.bloqueado ? '<span class="dangerText">Bloqueado</span>' : '') + (user.activo ? '' : '<span>Inactivo</span>') + '</div></button>';
+      const selected = Number(user.id_usuario) === Number(selectedAdminUserId);
+      const actions = selected ? '<div class="adminInlineActions"><button class="ghost" data-admin-user-edit="' + user.id_usuario + '">Editar usuario</button><button data-admin-user-quick-reset="' + user.id_usuario + '">Generar nueva clave temporal</button></div>' : '';
+      return '<div class="adminUserListItem"><button class="adminRow ' + (selected ? "selected " : "") + (user.activo ? "" : "inactive") + '" data-admin-user="' + user.id_usuario + '"><div><strong>' + html(user.nombre) + '</strong> <span class="pill">' + html(user.rol) + '</span></div><div class="muted">' + html(communities.length ? communities.join(", ") : (user.rol === "Superusuario" ? "Todas las comunidades" : "Sin comunidades asignadas")) + '</div><div class="meta"><span>' + html(user.password_status) + '</span>' + (user.bloqueado ? '<span class="dangerText">Bloqueado</span>' : '') + (user.activo ? '' : '<span>Inactivo</span>') + '</div></button>' + actions + '</div>';
     }
 
     function adminCommunityRow(community) {
@@ -5837,7 +5841,7 @@ function homePage() {
       const roles = (adminData.roles || []).map(role => '<option value="' + html(role) + '"' + ((user?.rol || "Usuario") === role ? " selected" : "") + '>' + html(role) + '</option>').join("");
       const assigned = new Set((user?.community_ids || []).map(Number));
       const checks = (adminData.communities || []).map(community => '<label class="communityCheck"><input type="checkbox" data-admin-user-community="' + community.id_comunidad + '"' + (assigned.has(Number(community.id_comunidad)) ? " checked" : "") + ' /><span><strong>' + html(community.nombre) + '</strong>' + (community.activo ? '' : '<small class="dangerText" style="display:block">Inactiva</small>') + '</span></label>').join("");
-      return '<div class="assemblyPane"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><label><input type="checkbox" id="adminUserSecurity"' + (user?.gestionar_seguridad ? " checked" : "") + ' /> Gestionar Seguridad: revisar partes, ver documentos protegidos y convertir incidencias</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El perfil Seguridad solo carga partes. El permiso Gestionar Seguridad se reserva para Luis, Elena y usuarios autorizados expresamente.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
+      return '<div class="assemblyPane" id="adminUserEditor"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><label><input type="checkbox" id="adminUserSecurity"' + (user?.gestionar_seguridad ? " checked" : "") + ' /> Gestionar Seguridad: revisar partes, ver documentos protegidos y convertir incidencias</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El perfil Seguridad solo carga partes. El permiso Gestionar Seguridad se reserva para Luis, Elena y usuarios autorizados expresamente.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
     }
 
     function adminCommunityEditorHtml() {
@@ -5858,6 +5862,8 @@ function homePage() {
     function bindAdminPanel() {
       if (!adminData.loaded || adminData.error) return;
       document.querySelectorAll("[data-admin-user]").forEach(button => button.addEventListener("click", () => { selectedAdminUserId=Number(button.dataset.adminUser); lastTemporaryKey=null; render(); }));
+      document.querySelectorAll("[data-admin-user-edit]").forEach(button => button.addEventListener("click", () => document.querySelector("#adminUserEditor")?.scrollIntoView({ behavior:"smooth", block:"start" })));
+      document.querySelectorAll("[data-admin-user-quick-reset]").forEach(button => button.addEventListener("click", () => { selectedAdminUserId=Number(button.dataset.adminUserQuickReset); resetAdminPassword(); }));
       document.querySelectorAll("[data-admin-community]").forEach(button => button.addEventListener("click", () => { selectedAdminCommunityId=Number(button.dataset.adminCommunity); render(); }));
       $("newAdminUser").addEventListener("click", () => { selectedAdminUserId=0; lastTemporaryKey=null; render(); });
       $("newAdminCommunity").addEventListener("click", () => { selectedAdminCommunityId=0; render(); });
