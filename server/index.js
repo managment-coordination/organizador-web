@@ -245,7 +245,7 @@ function verifyPassword(password, storedHash) {
 
 function runPythonJson(script) {
   return new Promise((resolve, reject) => {
-    execFile(pythonBin, ["-c", script], { timeout: 15000, maxBuffer: 5 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    const child = execFile(pythonBin, ["-"], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
@@ -256,6 +256,8 @@ function runPythonJson(script) {
         reject(new Error(`No se pudo leer la respuesta de la base: ${parseError.message}`));
       }
     });
+    child.stdin.on("error", () => {});
+    child.stdin.end(script);
   });
 }
 
@@ -2197,7 +2199,9 @@ def score_tokens(query, value):
         "A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "QUE", "QUIEN", "CUAL", "CUANTO", "CUANDO",
         "CANTIDAD", "IMPORTE", "SALDO", "PERTENECE", "TIENE", "DEBE", "DEBEN", "ADEUDA", "ADEUDAN",
         "DEUDA", "MOROSIDAD", "PENDIENTE", "PENDIENTES", "RECIBO", "RECIBOS", "PROPIETARIO", "PROPIEDAD",
-        "VIVIENDA", "GARAJE", "LOCAL", "ES", "EN", "POR", "PARA", "ACTUAL", "ACTUALMENTE", "HOY"
+        "DEUDOR", "DEUDORES", "MOROSO", "MOROSOS", "LISTA", "LISTADO", "RELACION", "DETALLE", "DESGLOSE",
+        "DAME", "MUESTRA", "SACA", "CON", "VIVIENDA", "GARAJE", "LOCAL", "ES", "EN", "POR", "PARA",
+        "ACTUAL", "ACTUALMENTE", "HOY"
     }
     q_tokens = [t for t in norm(query).split() if t and t not in stop]
     v_tokens = set(norm(value).split())
@@ -2252,6 +2256,8 @@ def find_owners(query):
 def extract_owner_query(q):
     text = str(q or "")
     patterns = [
+        r"(?:listado|lista|relacion|detalle|desglose)\\s+(?:de\\s+)?(?:los\\s+)?recibos?\\s+pendientes?\\s+de\\s+(.+)$",
+        r"(?:listado|lista|relacion|detalle|desglose)\\s+(?:de\\s+)?(?:la\\s+)?deuda\\s+de\\s+(.+?)(?:\\s+de\\s+20\\d{2})?$",
         r"(?:cuanto|cuando|que\\s+cantidad|que\\s+importe|importe|saldo)\\s+(?:dinero\\s+)?(?:debe|adeuda)\\s+(.+)$",
         r"(?:debe|adeuda)\\s+(.+)$",
         r"recibos?\\s+pendientes?\\s+de\\s+(.+)$",
@@ -2291,28 +2297,77 @@ def owner_for_property(prop_id):
         ORDER BY o.nombre
     """, (prop_id,))
 
-def debt_for_owner(owner_id):
-    total = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE id_propietario = ? AND COALESCE(deuda,0) > 0", (owner_id,))["total"]
+def debt_conditions(owner_id=None, year=None, property_id=None):
+    clauses = ["COALESCE(r.deuda,0) > 0"]
+    params = []
+    if owner_id:
+        clauses.append("r.id_propietario = ?")
+        params.append(owner_id)
+    if year:
+        clauses.append("COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) = ?")
+        params.append(year)
+    if property_id:
+        clauses.append("r.id_propiedad = ?")
+        params.append(property_id)
+    return " AND ".join(clauses), tuple(params)
+
+def debt_for_owner(owner_id, year=None, property_id=None):
+    where_sql, params = debt_conditions(owner_id, year, property_id)
+    total = first("SELECT COALESCE(SUM(r.deuda),0) AS total FROM cf_recibos r WHERE " + where_sql, params)["total"]
     by_year = rows("""
         SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
                COALESCE(SUM(deuda),0) AS deuda,
                COUNT(*) AS recibos
-        FROM cf_recibos
-        WHERE id_propietario = ? AND COALESCE(deuda,0) > 0
+        FROM cf_recibos r
+        WHERE """ + where_sql + """
         GROUP BY COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER))
         ORDER BY ejercicio
-    """, (owner_id,))
+    """, params)
     by_property = rows("""
         SELECT COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
                COALESCE(SUM(r.deuda),0) AS deuda,
                COUNT(*) AS recibos
         FROM cf_recibos r
         LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
-        WHERE r.id_propietario = ? AND COALESCE(r.deuda,0) > 0
+        WHERE """ + where_sql + """
         GROUP BY COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad')
         ORDER BY deuda DESC
-    """, (owner_id,))
-    return total, by_year, by_property
+    """, params)
+    receipts = rows("""
+        SELECT COALESCE(r.referencia, '') AS referencia,
+               COALESCE(r.fecha_emision, '') AS fecha_emision,
+               COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) AS ejercicio,
+               COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
+               COALESCE(r.tipo_recibo, '') AS tipo_recibo,
+               COALESCE(r.importe, 0) AS importe,
+               COALESCE(r.cobrado, 0) AS cobrado,
+               COALESCE(r.deuda, 0) AS deuda,
+               COALESCE(r.estado, '') AS estado
+        FROM cf_recibos r
+        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
+        WHERE """ + where_sql + """
+        ORDER BY r.fecha_emision, propiedad, r.referencia
+        LIMIT 2000
+    """, params)
+    return total, by_year, by_property, receipts
+
+def debtor_listing(year=None, minimum=0):
+    where_sql, params = debt_conditions(None, year, None)
+    listing = rows("""
+        SELECT COALESCE(o.nombre, r.propietario_texto, 'Sin propietario') AS propietario,
+               COALESCE(o.codigo_netfincas, '') AS codigo,
+               COUNT(DISTINCT COALESCE(CAST(r.id_propiedad AS TEXT), r.propiedad_texto, '')) AS propiedades,
+               COUNT(*) AS recibos,
+               COALESCE(SUM(r.deuda),0) AS deuda
+        FROM cf_recibos r
+        LEFT JOIN cf_propietarios o ON o.id_propietario = r.id_propietario
+        WHERE """ + where_sql + """
+        GROUP BY COALESCE(CAST(r.id_propietario AS TEXT), r.propietario_texto, 'Sin propietario'),
+                 COALESCE(o.nombre, r.propietario_texto, 'Sin propietario'),
+                 COALESCE(o.codigo_netfincas, '')
+        ORDER BY deuda DESC, propietario
+    """, params)
+    return [item for item in listing if float(item.get("deuda") or 0) >= float(minimum or 0)]
 
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
@@ -2322,7 +2377,8 @@ try:
     is_finance_question = any(token in q_norm for token in ["BALANCE", "FINANCIERO", "TESORERIA", "RESULTADO ECONOMICO"])
     is_budget_question = any(token in q_norm for token in ["PRESUPUEST", "PARTIDA", "DESVIACION"]) and not is_finance_question
     explicit_debt_verb = bool(re.match(r"^(?:CUANTO|CUANDO|QUE CANTIDAD|QUE IMPORTE|IMPORTE|SALDO)?\\s*(?:DEBE|ADEUDA)\\s+.+$", q_norm))
-    is_debt_question = any(token in q_norm for token in ["DEUDA", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb
+    is_list_request = any(token in q_norm for token in ["LISTA", "LISTADO", "RELACION", "DETALLE", "DESGLOSE"])
+    is_debt_question = any(token in q_norm for token in ["DEUDA", "DEUDOR", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb or (is_list_request and "DEBEN" in q_norm)
     is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
 
@@ -2430,8 +2486,20 @@ try:
 
     elif is_debt_question:
         years = re.findall(r"\\b(20\\d{2})\\b", question)
+        requested_year = int(years[0]) if years else None
+        minimum_debt = 0
+        minimum_match = re.search(r"(?:mayor|superior|mas)\\s+(?:de|a)?\\s*([\\d\\.]+(?:,\\d{1,2})?)", str(question or ""), re.I)
+        if minimum_match:
+            try:
+                minimum_debt = float(minimum_match.group(1).replace(".", "").replace(",", "."))
+            except ValueError:
+                minimum_debt = 0
+        global_list_pattern = bool(re.search(
+            r"(?:LISTA|LISTADO|RELACION|DETALLE|DESGLOSE).*(?:DEUDORES|MOROSOS|PROPIETARIOS (?:CON DEUDA|QUE DEBEN)|DEUDA POR PROPIETARIO|DEUDA DE TODOS|TODOS LOS QUE DEBEN)",
+            q_norm
+        )) or bool(re.match(r"^(?:DAME |MUESTRA |SACA )?(?:UN )?(?:LISTA|LISTADO|RELACION|DESGLOSE) DE (?:LA )?DEUDA(?: PENDIENTE)?(?: 20\\d{2})?$", q_norm))
         asks_global_year = bool(years) and not any(token in q_norm for token in ["TIENE DEUDA", "DEUDA DE", "MOROSIDAD DE", "PROPIETARIO"])
-        if asks_global_year:
+        if asks_global_year and not is_list_request:
             year = int(years[0])
             total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
             overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
@@ -2449,9 +2517,11 @@ try:
         owner_query = extract_owner_query(question)
         prop_query = extract_property_query(question)
         owners = []
+        debt_property_id = None
         if prop_query:
             props = find_properties(prop_query)
             if len(props) == 1:
+                debt_property_id = props[0]["id_propiedad"]
                 owners = owner_for_property(props[0]["id_propiedad"])
             elif len(props) > 1 and "PROPIETARIO" in q_norm:
                 answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
@@ -2459,6 +2529,35 @@ try:
                 raise SystemExit
         if not owners and owner_query and is_debt_question:
             owners = find_owners(owner_query)
+        if global_list_pattern and not owners:
+            listing = debtor_listing(requested_year, minimum_debt)
+            total_listed = sum(float(item.get("deuda") or 0) for item in listing)
+            period_text = f" del ejercicio {requested_year}" if requested_year else ""
+            minimum_text = f" con deuda igual o superior a {money(minimum_debt)}" if minimum_debt else ""
+            answer = f"He encontrado {len(listing)} propietarios{period_text}{minimum_text}. La deuda pendiente incluida en el listado asciende a {money(total_listed)}."
+            display = {
+                "title": "Listado de propietarios con deuda",
+                "subtitle": (f"Ejercicio {requested_year}" if requested_year else "Todos los ejercicios") + (f" | Minimo {money(minimum_debt)}" if minimum_debt else ""),
+                "cards": [
+                    {"label": "Propietarios", "value": str(len(listing))},
+                    {"label": "Deuda incluida", "value": money(total_listed)},
+                    {"label": "Recibos pendientes", "value": str(sum(int(item.get("recibos") or 0) for item in listing))},
+                ],
+                "tables": [{
+                    "title": "Relacion de deudores",
+                    "columns": ["Propietario", "Codigo", "Propiedades", "Recibos", "Deuda"],
+                    "rows": [{
+                        "Propietario": item["propietario"],
+                        "Codigo": item.get("codigo") or "",
+                        "Propiedades": str(item.get("propiedades") or 0),
+                        "Recibos": str(item.get("recibos") or 0),
+                        "Deuda": money(item.get("deuda")),
+                    } for item in listing],
+                }],
+                "note": "Listado ordenado de mayor a menor deuda pendiente segun los recibos actualmente importados.",
+            }
+            print(json.dumps(response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display), ensure_ascii=False))
+            raise SystemExit
         if years and not owners:
             year = int(years[0])
             total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
@@ -2475,9 +2574,11 @@ try:
             print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display), ensure_ascii=False))
         elif len(owners) == 1:
             owner = owners[0]
-            total, by_year, by_property = debt_for_owner(owner["id_propietario"])
+            total, by_year, by_property, receipts = debt_for_owner(owner["id_propietario"], requested_year, debt_property_id)
+            pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
             if total <= 0:
-                answer = f"{owner['nombre']} no tiene deuda pendiente registrada actualmente."
+                filter_text = f" en {requested_year}" if requested_year else ""
+                answer = f"{owner['nombre']} no tiene deuda pendiente registrada{filter_text}."
                 display = {
                     "title": owner["nombre"],
                     "subtitle": "Consulta de deuda",
@@ -2486,29 +2587,53 @@ try:
             else:
                 year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
                 prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
-                answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)}.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
+                answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
+                debt_tables = [
+                    {
+                        "title": "Desglose por ejercicio",
+                        "columns": ["Ejercicio", "Deuda", "Recibos"],
+                        "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
+                    },
+                    {
+                        "title": "Desglose por propiedad",
+                        "columns": ["Propiedad", "Deuda", "Recibos"],
+                        "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
+                    },
+                ]
+                if is_list_request:
+                    debt_tables.append({
+                        "title": "Relacion de recibos pendientes",
+                        "columns": ["Referencia", "Fecha", "Ejercicio", "Propiedad", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
+                        "rows": [{
+                            "Referencia": r.get("referencia") or "",
+                            "Fecha": r.get("fecha_emision") or "",
+                            "Ejercicio": str(r.get("ejercicio") or ""),
+                            "Propiedad": r.get("propiedad") or "",
+                            "Tipo": r.get("tipo_recibo") or "",
+                            "Importe": money(r.get("importe")),
+                            "Cobrado": money(r.get("cobrado")),
+                            "Pendiente": money(r.get("deuda")),
+                            "Estado": r.get("estado") or "",
+                        } for r in receipts],
+                    })
+                subtitle_parts = ["Listado detallado" if is_list_request else "Consulta de deuda"]
+                if requested_year:
+                    subtitle_parts.append(f"Ejercicio {requested_year}")
+                if debt_property_id and by_property:
+                    subtitle_parts.append(by_property[0]["propiedad"])
                 display = {
                     "title": owner["nombre"],
-                    "subtitle": "Consulta de deuda",
+                    "subtitle": " | ".join(subtitle_parts),
                     "cards": [
                         {"label": "Deuda total", "value": money(total)},
+                        {"label": "Recibos pendientes", "value": str(pending_receipts)},
                         {"label": "Ejercicios con deuda", "value": str(len(by_year))},
                         {"label": "Propiedades afectadas", "value": str(len(by_property))},
                     ],
-                    "tables": [
-                        {
-                            "title": "Desglose por ejercicio",
-                            "columns": ["Ejercicio", "Deuda", "Recibos"],
-                            "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
-                        },
-                        {
-                            "title": "Desglose por propiedad",
-                            "columns": ["Propiedad", "Deuda", "Recibos"],
-                            "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
-                        },
-                    ],
+                    "tables": debt_tables,
+                    "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Datos obtenidos de los recibos actualmente importados."),
                 }
-            print(json.dumps(response(answer, 0.86, facts={"id_propietario": owner["id_propietario"], "deuda": total}, display=display), ensure_ascii=False))
+            print(json.dumps(response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display), ensure_ascii=False))
         elif len(owners) > 1:
             answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
             print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"]), ensure_ascii=False))
@@ -3579,6 +3704,8 @@ function homePage() {
     .answerTableWrap summary { cursor:pointer; display:flex; justify-content:space-between; gap:8px; align-items:center; font-weight:800; }
     .answerTableWrap[open] summary { margin-bottom:9px; }
     .answerTableWrap summary h3 { margin:0; }
+    .answerTableTools { display:flex; justify-content:space-between; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+    .answerTableTools button { padding:7px 10px; min-height:34px; }
     .answerTable { width:100%; border-collapse:collapse; font-size:13px; min-width:560px; }
     .answerTable th, .answerTable td { border-bottom:1px solid #e2e8f0; padding:8px; text-align:left; vertical-align:top; }
     .answerTable th { background:#f8fafc; color:#334155; font-size:12px; }
@@ -6719,16 +6846,18 @@ function homePage() {
             (card.muted ? '<small class="muted">' + html(card.muted) + '</small>' : '') + '</div>'
           ).join("") + '</div>'
         : "";
-      const tables = (display.tables || []).map(table => {
+      const tables = (display.tables || []).map((table, tableIndex) => {
         const columns = table.columns || [];
         const rows = table.rows || [];
+        const visibleRows = rows.slice(0, 250);
         const tableHtml = '<table class="answerTable"><thead><tr>' + columns.map(col => '<th>' + html(col) + '</th>').join("") + '</tr></thead>' +
-          '<tbody>' + rows.map(row => '<tr>' + columns.map(col => '<td data-label="' + html(col) + '">' + html(row[col] || "") + '</td>').join("") + '</tr>').join("") + '</tbody></table>' +
+          '<tbody>' + visibleRows.map(row => '<tr>' + columns.map(col => '<td data-label="' + html(col) + '">' + html(row[col] || "") + '</td>').join("") + '</tr>').join("") + '</tbody></table>' +
         '';
+        const tools = '<div class="answerTableTools"><span class="muted">' + html(rows.length > visibleRows.length ? "Mostrando 250 de " + rows.length + " filas" : rows.length + " filas") + '</span><button class="ghost" type="button" data-answer-export="' + tableIndex + '">Descargar CSV</button></div>';
         if (rows.length > 12) {
-          return '<details class="answerTableWrap"><summary><h3>' + html(table.title || "Detalle") + '</h3><span class="pill">' + html(rows.length) + ' filas</span></summary>' + tableHtml + '</details>';
+          return '<details class="answerTableWrap"><summary><h3>' + html(table.title || "Detalle") + '</h3><span class="pill">' + html(rows.length) + ' filas</span></summary>' + tools + tableHtml + '</details>';
         }
-        return '<div class="answerTableWrap"><h3>' + html(table.title || "Detalle") + '</h3>' + tableHtml + '</div>';
+        return '<div class="answerTableWrap"><h3>' + html(table.title || "Detalle") + '</h3>' + tools + tableHtml + '</div>';
       }).join("");
       return '<div class="answerView">' +
         ((display.title || display.subtitle) ? '<div class="answerHero"><h3>' + html(display.title || "Respuesta") + '</h3>' + (display.subtitle ? '<p>' + html(display.subtitle) + '</p>' : '') + '</div>' : '') +
@@ -6736,6 +6865,36 @@ function homePage() {
         tables +
         (display.note ? '<div class="answerNote">' + html(display.note) + '</div>' : '') +
       '</div>';
+    }
+
+    function downloadAnswerTable(display, tableIndex) {
+      const table = (display?.tables || [])[Number(tableIndex)];
+      if (!table) return;
+      const columns = table.columns || [];
+      const quote = value => {
+        let text = String(value ?? "");
+        if (/^[=+\-@]/.test(text)) text = "'" + text;
+        return '"' + text.replaceAll('"', '""') + '"';
+      };
+      const lines = [
+        columns.map(quote).join(";"),
+        ...(table.rows || []).map(row => columns.map(column => quote(row[column])).join(";")),
+      ];
+      const blob = new Blob([String.fromCharCode(65279) + lines.join(String.fromCharCode(13, 10))], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const baseName = safe(table.title || "consulta").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase() || "consulta";
+      link.href = url;
+      link.download = baseName + ".csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function bindAnswerTableExports(display, container) {
+      if (!container) return;
+      container.querySelectorAll("[data-answer-export]").forEach(button => button.addEventListener("click", () => downloadAnswerTable(display, button.dataset.answerExport)));
     }
 
     function renderAiProposal(proposal, resultId = "aiOperationResult") {
@@ -6781,6 +6940,7 @@ function homePage() {
           candidatesHtml +
           (proposal.answer ? '<div class="toolbar"><button class="ghost" id="' + copyButtonId + '">Copiar respuesta</button><span class="muted" id="' + copyMessageId + '"></span></div>' : '') +
         '</div>';
+        bindAnswerTableExports(proposal.display || {}, resultContainer);
         if ($(copyButtonId)) {
           $(copyButtonId).addEventListener("click", async () => {
             try {
