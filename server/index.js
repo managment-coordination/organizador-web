@@ -345,6 +345,10 @@ function securityOnlyForbidden(session) {
   return session?.rol === "Seguridad";
 }
 
+function reportsForbidden(session) {
+  return session?.rol === "Presidente";
+}
+
 function redactSecurityText(value) {
   return String(value || "")
     .replace(/\b(?:DNI|NIE)\s*[:.]?\s*[A-Z0-9 -]{6,16}\b/gi, "[identificacion protegida]")
@@ -392,6 +396,7 @@ function resolveAttachmentPath(storedPath) {
 }
 
 async function generateEntityReport(session, type, id, pc) {
+  if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
   const detail = await queryEntityDetail(session, type, id);
   if (detail?.error || !detail?.item) throw new Error(detail?.error || "Elemento no encontrado.");
   const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
@@ -454,11 +459,10 @@ def scope(alias):
     if not allowed_ids: return " AND 1=0",[]
     return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in allowed_ids)})",allowed_ids
 rf,rp=scope("i")
-president_report=" AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role=="Presidente" else ""
-reports=rows("""SELECT i.id_informe,i.fecha_generacion,i.tipo_informe,i.periodo_desde,i.periodo_hasta,
+reports=[] if role=="Presidente" else rows("""SELECT i.id_informe,i.fecha_generacion,i.tipo_informe,i.periodo_desde,i.periodo_hasta,
     i.id_proyecto,i.archivo_word,i.observaciones,i.usuario,i.id_comunidad,c.nombre AS comunidad,p.nombre AS proyecto
     FROM informes i LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
-    WHERE COALESCE(i.archivo_word,'')<>''"""+president_report+rf+" ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 350",tuple(rp))
+    WHERE COALESCE(i.archivo_word,'')<>''"""+rf+" ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 350",tuple(rp))
 for report in reports:
     report["nombre_archivo"]=str(report.get("archivo_word") or "").replace("\\\\","/").split("/")[-1]
     report["entity_type"]="project"; report["entity_id"]=report.get("id_proyecto")
@@ -486,7 +490,7 @@ async function generateCollectionReport(session, selections, title, pc) {
   if (selections.length > 40) throw new Error("El informe conjunto admite un maximo de 40 elementos.");
   const normalized = selections.map(row => ({ type: String(row.type || ""), id: Number(row.id || 0) }));
   if (normalized.some(row => !["task", "project"].includes(row.type) || !row.id)) throw new Error("La seleccion contiene elementos no validos.");
-  if (session?.rol === "Presidente" && normalized.some(row => row.type === "task")) throw new Error("El Presidente no puede generar informes generales de tareas.");
+  if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
   const details = await Promise.all(normalized.map(row => queryEntityDetail(session, row.type, row.id)));
   if (details.some(detail => !detail?.item || detail.error)) throw new Error("No se pudo acceder a uno de los elementos seleccionados.");
   const communityIds = [...new Set(details.map(detail => Number(detail.item.id_comunidad || 0)).filter(Boolean))];
@@ -539,9 +543,7 @@ print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 `;
   return runPythonJson(script).then((row) => {
     if (!row?.id_informe || !allowedCommunity(session, row.id_comunidad)) throw new Error("Informe no encontrado o sin permiso.");
-    if (session?.rol === "Presidente" && String(row.tipo_informe || "").toLowerCase().includes("tarea")) {
-      throw new Error("El perfil Presidente no tiene acceso general a informes de tareas.");
-    }
+    if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
     const filePath = path.resolve(String(row.archivo_word || ""));
     if (!fs.existsSync(filePath) || !pathInside(filePath, reportsDir)) throw new Error("El archivo del informe no esta disponible.");
     return { ...row, filePath, filename: path.basename(filePath) };
@@ -1071,8 +1073,7 @@ attachments = rows("""
 """ + attachment_extra + attachment_filter + " ORDER BY a.fecha_adjuntado DESC,a.id_anexo DESC LIMIT 160", tuple(attachment_params))
 
 report_filter, report_params = community_filter("i")
-report_extra = " AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role == "Presidente" else ""
-reports = rows("""
+reports = [] if role == "Presidente" else rows("""
     SELECT i.id_informe AS id, 'report' AS document_type, i.id_comunidad,
            COALESCE(NULLIF(i.tipo_informe,''),'Informe') AS nombre, i.archivo_word AS ruta,
            i.fecha_generacion AS fecha, NULL AS id_tarea, i.id_proyecto,
@@ -1082,7 +1083,7 @@ reports = rows("""
     LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad
     LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
     WHERE COALESCE(i.archivo_word,'')<>''
-""" + report_extra + report_filter + " ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 100", tuple(report_params))
+""" + report_filter + " ORDER BY i.fecha_generacion DESC,i.id_informe DESC LIMIT 100", tuple(report_params))
 
 for report in reports:
     stored_name = str(report.get("ruta") or "").replace("\\\\", "/").split("/")[-1]
@@ -1188,14 +1189,13 @@ if include("attachment", "document"):
         r["tipo"]="Anexo"; r["result_type"]="attachment"; results.append(r)
 
 report_scope, report_params = scope("i")
-report_extra = " AND COALESCE(i.tipo_informe,'') NOT LIKE '%Tarea%'" if role == "Presidente" else ""
-if include("report", "document"):
+if role != "Presidente" and include("report", "document"):
     for r in rows("""SELECT i.id_informe AS id,i.id_comunidad,COALESCE(NULLIF(i.tipo_informe,''),'Informe') AS titulo,
                     COALESCE(p.nombre,'Informe generado') AS detalle,c.nombre AS comunidad,'project' AS entity_type,
                     i.id_proyecto AS entity_id,i.fecha_generacion AS fecha,i.archivo_word,i.observaciones
                     FROM informes i LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad
                     LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
-                    WHERE (i.tipo_informe LIKE ? OR i.archivo_word LIKE ? OR p.nombre LIKE ?)""" + report_extra + report_scope + " ORDER BY i.fecha_generacion DESC LIMIT 60", tuple([like,like,like] + report_params)):
+                    WHERE (i.tipo_informe LIKE ? OR i.archivo_word LIKE ? OR p.nombre LIKE ?)""" + report_scope + " ORDER BY i.fecha_generacion DESC LIMIT 60", tuple([like,like,like] + report_params)):
         stored_name = str(r.get("archivo_word") or "").replace("\\\\", "/").split("/")[-1]
         if stored_name: r["titulo"] = stored_name
         try: metadata = json.loads(r.get("observaciones") or "{}")
@@ -4558,7 +4558,7 @@ function homePage() {
             </div>
             <div class="attachmentGrid" id="attachmentsList"></div>
           </section>
-          <section>
+          <section id="entityReportSection">
             <h2>Informe Word</h2>
             <p class="muted">Incluye resumen ejecutivo, situacion actual, actuaciones cronologicas, proximos pasos, conclusion y relacion de anexos.</p>
             <div class="toolbar">
@@ -4751,7 +4751,7 @@ function homePage() {
         '<div class="cardActions">' +
           '<button class="ghost" data-action="detail" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Abrir ficha</button>' +
           '<button class="green" data-action="record" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Seguimiento</button>' +
-          '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' +
+          ((state.usuario || {}).rol !== "Presidente" ? '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' : '') +
         '</div>' +
         '</article>';
     }
@@ -5076,6 +5076,9 @@ function homePage() {
         detailValue(type === "task" ? "Proyecto" : "Inicio", type === "task" ? item.proyecto : item.fecha_inicio);
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
       const writable = canWrite();
+      const reportsAllowed = (state.usuario || {}).rol !== "Presidente";
+      $("generateReportButton").classList.toggle("hidden", !reportsAllowed);
+      $("entityReportSection").classList.toggle("hidden", !reportsAllowed);
       $("toggleEditEntity").classList.toggle("hidden", !writable);
       $("archiveEntityButton").classList.toggle("hidden", !writable);
       $("attachmentUploadBox").classList.toggle("hidden", !writable);
@@ -5460,7 +5463,7 @@ function homePage() {
         '<div class="nextStep"><div class="line"><strong>Próximo paso:</strong> ' + html(row.detalle || "Sin definir") + '</div>' + (row.ultimo_comentario ? '<div class="line"><strong>Último comentario:</strong> ' + html(row.ultimo_comentario) + '</div>' : '') + '</div>' +
         '<div class="cardActions mapCardActions"><button class="ghost" data-daily-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button>' +
         (canWrite() ? '<button class="green" data-daily-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Seguimiento</button>' : '') +
-        '<button data-daily-action="report" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Informe</button></div>' +
+        ((state.usuario || {}).rol !== "Presidente" ? '<button data-daily-action="report" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Informe</button>' : '') + '</div>' +
       '</article>';
     }
 
@@ -7083,6 +7086,7 @@ function homePage() {
         $("assemblyTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("reportsTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
         $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
         $("securityTab").classList.toggle("hidden", !securityAccess.can_manage);
@@ -7116,6 +7120,7 @@ function homePage() {
     }
 
     function switchView(view) {
+      if (view === "reports" && (state.usuario || {}).rol === "Presidente") view = "work";
       currentView = view;
       closeMobileDrawer();
       $("listFilters").classList.remove("mobile-open");
@@ -7639,11 +7644,13 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/api/reports-center") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
     return sendJson(res, 200, await queryReportsCenter(session));
   }
   if (req.method === "POST" && url.pathname === "/api/report/collection") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
     const body = await readBody(req);
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await generateCollectionReport(session, body.selections || [], body.title || "Informe conjunto", String(pc)));
@@ -7756,6 +7763,7 @@ async function handle(req, res) {
   if (req.method === "POST" && url.pathname === "/api/report/generate") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
     const body = await readBody(req);
     const type = String(body.type || "").trim();
     const id = Number(body.id || 0);
@@ -7766,6 +7774,7 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/api/report/download") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
     const id = Number(url.searchParams.get("id") || 0);
     if (!id) return sendJson(res, 400, { ok: false, error: "Informe no valido." });
     const report = await queryReportFile(session, id);
