@@ -3705,6 +3705,235 @@ async function analyzeGuidedAutomationBatch(session, text) {
   };
 }
 
+const AGENT_TOOL_CATALOG = [
+  {
+    id: "ai.query.general",
+    module: "centro_ia",
+    label: "Consulta general de datos internos",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["consulta", "dime", "busca", "quien", "cual", "cuanto", "listado", "lista", "muestra"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "owners.lookup",
+    module: "propietarios",
+    label: "Buscar propietario, propiedad, email o contacto",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["propietario", "titular", "propiedad", "vivienda", "villa", "cb", "email", "correo", "telefono"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "accounting.debt.lookup",
+    module: "contabilidad",
+    label: "Consultar deuda, morosidad y recibos pendientes",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["deuda", "debe", "adeuda", "morosidad", "recibo", "pendiente", "cobro", "deudor", "deudores"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "accounting.balance.lookup",
+    module: "contabilidad",
+    label: "Consultar balance, presupuesto y partidas",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["balance", "presupuesto", "partida", "gasto", "ingreso", "disponible", "mantenimiento general"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "work.project.task.query",
+    module: "trabajo",
+    label: "Consultar tareas, proyectos, estados y responsables",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["tarea", "proyecto", "estado", "responsable", "proximo paso", "seguimiento", "presupuestos"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "work.single.proposal",
+    module: "trabajo",
+    label: "Preparar seguimiento o alta de tarea/proyecto",
+    status: "active",
+    endpoint: "/api/ai/operate",
+    intents: ["accion"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["actualiza", "actualizar", "seguimiento", "crea", "crear", "incidencia", "registra", "anade", "añade"],
+    writesData: false,
+    requiresConfirmation: true,
+  },
+  {
+    id: "work.batch.proposal",
+    module: "trabajo",
+    label: "Preparar lote de seguimientos o altas",
+    status: "active",
+    endpoint: "/api/ai/batch-operate",
+    intents: ["lote"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["lote", "---", "varios asuntos", "varias tareas", "varios proyectos"],
+    writesData: false,
+    requiresConfirmation: true,
+  },
+  {
+    id: "assemblies.lookup",
+    module: "asambleas",
+    label: "Consultar asambleas, puntos y votaciones",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["asamblea", "junta", "votacion", "votos", "coeficiente", "punto", "acta"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "security.lookup",
+    module: "seguridad",
+    label: "Consultar partes e incidencias de seguridad",
+    status: "active",
+    endpoint: "/api/ai/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["seguridad", "parte", "incidencia", "vigilante", "turno", "alarma"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "documents.lookup",
+    module: "documentos",
+    label: "Consultar documentos y anexos registrados",
+    status: "planned",
+    endpoint: "",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["documento", "anexo", "archivo", "contrato", "pdf", "adjunto"],
+    writesData: false,
+    requiresConfirmation: false,
+    limitation: "Pendiente de buscador documental con lectura profunda de adjuntos.",
+  },
+  {
+    id: "email.inbox.proposals",
+    module: "email",
+    label: "Revisar bandeja y proponer acciones",
+    status: "planned",
+    endpoint: "",
+    intents: ["consulta", "accion"],
+    roles: ["Superusuario", "Administrador"],
+    keywords: ["email", "correo", "outlook", "bandeja", "responder", "enviar", "recordatorio"],
+    writesData: false,
+    requiresConfirmation: true,
+    limitation: "Pendiente de conector Outlook y confirmacion de borradores antes de enviar.",
+  },
+  {
+    id: "accounting.bank.reconcile",
+    module: "contabilidad",
+    label: "Conciliar extractos bancarios",
+    status: "planned",
+    endpoint: "",
+    intents: ["accion"],
+    roles: ["Superusuario", "Administrador"],
+    keywords: ["extracto", "banco", "conciliar", "movimiento", "a revisar"],
+    writesData: false,
+    requiresConfirmation: true,
+    limitation: "Pendiente de flujo web completo de importacion bancaria revisable.",
+  },
+  {
+    id: "owners.ownership.change",
+    module: "propietarios",
+    label: "Preparar cambio de titularidad",
+    status: "planned",
+    endpoint: "",
+    intents: ["accion"],
+    roles: ["Superusuario", "Administrador"],
+    keywords: ["cambio de titularidad", "escritura", "nuevo propietario", "traspasar deuda"],
+    writesData: false,
+    requiresConfirmation: true,
+    limitation: "Pendiente de flujo legal guiado con deuda, documentos y auditoria.",
+  },
+];
+
+function agentToolCanBeShown(session, tool) {
+  return (tool.roles || []).includes(session?.rol || "");
+}
+
+function getAgentToolCatalog(session) {
+  return AGENT_TOOL_CATALOG
+    .filter((tool) => agentToolCanBeShown(session, tool))
+    .map((tool) => ({
+      id: tool.id,
+      module: tool.module,
+      label: tool.label,
+      status: tool.status,
+      endpoint: tool.endpoint,
+      intents: tool.intents,
+      writes_data: tool.writesData,
+      requires_confirmation: tool.requiresConfirmation,
+      limitation: tool.limitation || "",
+    }));
+}
+
+function scoreAgentTool(text, intent, tool) {
+  if (!(tool.intents || []).includes(intent)) return -1;
+  const normalized = normalizeText(text);
+  let score = 0;
+  for (const keyword of tool.keywords || []) {
+    const token = normalizeText(keyword);
+    if (token && normalized.includes(token)) score += Math.max(1, Math.min(5, token.length / 4));
+  }
+  if (tool.status === "active") score += 0.4;
+  if (tool.id === "ai.query.general" && intent === "consulta") score += 0.2;
+  if (tool.id === "work.single.proposal" && intent === "accion") score += 0.2;
+  if (tool.id === "work.batch.proposal" && intent === "lote") score += 2.5;
+  return score;
+}
+
+function selectAgentTool(session, text, intent) {
+  const tools = AGENT_TOOL_CATALOG
+    .filter((tool) => agentToolCanBeShown(session, tool))
+    .map((tool) => ({ ...tool, score: scoreAgentTool(text, intent, tool) }))
+    .filter((tool) => tool.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  const best = tools[0] || null;
+  if (!best) return null;
+  const selected = {
+    id: best.id,
+    module: best.module,
+    label: best.label,
+    status: best.status,
+    endpoint: best.endpoint,
+    writes_data: best.writesData,
+    requires_confirmation: best.requiresConfirmation,
+    limitation: best.limitation || "",
+    score: Number(best.score.toFixed(2)),
+  };
+  if (selected.status === "planned" && tools.find((tool) => tool.status === "active")) {
+    const activeFallback = tools.find((tool) => tool.status === "active");
+    selected.fallback = {
+      id: activeFallback.id,
+      module: activeFallback.module,
+      label: activeFallback.label,
+      endpoint: activeFallback.endpoint,
+    };
+  }
+  return selected;
+}
+
 function detectAgentIntent(text) {
   const cleanText = String(text || "").trim();
   if (!cleanText) {
@@ -3766,6 +3995,7 @@ function detectAgentIntent(text) {
 async function answerAgentMessage(session, text) {
   const cleanText = String(text || "").trim();
   const decision = detectAgentIntent(cleanText);
+  const selectedTool = selectAgentTool(session, cleanText, decision.intent);
   const base = {
     ok: true,
     agent_contract: "agent_router_v1",
@@ -3774,16 +4004,31 @@ async function answerAgentMessage(session, text) {
     reason: decision.reason,
     requires_confirmation: ["accion", "lote"].includes(decision.intent),
     writes_data: false,
-    tool: "",
+    tool: selectedTool?.endpoint || "",
+    selected_tool: selectedTool,
+    available_tools: getAgentToolCatalog(session),
     questions: decision.questions || [],
     message: "",
     result: null,
   };
+  if (selectedTool?.status === "planned" && !selectedTool.endpoint) {
+    return {
+      ...base,
+      intent: "aclaracion",
+      requires_confirmation: false,
+      message: "He identificado la herramienta adecuada, pero todavia esta planificada y no se puede ejecutar con seguridad.",
+      result: {
+        action: "revisar_manual",
+        answer: `${selectedTool.label}. ${selectedTool.limitation || "Pendiente de implementacion segura."}`,
+        questions: ["Quieres que lo dejemos anotado como siguiente herramienta interna del agente?"],
+      },
+    };
+  }
   if (decision.intent === "consulta") {
     const result = await answerAiQuery(session, cleanText);
     return {
       ...base,
-      tool: "/api/ai/query",
+      tool: selectedTool?.endpoint || "/api/ai/query",
       message: "He tratado el mensaje como consulta. La respuesta queda guardada en el historial de consultas IA.",
       result,
     };
@@ -3792,7 +4037,7 @@ async function answerAgentMessage(session, text) {
     const result = await analyzeOperationalWithAi(session, cleanText);
     return {
       ...base,
-      tool: "/api/ai/operate",
+      tool: selectedTool?.endpoint || "/api/ai/operate",
       message: result.queryDetected
         ? "El agente ha detectado que parece una consulta. No se ha guardado nada."
         : "He preparado una propuesta editable. Revisa y confirma antes de guardar.",
@@ -3803,7 +4048,7 @@ async function answerAgentMessage(session, text) {
     const result = await analyzeGuidedAutomationBatch(session, cleanText);
     return {
       ...base,
-      tool: "/api/ai/batch-operate",
+      tool: selectedTool?.endpoint || "/api/ai/batch-operate",
       message: "He preparado un lote revisable. Nada se guarda hasta que confirmes las tarjetas seleccionadas.",
       result,
     };
@@ -4698,6 +4943,11 @@ function homePage() {
     .agentDecisionHead { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
     .agentDecisionHead h3 { margin:0; font-size:18px; }
     .agentDecision p { margin:0; color:var(--muted); }
+    .agentToolsList { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px; }
+    .agentToolCard { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; display:grid; gap:5px; }
+    .agentToolCard.planned { background:#fff7ed; border-color:#fed7aa; }
+    .agentToolCard strong { overflow-wrap:anywhere; }
+    .agentToolMeta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
     .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
     .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
     .aiHistoryHead h2 { margin:0; font-size:17px; }
@@ -5737,6 +5987,8 @@ function homePage() {
     let aiRules = [];
     let aiRulesLoaded = false;
     let aiBatch = null;
+    let agentTools = [];
+    let agentToolsLoaded = false;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -7876,6 +8128,7 @@ function homePage() {
             '<span class="muted" id="agentMessage"></span>' +
           '</div>' +
           '<div id="agentResult"></div>' +
+          '<details class="detailBox" open><summary><strong>Herramientas internas</strong></summary><div id="agentToolsList" class="agentToolsList"><div class="aiHistoryEmpty">Cargando herramientas...</div></div></details>' +
         '</section>' +
         '<div class="aiQueryLayout">' +
           '<section class="aiBox aiQueryBox">' +
@@ -7968,6 +8221,7 @@ function homePage() {
       });
       loadAiHistory();
       loadAiRules();
+      loadAgentTools();
     }
 
     function aiHistoryDate(value) {
@@ -8101,6 +8355,65 @@ function homePage() {
       }[intent] || "Agente";
     }
 
+    function renderAgentTools() {
+      if (!$("agentToolsList")) return;
+      if (!agentTools.length) {
+        $("agentToolsList").innerHTML = '<div class="aiHistoryEmpty">No hay herramientas disponibles para este perfil.</div>';
+        return;
+      }
+      const moduleLabels = {
+        centro_ia: "Centro IA",
+        propietarios: "Propietarios",
+        contabilidad: "Contabilidad",
+        trabajo: "Trabajo",
+        asambleas: "Asambleas",
+        seguridad: "Seguridad",
+        documentos: "Documentos",
+        email: "Email",
+      };
+      $("agentToolsList").innerHTML = agentTools.map(tool =>
+        '<article class="agentToolCard ' + html(tool.status || "") + '">' +
+          '<strong>' + html(tool.label || tool.id) + '</strong>' +
+          '<div class="agentToolMeta">' +
+            '<span class="pill">' + html(moduleLabels[tool.module] || tool.module || "Modulo") + '</span>' +
+            '<span class="pill">' + html(tool.status === "active" ? "Activa" : "Planificada") + '</span>' +
+            (tool.requires_confirmation ? '<span class="pill">Confirmacion</span>' : '<span class="pill">Solo lectura</span>') +
+          '</div>' +
+          (tool.limitation ? '<div class="line muted">' + html(tool.limitation) + '</div>' : '') +
+        '</article>'
+      ).join("");
+    }
+
+    async function loadAgentTools(force = false) {
+      if (agentToolsLoaded && !force) {
+        renderAgentTools();
+        return;
+      }
+      if ($("agentToolsList")) $("agentToolsList").innerHTML = '<div class="aiHistoryEmpty">Cargando herramientas...</div>';
+      try {
+        const data = await api("/api/agent/tools");
+        agentTools = data.tools || [];
+        agentToolsLoaded = true;
+        renderAgentTools();
+      } catch (error) {
+        if ($("agentToolsList")) $("agentToolsList").innerHTML = '<div class="aiHistoryEmpty dangerText">' + html(error.message) + '</div>';
+      }
+    }
+
+    function renderSelectedAgentTool(tool) {
+      if (!tool) return "";
+      return '<div class="detailBox"><strong>Herramienta elegida</strong>' +
+        '<div>' + html(tool.label || tool.id) + '</div>' +
+        '<div class="agentToolMeta">' +
+          '<span class="pill">' + html(tool.module || "modulo") + '</span>' +
+          '<span class="pill">' + html(tool.status === "active" ? "Activa" : "Planificada") + '</span>' +
+          (tool.requires_confirmation ? '<span class="pill">Requiere confirmacion</span>' : '<span class="pill">Solo lectura</span>') +
+        '</div>' +
+        (tool.limitation ? '<div class="line muted">' + html(tool.limitation) + '</div>' : '') +
+        (tool.endpoint ? '<div class="line muted">Ruta interna: ' + html(tool.endpoint) + '</div>' : '') +
+      '</div>';
+    }
+
     function renderAgentDecision(response) {
       const container = $("agentResult");
       if (!container) return;
@@ -8114,6 +8427,7 @@ function homePage() {
         '<div class="agentDecisionHead"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><span class="confidence">Confianza: ' + html(confidence) + '%</span></div>' +
         '<p>' + html(response.message || response.reason || "") + '</p>' +
         (response.reason ? '<div class="line muted">' + html(response.reason) + '</div>' : '') +
+        renderSelectedAgentTool(response.selected_tool) +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
@@ -8142,6 +8456,11 @@ function homePage() {
         if (!options.responsables.length) await loadOptions();
         const response = await api("/api/agent/message", { method: "POST", body: JSON.stringify({ text }) });
         $("agentMessage").textContent = response.message || "Respuesta preparada.";
+        if (Array.isArray(response.available_tools)) {
+          agentTools = response.available_tools;
+          agentToolsLoaded = true;
+          renderAgentTools();
+        }
         if (response.intent === "accion") {
           aiProposal = response.result;
           $("aiText").value = text;
@@ -9516,6 +9835,12 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await answerAgentMessage(session, body.text || ""));
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/tools") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar herramientas del agente." });
+    return sendJson(res, 200, { ok: true, tools: getAgentToolCatalog(session) });
   }
   if (req.method === "POST" && url.pathname === "/api/ai/query") {
     const session = readSession(req);

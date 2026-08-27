@@ -28,9 +28,9 @@ requireIncludes("Agente IA", "falta caja visible de Agente IA");
 requireIncludes("agentSend", "falta boton de envio al agente");
 requireIncludes("renderAgentDecision", "falta render de decision del agente");
 requireIncludes("askAgent", "falta llamada de interfaz al agente");
-requireIncludes("tool: \"/api/ai/query\"", "el agente no declara ruta de consulta");
-requireIncludes("tool: \"/api/ai/operate\"", "el agente no declara ruta de accion");
-requireIncludes("tool: \"/api/ai/batch-operate\"", "el agente no declara ruta de lote");
+requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/query\"", "el agente no declara ruta de consulta");
+requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/operate\"", "el agente no declara ruta de accion");
+requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/batch-operate\"", "el agente no declara ruta de lote");
 requireIncludes("requires_confirmation: [\"accion\", \"lote\"].includes(decision.intent)", "falta confirmacion para acciones/lotes");
 
 const agentRoute = routeBlock("/api/agent/message", "/api/ai/query");
