@@ -25,8 +25,8 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 1 - Agente de consulta fiable |
-| Estado tecnico | 70% |
-| Estado funcional | 60% |
+| Estado tecnico | 78% |
+| Estado funcional | 68% |
 | Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
 | Accion permitida ahora | Separar consultas por dominio, ampliar fuentes internas y probar preguntas reales |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
@@ -36,7 +36,7 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 Proxima accion:
 
 1. Extraer cada dominio de consulta a funciones internas claras.
-2. Validar permisos por comunidad con usuarios no superusuario.
+2. Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
 3. Revisar codificacion de datos importados que aparecen corruptos en algunas respuestas.
 4. Mantener las acciones automaticas fuera de alcance hasta Fase 2.
 
@@ -653,10 +653,11 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 50% tecnico / 40% funcional | Enrutador `query_domain`, dominio visible en respuesta, smoke test reutilizable y pruebas reales de email, deuda por propietario, deuda por ejercicio y proyecto | Extraer cada dominio a funcion/modulo propio e integrar asambleas/seguridad |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 60% tecnico / 50% funcional | Consultas IA de asambleas y seguridad integradas con dominio, fuentes, permisos y pruebas de punto/asamblea/incidencias | Modularizar consultas y crear pruebas con aserciones |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 70% tecnico / 60% funcional | `scripts/assert-ai-query.mjs` valida 10 consultas: propietario/email, propiedad exacta, deuda, listado, presupuesto, balance, trabajo, asambleas y seguridad; incluye permiso negativo de Seguridad | Modularizar consultas y probar permisos por comunidad |
+| 2026-08-27 | Fase 1 - Agente de consulta fiable | 78% tecnico / 68% funcional | Pruebas de comunidad anadidas: usuario limitado no ve proyecto/asamblea fuera de su comunidad. Se corrige alias SQL en consulta de trabajo detectado por la prueba | Modularizar consultas y revisar codificacion historica |
 
 ## Ultima actualizacion
 
-- Fecha: 2026-08-26.
+- Fecha: 2026-08-27.
 - Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 70% tecnico, 60% funcional.
-- Pendiente inmediato: modularizar consultas, validar permisos por comunidad y revisar codificacion historica de datos importados.
+- Avance del nucleo: 78% tecnico, 68% funcional.
+- Pendiente inmediato: modularizar consultas y revisar codificacion historica de datos importados.

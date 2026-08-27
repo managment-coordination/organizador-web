@@ -3047,18 +3047,18 @@ try:
         project_scope, project_params = community_scope("p")
         task_scope, task_params = community_scope("t")
         project_matches = rows("""
-            SELECT 'Proyecto' AS tipo, id_proyecto AS id, nombre AS titulo, estado_general AS estado,
-                   responsable_principal AS responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
-                   fecha_ultima_actualizacion, COALESCE(observaciones,'') AS contexto
-            FROM proyectos
-            WHERE COALESCE(activo,1)=1 AND (? = '%%' OR UPPER(nombre) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
+            SELECT 'Proyecto' AS tipo, p.id_proyecto AS id, p.nombre AS titulo, p.estado_general AS estado,
+                   p.responsable_principal AS responsable, p.responsable_proximo_paso, p.fecha_objetivo_proximo_paso,
+                   p.fecha_ultima_actualizacion, COALESCE(p.observaciones,'') AS contexto
+            FROM proyectos p
+            WHERE COALESCE(p.activo,1)=1 AND (? = '%%' OR UPPER(p.nombre) LIKE ? OR UPPER(COALESCE(p.descripcion,'')) LIKE ?)
         """ + project_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + project_params))
         task_matches = rows("""
-            SELECT 'Tarea' AS tipo, id_tarea AS id, titulo, estado,
-                   responsable, responsable_proximo_paso, fecha_objetivo_proximo_paso,
-                   fecha_ultima_actualizacion, COALESCE(proximo_paso,'') AS contexto
-            FROM tareas
-            WHERE COALESCE(activa,1)=1 AND COALESCE(archivada,0)=0 AND (? = '%%' OR UPPER(titulo) LIKE ? OR UPPER(COALESCE(descripcion,'')) LIKE ?)
+            SELECT 'Tarea' AS tipo, t.id_tarea AS id, t.titulo, t.estado,
+                   t.responsable, t.responsable_proximo_paso, t.fecha_objetivo_proximo_paso,
+                   t.fecha_ultima_actualizacion, COALESCE(t.proximo_paso,'') AS contexto
+            FROM tareas t
+            WHERE COALESCE(t.activa,1)=1 AND COALESCE(t.archivada,0)=0 AND (? = '%%' OR UPPER(t.titulo) LIKE ? OR UPPER(COALESCE(t.descripcion,'')) LIKE ?)
         """ + task_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + task_params))
         matches = project_matches + task_matches
         if matches:

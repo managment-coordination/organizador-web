@@ -80,22 +80,25 @@ const cases = [
 
 const failures = [];
 
-for (const testCase of cases) {
-  const result = spawnSync(process.execPath, [smokeScript, testCase.question], {
+function runQuery(question, env = {}) {
+  const result = spawnSync(process.execPath, [smokeScript, question], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 12 * 1024 * 1024,
-    env: { ...process.env, AI_SMOKE_ROLE: "Superusuario", AI_SMOKE_USER_ID: "1" },
+    env: { ...process.env, ...env },
   });
   if (result.status !== 0) {
-    failures.push(`${testCase.question}: ${result.stderr || result.stdout}`);
-    continue;
+    throw new Error(result.stderr || result.stdout || "fallo sin salida");
   }
+  return JSON.parse(result.stdout);
+}
+
+for (const testCase of cases) {
   let payload;
   try {
-    payload = JSON.parse(result.stdout);
+    payload = runQuery(testCase.question, { AI_SMOKE_ROLE: "Superusuario", AI_SMOKE_USER_ID: "1" });
   } catch (error) {
-    failures.push(`${testCase.question}: respuesta no JSON (${error.message})`);
+    failures.push(`${testCase.question}: ${error.message}`);
     continue;
   }
   if (payload.action !== "consulta") failures.push(`${testCase.question}: action ${payload.action}`);
@@ -105,19 +108,42 @@ for (const testCase of cases) {
   if (!Array.isArray(payload.sources) || payload.sources.length < testCase.minSources) failures.push(`${testCase.question}: fuentes insuficientes`);
 }
 
-const forbidden = spawnSync(process.execPath, [smokeScript, "que incidencias de seguridad estan pendientes"], {
-  cwd: root,
-  encoding: "utf8",
-  maxBuffer: 12 * 1024 * 1024,
-  env: { ...process.env, AI_SMOKE_ROLE: "Presidente", AI_SMOKE_USER_ID: "999" },
-});
-if (forbidden.status !== 0) {
-  failures.push(`seguridad sin permiso: ${forbidden.stderr || forbidden.stdout}`);
-} else {
-  const payload = JSON.parse(forbidden.stdout);
+try {
+  const payload = runQuery("que incidencias de seguridad estan pendientes", {
+    AI_SMOKE_ROLE: "Presidente",
+    AI_SMOKE_USER_ID: "999",
+  });
   if (payload.query_domain !== "seguridad") failures.push("seguridad sin permiso: dominio incorrecto");
   if (!String(payload.answer || "").includes("no tiene permiso")) failures.push("seguridad sin permiso: no deniega acceso");
   if (Array.isArray(payload.sources) && payload.sources.length) failures.push("seguridad sin permiso: expone fuentes");
+} catch (error) {
+  failures.push(`seguridad sin permiso: ${error.message}`);
+}
+
+try {
+  const payload = runQuery("estado del proyecto isletas", {
+    AI_SMOKE_ROLE: "Usuario",
+    AI_SMOKE_USER_ID: "999",
+    AI_SMOKE_COMMUNITIES: "7",
+  });
+  if (payload.query_domain !== "trabajo") failures.push("comunidad limitada trabajo: dominio incorrecto");
+  if (payload.data_status !== "incompleto") failures.push("comunidad limitada trabajo: deberia quedar incompleto");
+  if (!String(payload.answer || "").includes("No he encontrado")) failures.push("comunidad limitada trabajo: no oculta proyecto no permitido");
+} catch (error) {
+  failures.push(`comunidad limitada trabajo: ${error.message}`);
+}
+
+try {
+  const payload = runQuery("resumen de la ultima asamblea", {
+    AI_SMOKE_ROLE: "Usuario",
+    AI_SMOKE_USER_ID: "999",
+    AI_SMOKE_COMMUNITIES: "7",
+  });
+  if (payload.query_domain !== "asambleas") failures.push("comunidad limitada asambleas: dominio incorrecto");
+  if (payload.data_status !== "incompleto") failures.push("comunidad limitada asambleas: deberia quedar incompleto");
+  if (!String(payload.answer || "").includes("No he encontrado asambleas")) failures.push("comunidad limitada asambleas: no oculta asamblea no permitida");
+} catch (error) {
+  failures.push(`comunidad limitada asambleas: ${error.message}`);
 }
 
 if (failures.length) {
@@ -125,4 +151,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, cases: cases.length, permission_checks: 1 }, null, 2));
+console.log(JSON.stringify({ ok: true, cases: cases.length, permission_checks: 3 }, null, 2));

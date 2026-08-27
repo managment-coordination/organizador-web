@@ -322,6 +322,38 @@ Pendiente para cerrar Fase 1:
 - Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
 - Revisar codificacion historica de datos importados.
 
+## Quinto ajuste implementado
+
+Fecha: 2026-08-27.
+
+Porcentaje:
+
+- Antes: 70% tecnico / 60% funcional.
+- Despues: 78% tecnico / 68% funcional.
+
+Cambios realizados:
+
+- `scripts/assert-ai-query.mjs` reutiliza `runQuery(...)` para pruebas de consulta.
+- Se anaden pruebas de permisos por comunidad:
+  - usuario limitado a comunidad `7` no ve el proyecto `isletas` de Macrocomunidad;
+  - usuario limitado a comunidad `7` no ve la asamblea de Macrocomunidad.
+- La prueba detecto un fallo real en las consultas de trabajo: el filtro de comunidad usaba alias `p`/`t`, pero las tablas no estaban aliasadas.
+- Se corrige el SQL de trabajo con alias explicitos `proyectos p` y `tareas t`.
+- La bateria queda en 10 consultas funcionales y 3 controles de permiso.
+
+Pruebas ejecutadas:
+
+- `npm run check`.
+- `node scripts/check-ai-python.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+- `git diff --check`.
+
+Pendiente para cerrar Fase 1:
+
+- Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
+- Revisar codificacion historica de datos importados que muestran caracteres corruptos.
+- Dejar documentado que contabilidad/propietarios siguen siendo fuentes comunes hasta que exista `id_comunidad` en esas tablas o una relacion equivalente.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`
@@ -353,9 +385,7 @@ Cada prueba debe validar:
 
 ## Proximo paso
 
-Implementar el primer ajuste de Fase 1:
-
-- crear contrato comun de respuesta IA;
-- anadir fuentes internas a consultas existentes;
-- endurecer permisos de `/api/ai/analyze`;
-- preparar pruebas de no modificacion de datos.
+- modularizar el Centro IA por dominios;
+- mantener las pruebas actuales como barrera de regresion;
+- corregir o documentar la codificacion historica de datos importados;
+- no activar acciones automaticas hasta Fase 2.
