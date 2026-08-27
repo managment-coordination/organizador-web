@@ -41,10 +41,12 @@ requireIncludes("requires_confirmation: true", "falta marca requires_confirmatio
 requireIncludes("writes_data: false", "falta marca writes_data false");
 requireIncludes("allowed_write_endpoint: aiWriteEndpointForAction(action)", "falta endpoint permitido por accion");
 requireIncludes("editable_fields: AI_EDITABLE_FIELDS[action] || []", "falta listado de campos editables");
+requireIncludes("impact_summary: aiImpactSummary(result, action)", "falta resumen de impacto de la accion");
 requireIncludes("result = withAiProposalContract(result);", "answerAiQuery no normaliza contrato");
 requireIncludes("return withAiProposalContract(targeted);", "analyzeWithAi no normaliza propuesta dirigida");
 requireIncludes("return withAiProposalContract({", "analyzeOperationalWithAi no normaliza consultas mal ubicadas");
 requireIncludes("proposal.requires_confirmation", "la UI no muestra el estado de confirmacion");
+requireIncludes("proposal.impact_summary", "la UI no muestra el resumen de impacto");
 requireIncludes("Nada se ha guardado todavia", "la UI no avisa de que no se ha guardado nada");
 requireIncludes("confirm(\"Se aplicara la propuesta editada. ¿Confirmas guardar el cambio?\")", "la UI no pide confirmacion antes de aplicar");
 

@@ -1655,6 +1655,36 @@ function aiWriteEndpointForAction(action) {
   return "";
 }
 
+function aiImpactSummary(result, action) {
+  const payload = result?.payload || {};
+  const entity = result?.entity || {};
+  const title = payload.titulo || entity.title || "";
+  const targetLabel = entity.type === "task" ? "tarea" : entity.type === "project" ? "proyecto" : "elemento";
+  if (action === "seguimiento_tarea" || action === "seguimiento_proyecto") {
+    return {
+      title: `Anadir seguimiento a ${targetLabel}${title ? `: ${title}` : ""}`,
+      lines: [
+        payload.estado_nuevo ? `Estado propuesto: ${payload.estado_nuevo}` : "",
+        payload.responsable_nuevo ? `Responsable actual propuesto: ${payload.responsable_nuevo}` : "",
+        payload.responsable_proximo_paso ? `Proximo responsable propuesto: ${payload.responsable_proximo_paso}` : "",
+        payload.proximo_paso ? `Proximo paso propuesto: ${payload.proximo_paso}` : "",
+      ].filter(Boolean),
+    };
+  }
+  if (action === "crear_tarea" || action === "crear_proyecto") {
+    return {
+      title: `Crear ${action === "crear_tarea" ? "tarea" : "proyecto"}${title ? `: ${title}` : ""}`,
+      lines: [
+        payload.categoria ? `Categoria: ${payload.categoria}` : "",
+        payload.estado_nuevo ? `Estado inicial: ${payload.estado_nuevo}` : "",
+        payload.responsable_nuevo ? `Responsable inicial: ${payload.responsable_nuevo}` : "",
+        payload.proximo_paso ? `Proximo paso: ${payload.proximo_paso}` : "",
+      ].filter(Boolean),
+    };
+  }
+  return null;
+}
+
 function withAiProposalContract(result) {
   const action = String(result?.action || "revisar_manual");
   const requiresConfirmation = AI_ACTIONS_REQUIRING_CONFIRMATION.has(action);
@@ -1667,6 +1697,7 @@ function withAiProposalContract(result) {
       audit_required: true,
       allowed_write_endpoint: aiWriteEndpointForAction(action),
       editable_fields: AI_EDITABLE_FIELDS[action] || [],
+      impact_summary: aiImpactSummary(result, action),
       confirmation_required_message: "Nada se ha guardado todavia. Revisa y edita la propuesta antes de aplicarla.",
     };
   }
@@ -7615,6 +7646,9 @@ function homePage() {
       const actionContractHtml = proposal.requires_confirmation
         ? '<div class="detailBox"><strong>Confirmacion necesaria</strong><div>' + html(proposal.confirmation_required_message || "Nada se ha guardado todavia. Revisa la propuesta antes de aplicarla.") + '</div><div class="muted">La escritura se hara solo desde ' + html(proposal.allowed_write_endpoint || "el endpoint permitido") + ' despues de confirmar.</div></div>'
         : "";
+      const impactHtml = proposal.impact_summary
+        ? '<div class="detailBox"><strong>Impacto previsto</strong><div>' + html(proposal.impact_summary.title || "") + '</div>' + (proposal.impact_summary.lines || []).map(line => '<div>- ' + html(line) + '</div>').join("") + '</div>'
+        : "";
       if (proposal.queryDetected) {
         resultContainer.innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Esto parece una consulta</h2><span class="pill">Sin cambios</span></div>' +
@@ -7663,6 +7697,7 @@ function homePage() {
         '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
         actionContractHtml +
+        impactHtml +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
         questionsHtml +
         candidatesHtml +

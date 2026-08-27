@@ -89,12 +89,13 @@ Incluido:
 
 - contrato explicito en respuestas IA;
 - aviso visible de confirmacion necesaria;
+- resumen de impacto previsto antes de aplicar;
 - proteccion para que una consulta en la caja operativa no cree cambios;
 - prueba estatica de separacion entre IA y escritura.
 
 Pendiente:
 
-- previsualizacion de impacto antes/despues;
+- previsualizacion completa antes/despues con valores actuales de base de datos;
 - revision por lote de varias acciones propuestas;
 - acciones sobre banco, recibos, documentos, email y cambios de titularidad;
 - panel de auditoria especifico para acciones IA;
