@@ -500,6 +500,137 @@ finally:
   return runPythonJson(script);
 }
 
+function runAgentContextCommand(session, action, data = {}, pc = "web") {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+action = ${JSON.stringify(action)}
+data = ${JSON.stringify(data || {})}
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+user_id = int(session.get("id_usuario") or 0)
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def clean(value, limit=8000):
+    return str(value or "").strip()[:limit]
+
+def can_use_context():
+    return bool(user) and role in {"Superusuario", "Administrador", "Usuario"}
+
+def ensure_schema(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ia_contexto_conversacion (
+            id_contexto INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_usuario INTEGER,
+            usuario TEXT,
+            rol TEXT,
+            pc TEXT,
+            texto_usuario TEXT NOT NULL,
+            texto_contextual TEXT,
+            intent TEXT,
+            herramienta_id TEXT,
+            herramienta_modulo TEXT,
+            herramienta_estado TEXT,
+            resumen_respuesta TEXT,
+            payload_json TEXT,
+            fecha_creacion TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_contexto_usuario_fecha ON ia_contexto_conversacion(id_usuario, fecha_creacion DESC, id_contexto DESC)")
+
+def row_dict(row):
+    result = dict(row)
+    try:
+        result["payload"] = json.loads(result.get("payload_json") or "{}")
+    except Exception:
+        result["payload"] = {}
+    result.pop("payload_json", None)
+    return result
+
+if not can_use_context():
+    raise PermissionError("Tu perfil no puede usar contexto conversacional IA.")
+
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    with conn:
+        ensure_schema(conn)
+        if action == "list":
+            limit = max(1, min(int(data.get("limit") or 12), 40))
+            rows = [
+                row_dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT *
+                    FROM ia_contexto_conversacion
+                    WHERE id_usuario=?
+                    ORDER BY fecha_creacion DESC, id_contexto DESC
+                    LIMIT ?
+                    """,
+                    (user_id, limit),
+                )
+            ]
+            print(json.dumps({"ok": True, "context": rows}, ensure_ascii=False))
+        elif action == "save":
+            payload = data.get("payload") or {}
+            selected_tool = data.get("selected_tool") or {}
+            cursor = conn.execute(
+                """
+                INSERT INTO ia_contexto_conversacion
+                (id_usuario,usuario,rol,pc,texto_usuario,texto_contextual,intent,herramienta_id,
+                 herramienta_modulo,herramienta_estado,resumen_respuesta,payload_json,fecha_creacion)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    user_id,
+                    user,
+                    role,
+                    clean(pc, 200),
+                    clean(data.get("texto_usuario"), 8000),
+                    clean(data.get("texto_contextual"), 10000),
+                    clean(data.get("intent"), 80),
+                    clean(selected_tool.get("id"), 160),
+                    clean(selected_tool.get("module"), 120),
+                    clean(selected_tool.get("status"), 80),
+                    clean(data.get("resumen_respuesta"), 2000),
+                    json.dumps(payload, ensure_ascii=False)[:12000],
+                    now_iso(),
+                ),
+            )
+            keep = max(8, min(int(data.get("keep") or 24), 60))
+            conn.execute(
+                """
+                DELETE FROM ia_contexto_conversacion
+                WHERE id_usuario=?
+                  AND id_contexto NOT IN (
+                    SELECT id_contexto
+                    FROM ia_contexto_conversacion
+                    WHERE id_usuario=?
+                    ORDER BY fecha_creacion DESC, id_contexto DESC
+                    LIMIT ?
+                  )
+                """,
+                (user_id, user_id, keep),
+            )
+            print(json.dumps({"ok": True, "id_contexto": int(cursor.lastrowid)}, ensure_ascii=False))
+        elif action == "clear":
+            conn.execute("DELETE FROM ia_contexto_conversacion WHERE id_usuario=?", (user_id,))
+            print(json.dumps({"ok": True}, ensure_ascii=False))
+        else:
+            raise ValueError("Accion de contexto IA no valida.")
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function runSecurityCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
@@ -3992,13 +4123,62 @@ function detectAgentIntent(text) {
   };
 }
 
+function agentNeedsPreviousContext(text) {
+  const normalized = normalizeText(text);
+  return /\b(eso|ese|esa|este|esta|estos|estas|lo anterior|anterior|continua|sigue|sigamos|tambien|ademas|añadele|anadele|sumale|actualizalo|modificalo|hazlo|preparalo|incluye esto|sobre lo mismo)\b/i.test(normalized);
+}
+
+function agentContextExcerpt(value, limit = 1200) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  return text.length > limit ? text.slice(0, limit - 3) + "..." : text;
+}
+
+function buildAgentContextualText(text, recentContext) {
+  const cleanText = String(text || "").trim();
+  const recent = Array.isArray(recentContext) ? recentContext : [];
+  if (!cleanText || !agentNeedsPreviousContext(cleanText) || !recent.length) {
+    return { text: cleanText, used: false, source: null };
+  }
+  const last = recent[0];
+  const baseText = last.texto_contextual || last.texto_usuario || "";
+  const contextual = [
+    "Contexto conversacional anterior del usuario:",
+    baseText,
+    "",
+    "Nueva instruccion del usuario:",
+    cleanText,
+  ].join("\n").slice(0, 10000);
+  return { text: contextual, used: true, source: last };
+}
+
+function summarizeAgentResult(response) {
+  const result = response?.result || {};
+  const tool = response?.selected_tool || {};
+  const bits = [
+    response?.intent ? `Intencion: ${response.intent}` : "",
+    tool.label ? `Herramienta: ${tool.label}` : "",
+    result.action ? `Accion: ${result.action}` : "",
+    result.answer ? agentContextExcerpt(result.answer, 700) : "",
+  ].filter(Boolean);
+  return bits.join(" | ").slice(0, 1800);
+}
+
 async function answerAgentMessage(session, text) {
   const cleanText = String(text || "").trim();
-  const decision = detectAgentIntent(cleanText);
-  const selectedTool = selectAgentTool(session, cleanText, decision.intent);
+  let recentContext = [];
+  try {
+    recentContext = (await runAgentContextCommand(session, "list", { limit: 8 })).context || [];
+  } catch {
+    recentContext = [];
+  }
+  const contextual = buildAgentContextualText(cleanText, recentContext);
+  const effectiveText = contextual.text || cleanText;
+  const decision = detectAgentIntent(effectiveText);
+  const selectedTool = selectAgentTool(session, effectiveText, decision.intent);
   const base = {
     ok: true,
     agent_contract: "agent_router_v1",
+    context_contract: "agent_context_v1",
     intent: decision.intent,
     confidence: decision.confidence,
     reason: decision.reason,
@@ -4007,12 +4187,40 @@ async function answerAgentMessage(session, text) {
     tool: selectedTool?.endpoint || "",
     selected_tool: selectedTool,
     available_tools: getAgentToolCatalog(session),
+    conversation_context: {
+      used: contextual.used,
+      recent_count: recentContext.length,
+      source_id: contextual.source?.id_contexto || null,
+      source_intent: contextual.source?.intent || "",
+      source_summary: contextual.source?.resumen_respuesta || "",
+    },
     questions: decision.questions || [],
     message: "",
     result: null,
   };
+  const finalize = async (response) => {
+    try {
+      await runAgentContextCommand(session, "save", {
+        texto_usuario: cleanText,
+        texto_contextual: effectiveText,
+        intent: response.intent,
+        selected_tool: response.selected_tool || selectedTool || {},
+        resumen_respuesta: summarizeAgentResult(response),
+        payload: {
+          message: response.message || "",
+          reason: response.reason || "",
+          result_action: response.result?.action || "",
+          result_answer: agentContextExcerpt(response.result?.answer || "", 1200),
+          context_used: response.conversation_context?.used || false,
+        },
+      });
+    } catch (error) {
+      response.context_warning = "La respuesta se ha generado, pero no se pudo guardar el contexto conversacional: " + error.message;
+    }
+    return response;
+  };
   if (selectedTool?.status === "planned" && !selectedTool.endpoint) {
-    return {
+    return finalize({
       ...base,
       intent: "aclaracion",
       requires_confirmation: false,
@@ -4022,38 +4230,42 @@ async function answerAgentMessage(session, text) {
         answer: `${selectedTool.label}. ${selectedTool.limitation || "Pendiente de implementacion segura."}`,
         questions: ["Quieres que lo dejemos anotado como siguiente herramienta interna del agente?"],
       },
-    };
+    });
   }
   if (decision.intent === "consulta") {
-    const result = await answerAiQuery(session, cleanText);
-    return {
+    const result = await answerAiQuery(session, effectiveText);
+    return finalize({
       ...base,
       tool: selectedTool?.endpoint || "/api/ai/query",
-      message: "He tratado el mensaje como consulta. La respuesta queda guardada en el historial de consultas IA.",
+      message: contextual.used
+        ? "He tratado el mensaje como consulta usando el contexto reciente. La respuesta queda guardada en el historial de consultas IA."
+        : "He tratado el mensaje como consulta. La respuesta queda guardada en el historial de consultas IA.",
       result,
-    };
+    });
   }
   if (decision.intent === "accion") {
-    const result = await analyzeOperationalWithAi(session, cleanText);
-    return {
+    const result = await analyzeOperationalWithAi(session, effectiveText);
+    return finalize({
       ...base,
       tool: selectedTool?.endpoint || "/api/ai/operate",
       message: result.queryDetected
         ? "El agente ha detectado que parece una consulta. No se ha guardado nada."
-        : "He preparado una propuesta editable. Revisa y confirma antes de guardar.",
+        : contextual.used
+          ? "He preparado una propuesta editable usando el contexto reciente. Revisa y confirma antes de guardar."
+          : "He preparado una propuesta editable. Revisa y confirma antes de guardar.",
       result,
-    };
+    });
   }
   if (decision.intent === "lote") {
-    const result = await analyzeGuidedAutomationBatch(session, cleanText);
-    return {
+    const result = await analyzeGuidedAutomationBatch(session, effectiveText);
+    return finalize({
       ...base,
       tool: selectedTool?.endpoint || "/api/ai/batch-operate",
       message: "He preparado un lote revisable. Nada se guarda hasta que confirmes las tarjetas seleccionadas.",
       result,
-    };
+    });
   }
-  return {
+  return finalize({
     ...base,
     message: "Necesito una aclaracion antes de preparar una accion o consulta.",
     result: {
@@ -4061,7 +4273,7 @@ async function answerAgentMessage(session, text) {
       answer: "No se ha guardado nada. Indica si quieres consultar informacion o preparar una propuesta editable.",
       questions: decision.questions || [],
     },
-  };
+  });
 }
 
 function queryActionOptions(session) {
@@ -4948,6 +5160,9 @@ function homePage() {
     .agentToolCard.planned { background:#fff7ed; border-color:#fed7aa; }
     .agentToolCard strong { overflow-wrap:anywhere; }
     .agentToolMeta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+    .agentContextList { display:grid; gap:8px; }
+    .agentContextItem { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; display:grid; gap:5px; }
+    .agentContextItem strong { overflow-wrap:anywhere; }
     .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
     .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
     .aiHistoryHead h2 { margin:0; font-size:17px; }
@@ -5989,6 +6204,8 @@ function homePage() {
     let aiBatch = null;
     let agentTools = [];
     let agentToolsLoaded = false;
+    let agentContext = [];
+    let agentContextLoaded = false;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -8129,6 +8346,10 @@ function homePage() {
           '</div>' +
           '<div id="agentResult"></div>' +
           '<details class="detailBox" open><summary><strong>Herramientas internas</strong></summary><div id="agentToolsList" class="agentToolsList"><div class="aiHistoryEmpty">Cargando herramientas...</div></div></details>' +
+          '<details class="detailBox"><summary><strong>Contexto de conversacion</strong></summary>' +
+            '<div class="toolbar"><button class="ghost" id="agentContextRefresh">Actualizar contexto</button><button class="ghost" id="agentContextClear">Vaciar contexto</button><span class="muted" id="agentContextMessage"></span></div>' +
+            '<div id="agentContextList" class="agentContextList"><div class="aiHistoryEmpty">Cargando contexto...</div></div>' +
+          '</details>' +
         '</section>' +
         '<div class="aiQueryLayout">' +
           '<section class="aiBox aiQueryBox">' +
@@ -8188,6 +8409,8 @@ function homePage() {
         $("agentMessage").textContent = "";
         $("agentText").focus();
       });
+      $("agentContextRefresh").addEventListener("click", () => loadAgentContext(true));
+      $("agentContextClear").addEventListener("click", clearAgentContext);
       $("aiAsk").addEventListener("click", askAiQuery);
       $("aiQueryText").addEventListener("keydown", event => {
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -8222,6 +8445,7 @@ function homePage() {
       loadAiHistory();
       loadAiRules();
       loadAgentTools();
+      loadAgentContext();
     }
 
     function aiHistoryDate(value) {
@@ -8414,6 +8638,58 @@ function homePage() {
       '</div>';
     }
 
+    function renderAgentContext() {
+      if (!$("agentContextList")) return;
+      if (!agentContext.length) {
+        $("agentContextList").innerHTML = '<div class="aiHistoryEmpty">Todavia no hay contexto reciente. Se ira creando con tus mensajes al agente.</div>';
+        if ($("agentContextMessage")) $("agentContextMessage").textContent = "Sin contexto reciente.";
+        return;
+      }
+      $("agentContextList").innerHTML = agentContext.map(item => {
+        const summary = safe(item.resumen_respuesta || "");
+        const shortSummary = summary.length > 260 ? summary.slice(0, 257) + "..." : summary;
+        return '<article class="agentContextItem">' +
+          '<strong>' + html(item.texto_usuario || "Mensaje") + '</strong>' +
+          '<div class="agentToolMeta">' +
+            '<span class="pill">' + html(agentIntentLabel(item.intent || "")) + '</span>' +
+            (item.herramienta_modulo ? '<span class="pill">' + html(item.herramienta_modulo) + '</span>' : '') +
+            (item.herramienta_estado ? '<span class="pill">' + html(item.herramienta_estado === "active" ? "Activa" : "Planificada") + '</span>' : '') +
+          '</div>' +
+          (shortSummary ? '<div class="line muted">' + html(shortSummary) + '</div>' : '') +
+          '<div class="line muted">' + html(aiHistoryDate(item.fecha_creacion)) + '</div>' +
+        '</article>';
+      }).join("");
+      if ($("agentContextMessage")) $("agentContextMessage").textContent = agentContext.length + " turno(s) recientes.";
+    }
+
+    async function loadAgentContext(force = false) {
+      if (agentContextLoaded && !force) {
+        renderAgentContext();
+        return;
+      }
+      if ($("agentContextList")) $("agentContextList").innerHTML = '<div class="aiHistoryEmpty">Cargando contexto...</div>';
+      try {
+        const data = await api("/api/agent/context?limit=12");
+        agentContext = data.context || [];
+        agentContextLoaded = true;
+        renderAgentContext();
+      } catch (error) {
+        if ($("agentContextList")) $("agentContextList").innerHTML = '<div class="aiHistoryEmpty dangerText">' + html(error.message) + '</div>';
+      }
+    }
+
+    async function clearAgentContext() {
+      if (!confirm("Se vaciara solo el contexto conversacional reciente del Agente IA. No se borran reglas permanentes ni datos de la app. ¿Continuar?")) return;
+      try {
+        await api("/api/agent/context/clear", { method: "POST", body: JSON.stringify({}) });
+        agentContext = [];
+        agentContextLoaded = true;
+        renderAgentContext();
+      } catch (error) {
+        if ($("agentContextMessage")) $("agentContextMessage").textContent = error.message;
+      }
+    }
+
     function renderAgentDecision(response) {
       const container = $("agentResult");
       if (!container) return;
@@ -8427,6 +8703,8 @@ function homePage() {
         '<div class="agentDecisionHead"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><span class="confidence">Confianza: ' + html(confidence) + '%</span></div>' +
         '<p>' + html(response.message || response.reason || "") + '</p>' +
         (response.reason ? '<div class="line muted">' + html(response.reason) + '</div>' : '') +
+        (response.conversation_context?.used ? '<div class="answerNote">Se ha usado contexto reciente de esta conversacion para interpretar el mensaje.</div>' : '') +
+        (response.context_warning ? '<div class="dangerText">' + html(response.context_warning) + '</div>' : '') +
         renderSelectedAgentTool(response.selected_tool) +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
@@ -8475,6 +8753,8 @@ function homePage() {
           aiHistoryLoaded = false;
           await loadAiHistory(true, response.result.history_id || 0);
         }
+        agentContextLoaded = false;
+        await loadAgentContext(true);
         renderAgentDecision(response);
       } catch (error) {
         $("agentMessage").textContent = error.message;
@@ -9841,6 +10121,20 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar herramientas del agente." });
     return sendJson(res, 200, { ok: true, tools: getAgentToolCatalog(session) });
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/context") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar contexto IA." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await runAgentContextCommand(session, "list", { limit: Number(url.searchParams.get("limit") || 12) }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/context/clear") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede borrar contexto IA." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await runAgentContextCommand(session, "clear", {}, String(req.socket.remoteAddress || "web")));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/query") {
     const session = readSession(req);
