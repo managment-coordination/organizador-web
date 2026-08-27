@@ -11,6 +11,13 @@ Convertir el Centro IA en un motor de acciones controladas: la IA puede interpre
 - Porcentaje funcional de partida: 25%.
 - Nucleo anterior cerrado: Fase 1 - Agente de consulta fiable.
 
+## Estado de cierre
+
+- Fecha de cierre: 2026-08-27.
+- Estado tecnico: 100%.
+- Estado funcional: 100% aceptado para pasar de fase.
+- Confirmacion funcional: el usuario entiende el flujo y acepta que los refinamientos de redaccion se trabajen mas adelante.
+
 ## Regla principal
 
 Toda accion propuesta por IA debe cumplir este flujo:
@@ -98,11 +105,12 @@ Incluido:
 
 Pendiente:
 
-- prueba funcional del usuario en web con una accion real o una accion de prueba;
 - revision por lote de varias acciones propuestas;
 - acciones sobre banco, recibos, documentos, email y cambios de titularidad;
 - panel de auditoria especifico para acciones IA;
 - rollback o compensacion asistida para cambios complejos.
+
+Los pendientes anteriores quedan como ampliaciones de fases posteriores, no como bloqueo de Fase 2.
 
 ## Criterio de cierre
 
@@ -113,3 +121,5 @@ Esta fase no queda cerrada hasta que:
 - exista prueba automatica de contrato;
 - GitHub y servidor Ubuntu esten actualizados;
 - el usuario confirme que el flujo le resulta claro.
+
+Resultado: cerrado. La mejora de calidad sobre titulo, comentario y proximo paso pasa a Fase 3 porque debe apoyarse en reglas, preferencias y correcciones aprendidas.
