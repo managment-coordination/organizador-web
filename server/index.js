@@ -246,7 +246,7 @@ function verifyPassword(password, storedHash) {
 
 function runPythonJson(script) {
   return new Promise((resolve, reject) => {
-    const child = execFile(pythonBin, ["-"], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    const child = execFile(pythonBin, ["-"], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
@@ -265,7 +265,7 @@ function runPythonJson(script) {
 function runAssemblyCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [assemblyBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    execFile(pythonBin, [assemblyBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -285,7 +285,7 @@ function runAssemblyCommand(session, action, data = {}, pc = "web") {
 function runAdminCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -305,7 +305,7 @@ function runAdminCommand(session, action, data = {}, pc = "web") {
 function runAiHistoryCommand(session, action, data = {}) {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data });
-    execFile(pythonBin, [aiHistoryBridgePath, databasePath, request], { timeout: 15000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    execFile(pythonBin, [aiHistoryBridgePath, databasePath, request], { timeout: 15000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -325,7 +325,7 @@ function runAiHistoryCommand(session, action, data = {}) {
 function runSecurityCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [securityBridgePath, databasePath, request], { timeout: 45000, maxBuffer: 18 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout, stderr) => {
+    execFile(pythonBin, [securityBridgePath, databasePath, request], { timeout: 45000, maxBuffer: 18 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -2221,6 +2221,41 @@ def money(value):
 def pct(value):
     return f"{float(value or 0):.2f}%".replace(".", ",")
 
+def fix_text(value):
+    text = str(value or "")
+    mojibake_codes = {0x00C3, 0x00C2, 0xFFFD, 0x00BE, 0x00BC, 0x00BD}
+    if not any(ord(ch) in mojibake_codes for ch in text):
+        return text
+    candidates = [text]
+    for encoding in ("latin1", "cp1252"):
+        try:
+            candidates.append(text.encode(encoding).decode("utf-8"))
+        except Exception:
+            pass
+    replacements = {
+        "¾": "ó",
+        "¼": "ü",
+        "½": "ñ",
+        "Â": "",
+        chr(0xFFFD): "",
+    }
+    replaced = text
+    for old, new in replacements.items():
+        replaced = replaced.replace(old, new)
+    candidates.append(replaced)
+    def penalty(candidate):
+        return sum(1 for ch in candidate if ord(ch) in mojibake_codes)
+    return min(candidates, key=lambda candidate: (penalty(candidate), len(candidate)))
+
+def clean_value(value):
+    if isinstance(value, str):
+        return fix_text(value)
+    if isinstance(value, list):
+        return [clean_value(item) for item in value]
+    if isinstance(value, dict):
+        return {clean_value(key) if isinstance(key, str) else key: clean_value(item) for key, item in value.items()}
+    return value
+
 AI_SOURCES = {
     "owners": {"module": "propietarios", "table": "cf_propietarios", "description": "Propietarios activos importados"},
     "properties": {"module": "propiedades", "table": "cf_propiedades", "description": "Propiedades activas importadas"},
@@ -2269,7 +2304,7 @@ def dates_from_question(q):
 
 def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None, sources=None, data_status=None, query_domain=None):
     status = data_status or ("incompleto" if questions else "confirmado")
-    return {
+    payload = {
         "handled": True,
         "source": "local-db",
         "confidence": confidence,
@@ -2283,6 +2318,7 @@ def response(answer, confidence=0.75, candidates=None, questions=None, facts=Non
         "facts": facts or {},
         "display": display or {},
     }
+    return clean_value(payload)
 
 def community_scope(alias):
     if role == "Superusuario":
@@ -2530,7 +2566,7 @@ def debt_for_owner(owner_id, year=None, property_id=None):
         LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
         WHERE """ + where_sql + """
         ORDER BY r.fecha_emision, propiedad, r.referencia
-        LIMIT 2000
+        LIMIT 250
     """, params)
     return total, by_year, by_property, receipts
 
@@ -2910,6 +2946,7 @@ def handle_debt_query():
         r"(?:LISTA|LISTADO|RELACION|DETALLE|DESGLOSE).*(?:DEUDORES|MOROSOS|PROPIETARIOS (?:CON DEUDA|QUE DEBEN)|DEUDA POR PROPIETARIO|DEUDA DE TODOS|TODOS LOS QUE DEBEN)",
         q_norm
     )) or bool(re.match(r"^(?:DAME |MUESTRA |SACA )?(?:UN )?(?:LISTA|LISTADO|RELACION|DESGLOSE) DE (?:LA )?DEUDA(?: PENDIENTE)?(?: 20\\d{2})?$", q_norm))
+    global_list_pattern = global_list_pattern or ("PROPIETARIOS" in q_norm and "DEUDA" in q_norm and any(token in q_norm for token in ["TIENEN", "CON", "SUPERIOR", "MAYOR", "MAS"]))
     asks_global_year = bool(years) and not any(token in q_norm for token in ["TIENE DEUDA", "DEUDA DE", "MOROSIDAD DE", "PROPIETARIO"])
     if asks_global_year and not is_list_request:
         return handle_global_debt_year(int(years[0]))

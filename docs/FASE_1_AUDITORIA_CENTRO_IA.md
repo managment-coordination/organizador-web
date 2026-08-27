@@ -438,6 +438,115 @@ Pendiente para cerrar Fase 1:
 - Ampliar pruebas con consultas reales largas, especialmente deuda/listados y trabajo operativo.
 - Documentar claramente las fuentes comunes de contabilidad/propietarios cuando no existe todavia separacion por comunidad.
 
+## Octavo ajuste implementado
+
+Fecha: 2026-08-27.
+
+Porcentaje:
+
+- Antes: 88% tecnico / 78% funcional.
+- Despues: 92% tecnico / 84% funcional.
+
+Cambios realizados:
+
+- Se fuerza `PYTHONIOENCODING=utf-8` en los puentes Python de servidor para evitar que Windows convierta simbolos o acentos a caracteres `�` al devolver JSON a Node.
+- Se aplica la misma codificacion en los scripts de prueba que ejecutan Python.
+- Se anade limpieza de texto en el contrato `response(...)` del Centro IA:
+  - corrige mojibake recuperable tipo `sesiÃ³n`;
+  - elimina o normaliza caracteres irrecuperables en la salida;
+  - no modifica la base de datos.
+- `scripts/assert-ai-query.mjs` rechaza respuestas con marcadores mojibake en los casos cubiertos.
+
+Pruebas ejecutadas:
+
+- `npm run check`.
+- `node scripts/check-ai-python.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+- `git diff --check`.
+
+Resultado:
+
+- 10 consultas funcionales correctas.
+- 3 controles de permisos correctos.
+- Sin caracteres mojibake en las salidas de prueba cubiertas.
+
+Pendiente para cerrar Fase 1:
+
+- Ampliar pruebas con consultas reales largas.
+- Documentar el alcance comunitario de propietarios/contabilidad, ya que actualmente funcionan como fuentes comunes si no existe relacion directa por comunidad.
+
+## Cierre de Fase 1
+
+Fecha: 2026-08-27.
+
+Estado: cerrada como nucleo de consulta fiable.
+
+Evidencia de cierre:
+
+- El Centro IA separa consulta y operacion:
+  - `/api/ai/query` llama a `answerAiQuery(...)`;
+  - `/api/ai/operate` y `/api/ai/analyze` preparan cambios operativos y requieren rol permitido.
+- Todas las consultas de Fase 1 devuelven `action: consulta`.
+- Todas las consultas de Fase 1 declaran:
+  - `query_domain`;
+  - `data_status`;
+  - `sources`;
+  - `display` cuando hay datos estructurados.
+- Los dominios actuales estan aislados en `QUERY_HANDLERS`.
+- No queda bloque condicional monolitico antiguo de `query_domain`.
+- La salida Python se fuerza a UTF-8.
+- Las respuestas de prueba no contienen marcadores mojibake.
+- La bateria automatica cubre 12 consultas funcionales y 3 controles de permisos.
+
+Consultas verificadas:
+
+- propietario por email;
+- deuda por propietario;
+- deuda por nombre parcial real: Inversiones Senada;
+- propietario por propiedad exacta;
+- listado general de deudores;
+- propietarios con deuda superior a 1000 EUR;
+- estado de proyecto;
+- presupuesto;
+- balance financiero por periodo;
+- resumen de asamblea;
+- resultado de punto de asamblea;
+- incidencias de seguridad pendientes.
+
+Controles de permisos verificados:
+
+- Presidente no puede consultar Seguridad.
+- Usuario limitado a comunidad `7` no ve proyecto de Macrocomunidad.
+- Usuario limitado a comunidad `7` no ve asamblea de Macrocomunidad.
+
+Riesgo documentado:
+
+- Propietarios, propiedades, recibos, movimientos de deuda, facturas y bancos siguen siendo fuentes comunes hasta que el modulo contable tenga relacion directa por comunidad.
+- Este riesgo no bloquea Fase 1 porque la consulta muestra fuentes y no ejecuta acciones automaticas.
+- Antes de usar varias comunidades contables independientes habra que anadir `id_comunidad` o relacion equivalente.
+
+Siguiente fase:
+
+- Fase 2 - Acciones con confirmacion.
+- Ninguna accion automatica debe modificar datos sin pantalla editable y confirmacion expresa.
+
+## Alcance comunitario de fuentes comunes
+
+Estado actual:
+
+- Tareas, proyectos, asambleas y seguridad aplican permisos por comunidad cuando la tabla tiene `id_comunidad` o una relacion directa.
+- Propietarios, propiedades, recibos, movimientos de deuda, facturas y extractos de banco funcionan actualmente como fuentes comunes de la base contable.
+
+Riesgo:
+
+- Si en el futuro se cargan varias comunidades contables completas en las mismas tablas sin una relacion clara por comunidad, una consulta IA de deuda o propietario podria devolver informacion de mas de una comunidad.
+
+Criterio de seguridad para Fase 1:
+
+- Mientras la contabilidad se use como base comun de Macrocomunidad, se documenta el alcance y no se marca como bloqueo.
+- Antes de usar la misma base para varias comunidades contables independientes, habra que anadir `id_comunidad` o una tabla de relacion equivalente en propietarios, propiedades, recibos, deuda, gastos y bancos.
+- Hasta entonces, el Centro IA debe mostrar fuentes internas y no ejecutar acciones automaticas sobre estos datos.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`
@@ -469,7 +578,6 @@ Cada prueba debe validar:
 
 ## Proximo paso
 
-- revisar codificacion historica y consultas reales largas;
+- iniciar Fase 2 con propuestas editables;
 - mantener las pruebas actuales como barrera de regresion;
-- documentar el alcance comunitario de contabilidad/propietarios;
-- no activar acciones automaticas hasta Fase 2.
+- ampliar el modelo comunitario contable antes de mezclar varias comunidades con deuda o bancos independientes.

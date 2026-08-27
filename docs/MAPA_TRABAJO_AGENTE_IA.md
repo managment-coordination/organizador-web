@@ -656,10 +656,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 78% tecnico / 68% funcional | Pruebas de comunidad anadidas: usuario limitado no ve proyecto/asamblea fuera de su comunidad. Se corrige alias SQL en consulta de trabajo detectado por la prueba | Modularizar consultas y revisar codificacion historica |
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 82% tecnico / 72% funcional | Primer corte modular del Centro IA: consultas de contacto, seguridad y trabajo pasan a handlers dedicados y mantienen 10 consultas + 3 pruebas de permisos correctas | Extraer deuda, contabilidad, presupuesto y asambleas; revisar codificacion historica |
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 88% tecnico / 78% funcional | Todos los dominios principales pasan a `QUERY_HANDLERS`: contacto, seguridad, trabajo, asambleas, presupuesto, contabilidad, propiedad y deuda. Se elimina el bloque antiguo duplicado y la prueba valida que no vuelva | Revisar codificacion historica y ampliar casos reales largos |
+| 2026-08-27 | Fase 1 - Agente de consulta fiable | 92% tecnico / 84% funcional | Se fuerza salida UTF-8 en puentes Python, se limpia mojibake en respuestas IA sin modificar la base y la prueba rechaza salidas con caracteres rotos | Documentar alcance comunitario de datos comunes y ampliar consultas reales largas |
+| 2026-08-27 | Fase 1 - Agente de consulta fiable | 100% nucleo cerrado | La bateria sube a 12 consultas reales + 3 permisos: incluye Inversiones Senada, propietarios con deuda superior a 1000 EUR y limite de filas en listados largos. Fuentes, dominio, estado del dato, permisos y salida legible quedan verificados | Pasar a Fase 2 solo cuando se confirmen acciones con ventana editable |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
-- Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 88% tecnico, 78% funcional.
-- Pendiente inmediato: revisar codificacion historica de datos importados y ampliar pruebas con consultas reales largas antes de cerrar Fase 1.
+- Nucleo activo: Fase 2 - Acciones con confirmacion.
+- Ultimo nucleo cerrado: Fase 1 - Agente de consulta fiable al 100%.
+- Pendiente inmediato: empezar Fase 2 solo con acciones propuestas, editables y confirmadas antes de modificar datos.

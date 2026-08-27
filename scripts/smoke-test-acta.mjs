@@ -14,7 +14,7 @@ fs.copyFileSync(sourceDb, database);
 
 const session = { nombre: "Prueba automatica", rol: "Superusuario", comunidades: [] };
 function command(action, data = {}) {
-  const result = spawnSync(python, [bridge, database, JSON.stringify({ session, action, data, pc: "smoke-test" })], { encoding: "utf8", env: { ...process.env, PYTHONUTF8: "1" } });
+  const result = spawnSync(python, [bridge, database, JSON.stringify({ session, action, data, pc: "smoke-test" })], { encoding: "utf8", env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } });
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || `Fallo en ${action}`);
   return JSON.parse(result.stdout);
 }

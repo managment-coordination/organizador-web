@@ -47,6 +47,20 @@ const cases = [
     minSources: 1,
   },
   {
+    question: "cual es la deuda de inversiones senada",
+    domain: "deuda",
+    status: "confirmado",
+    contains: "INVERSIONES SENADA",
+    minSources: 2,
+  },
+  {
+    question: "que propietarios tienen deuda superior a 1000 euros",
+    domain: "deuda",
+    status: "confirmado",
+    contains: "propietarios",
+    minSources: 1,
+  },
+  {
     question: "estado del proyecto isletas",
     domain: "trabajo",
     status: "confirmado",
@@ -91,6 +105,7 @@ const cases = [
 ];
 
 const failures = [];
+const mojibakePattern = /[\u00c3\u00c2\ufffd\u00be\u00bc\u00bd]/;
 
 for (const domain of expectedHandlers) {
   if (!indexSource.includes(`"${domain}"`)) failures.push(`estructura: falta handler para ${domain}`);
@@ -125,6 +140,7 @@ for (const testCase of cases) {
   if (payload.data_status !== testCase.status) failures.push(`${testCase.question}: status ${payload.data_status}, esperado ${testCase.status}`);
   if (!String(payload.answer || "").toLowerCase().includes(testCase.contains.toLowerCase())) failures.push(`${testCase.question}: no contiene ${testCase.contains}`);
   if (!Array.isArray(payload.sources) || payload.sources.length < testCase.minSources) failures.push(`${testCase.question}: fuentes insuficientes`);
+  if (mojibakePattern.test(JSON.stringify(payload))) failures.push(`${testCase.question}: contiene caracteres mojibake`);
 }
 
 try {

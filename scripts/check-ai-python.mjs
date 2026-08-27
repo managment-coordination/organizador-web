@@ -37,7 +37,10 @@ const candidates = [
 
 let lastError = "";
 for (const candidate of candidates) {
-  const result = spawnSync(candidate, ["-m", "py_compile", outputPath], { encoding: "utf8" });
+  const result = spawnSync(candidate, ["-m", "py_compile", outputPath], {
+    encoding: "utf8",
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+  });
   if (result.status === 0) {
     console.log(JSON.stringify({ ok: true, python: candidate, checked: outputPath }, null, 2));
     process.exit(0);

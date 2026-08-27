@@ -47,7 +47,11 @@ const candidates = [
 
 const errors = [];
 for (const candidate of candidates) {
-  const result = spawnSync(candidate, [outputPath], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnSync(candidate, [outputPath], {
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+  });
   if (result.status === 0) {
     console.log(result.stdout.trim());
     process.exit(0);
