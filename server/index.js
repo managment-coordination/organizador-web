@@ -3653,6 +3653,58 @@ async function analyzeOperationalWithAi(session, text) {
   });
 }
 
+function splitGuidedAutomationText(text) {
+  const cleanText = String(text || "").replace(/\r\n?/g, "\n").trim();
+  if (!cleanText) return [];
+  const explicit = cleanText
+    .split(/\n\s*(?:-{3,}|={3,})\s*\n/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (explicit.length > 1) return explicit.slice(0, 20);
+  const headed = [];
+  let current = [];
+  for (const line of cleanText.split("\n")) {
+    const trimmed = line.trim();
+    const startsNew = /^(?:asunto|incidencia|tarea|proyecto|seguimiento|accion)\s*[:#-]/i.test(trimmed) || /^\d+\.\s+\S+/.test(trimmed);
+    if (startsNew && current.length) {
+      headed.push(current.join("\n").trim());
+      current = [];
+    }
+    current.push(line);
+  }
+  if (current.length) headed.push(current.join("\n").trim());
+  if (headed.length > 1) return headed.slice(0, 20);
+  const paragraphs = cleanText.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (paragraphs.length > 1 && paragraphs.every((part) => part.length <= 1800)) return paragraphs.slice(0, 20);
+  return [cleanText.slice(0, 8000)];
+}
+
+async function analyzeGuidedAutomationBatch(session, text) {
+  const segments = splitGuidedAutomationText(text);
+  if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
+  const proposals = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const sourceText = segments[index];
+    const proposal = await analyzeOperationalWithAi(session, sourceText);
+    proposals.push({
+      ...proposal,
+      batch_item: index + 1,
+      batch_contract: "guided_batch_item_v1",
+      source_text: sourceText,
+      selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action),
+    });
+  }
+  return {
+    ok: true,
+    batch_contract: "guided_batch_v1",
+    requires_confirmation: true,
+    writes_data: false,
+    total: proposals.length,
+    actionable: proposals.filter((proposal) => proposal.selected).length,
+    proposals,
+  };
+}
+
 function queryActionOptions(session) {
   const script = `
 import json
@@ -4545,6 +4597,12 @@ function homePage() {
     .aiMemoryApplied { background:#eefdf5; border-color:#bbf7d0; color:#14532d; }
     .checkLine { display:flex; gap:8px; align-items:center; font-weight:700; color:#334155; }
     .checkLine input { width:18px; height:18px; }
+    .aiBatchList { display:grid; gap:12px; }
+    .aiBatchCard { border:1px solid var(--line); border-radius:8px; background:white; padding:12px; display:grid; gap:10px; }
+    .aiBatchCard.disabled { opacity:.62; background:#f8fafc; }
+    .aiBatchHead { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+    .aiBatchHead h3 { margin:0 0 4px; font-size:17px; overflow-wrap:anywhere; }
+    .aiBatchHead p { margin:0; max-width:920px; }
     .proposal { border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:10px; }
     .proposalHead { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center; }
     .confidence { font-weight:800; color:#1d4ed8; }
@@ -4765,6 +4823,7 @@ function homePage() {
       .attentionRow { grid-template-columns:1fr; gap:4px; }
       .mapSectionBody { grid-template-columns:1fr; }
       .searchControls, .documentControls { grid-template-columns:1fr; }
+      .aiBatchHead { flex-direction:column; }
       .resultCard { grid-template-columns:1fr; }
       .importControls, .importProposalGrid, .historicalRow, .reportControls { grid-template-columns:1fr; }
       .reportRow { grid-template-columns:1fr; }
@@ -5557,6 +5616,7 @@ function homePage() {
     let aiHistoryLoaded = false;
     let aiRules = [];
     let aiRulesLoaded = false;
+    let aiBatch = null;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -7713,6 +7773,16 @@ function homePage() {
           '</div>' +
           '<div id="aiOperationResult"></div>' +
         '</section>' +
+        '<section class="aiBox aiBatchBox">' +
+          '<div class="aiSectionHead"><div><h2>Automatizacion guiada</h2><p>Pega varios asuntos separados por una linea con --- o por bloques. La app propone acciones por separado y tu decides cuales aplicar.</p></div><span class="pill">Lote revisable</span></div>' +
+          '<textarea id="aiBatchText" class="aiInput" placeholder="Asunto 1...\\n---\\nAsunto 2...\\n---\\nAsunto 3..."></textarea>' +
+          '<div class="toolbar">' +
+            '<button id="aiBatchAnalyze">Preparar lote</button>' +
+            '<button class="ghost" id="aiBatchClear">Limpiar lote</button>' +
+            '<span class="muted" id="aiBatchMessage"></span>' +
+          '</div>' +
+          '<div id="aiBatchResult"></div>' +
+        '</section>' +
         '<section class="aiBox aiMemoryBox">' +
           '<div class="aiSectionHead"><div><h2>Memoria IA</h2><p>Reglas confirmadas que ayudan a redactar y clasificar mejor. Puedes desactivarlas si una no encaja.</p></div><span class="pill">Controlada</span></div>' +
           '<div class="toolbar"><button class="ghost" id="aiRulesRefresh">Actualizar memoria</button><span class="muted" id="aiRulesMessage"></span></div>' +
@@ -7740,6 +7810,13 @@ function homePage() {
       $("aiHistoryClear").addEventListener("click", clearAiHistory);
       $("aiRulesRefresh").addEventListener("click", () => loadAiRules(true));
       $("aiAnalyze").addEventListener("click", analyzeAiText);
+      $("aiBatchAnalyze").addEventListener("click", analyzeAiBatch);
+      $("aiBatchClear").addEventListener("click", () => {
+        $("aiBatchText").value = "";
+        $("aiBatchResult").innerHTML = "";
+        $("aiBatchMessage").textContent = "";
+        aiBatch = null;
+      });
       $("aiClear").addEventListener("click", () => {
         $("aiText").value = "";
         $("aiOperationResult").innerHTML = "";
@@ -8172,6 +8249,183 @@ function homePage() {
       } finally {
         $("aiAnalyze").disabled = false;
       }
+    }
+
+    function aiBatchFieldId(index, field) {
+      return "aiBatch_" + index + "_" + field;
+    }
+
+    function aiBatchActionEntityType(action, fallback = "project") {
+      if (String(action || "").includes("tarea")) return "task";
+      if (String(action || "").includes("proyecto")) return "project";
+      return fallback;
+    }
+
+    function renderAiBatchProposal(proposal, index) {
+      const payload = proposal.payload || {};
+      const action = proposal.action || "revisar_manual";
+      const entityType = proposal.entity?.type || aiBatchActionEntityType(action);
+      const states = entityType === "task" ? options.estados_tarea : options.estados_proyecto;
+      const selected = proposal.selected !== false && proposal.requires_confirmation;
+      const blocked = proposal.requires_confirmation ? "" : " disabled";
+      const sourcePreview = safe(proposal.source_text || "");
+      const shortSource = sourcePreview.length > 360 ? sourcePreview.slice(0, 357) + "..." : sourcePreview;
+      return '<article class="aiBatchCard' + (selected ? '' : ' disabled') + '" data-ai-batch-card="' + index + '">' +
+        '<div class="aiBatchHead">' +
+          '<div><h3>Propuesta ' + html(index + 1) + ': ' + html(payload.titulo || proposal.entity?.title || action) + '</h3><p class="muted">' + html(shortSource) + '</p></div>' +
+          '<label class="checkLine"><input type="checkbox" data-ai-batch-selected="' + index + '"' + (selected ? " checked" : "") + blocked + ' /> Aplicar</label>' +
+        '</div>' +
+        (proposal.queryDetected ? '<div class="detailBox"><strong>Sin accion</strong>' + html(proposal.answer || "Parece una consulta.") + '</div>' : '') +
+        ((proposal.used_rules || []).length ? '<div class="detailBox aiMemoryApplied"><strong>Memoria aplicada</strong>' + proposal.used_rules.map(rule => '<div>- ' + html(ruleTypeLabel(rule.tipo_regla)) + '</div>').join("") + '</div>' : '') +
+        '<div class="formGrid">' +
+          '<div><label>Accion</label><select id="' + aiBatchFieldId(index, "action") + '">' + proposalActionOptions(action) + '</select></div>' +
+          '<div><label>Elemento existente</label><select id="' + aiBatchFieldId(index, "entity") + '">' + entityOptionsHtml(entityType, proposal.entity?.id || "") + '</select></div>' +
+          '<div><label>Proyecto contenedor</label><select id="' + aiBatchFieldId(index, "project") + '">' + projectContainerOptions(payload.id_proyecto) + '</select></div>' +
+          '<div><label>Titulo</label><input id="' + aiBatchFieldId(index, "title") + '" value="' + html(payload.titulo || proposal.entity?.title || "") + '" /></div>' +
+          '<div><label>Categoria</label><input id="' + aiBatchFieldId(index, "category") + '" value="' + html(payload.categoria || "General") + '" /></div>' +
+          '<div><label>Estado</label><select id="' + aiBatchFieldId(index, "state") + '">' + (states || []).map(v => '<option value="' + html(v) + '"' + (v === payload.estado_nuevo ? " selected" : "") + '>' + html(v) + '</option>').join("") + '</select></div>' +
+          '<div><label>Prioridad</label><select id="' + aiBatchFieldId(index, "priority") + '">' + (options.prioridades || []).map(v => '<option value="' + html(v) + '"' + (v === payload.prioridad_nueva ? " selected" : "") + '>' + html(v) + '</option>').join("") + '</select></div>' +
+          '<div><label>Responsable</label><input id="' + aiBatchFieldId(index, "owner") + '" list="responsiblesList" value="' + html(payload.responsable_nuevo || "") + '" /></div>' +
+          '<div><label>Proximo responsable</label><input id="' + aiBatchFieldId(index, "nextOwner") + '" list="responsiblesList" value="' + html(payload.responsable_proximo_paso || "") + '" /></div>' +
+          '<div><label>Fecha proximo paso</label><input id="' + aiBatchFieldId(index, "nextDate") + '" type="date" value="' + html((payload.fecha_objetivo_proximo_paso || "").slice(0, 10)) + '" /></div>' +
+        '</div>' +
+        '<label>Comentario</label><textarea id="' + aiBatchFieldId(index, "comment") + '">' + html(payload.comentario || "") + '</textarea>' +
+        '<label>Proximo paso</label><textarea id="' + aiBatchFieldId(index, "nextStep") + '">' + html(payload.proximo_paso || "") + '</textarea>' +
+        '<label>Motivo bloqueo</label><textarea id="' + aiBatchFieldId(index, "blockReason") + '">' + html(payload.motivo_bloqueo || "") + '</textarea>' +
+        '<div class="muted" id="' + aiBatchFieldId(index, "message") + '"></div>' +
+      '</article>';
+    }
+
+    function renderAiBatch() {
+      const container = $("aiBatchResult");
+      if (!container || !aiBatch) return;
+      const proposals = aiBatch.proposals || [];
+      container.innerHTML = '<div class="proposal">' +
+        '<div class="proposalHead"><h2>Lote preparado</h2><span class="confidence">' + html(aiBatch.actionable || 0) + ' accion(es) aplicables de ' + html(aiBatch.total || proposals.length) + '</span></div>' +
+        '<div class="detailBox"><strong>Confirmacion necesaria</strong>Nada se ha guardado todavia. Revisa cada tarjeta y deja marcadas solo las que quieras aplicar.</div>' +
+        '<label class="checkLine"><input type="checkbox" id="aiBatchLearnCorrections" checked /> Aprender de las correcciones del lote</label>' +
+        '<div class="toolbar"><button class="green" id="aiBatchApply">Aplicar seleccionadas</button><span class="muted" id="aiBatchApplyMessage"></span></div>' +
+        '<div class="aiBatchList">' + proposals.map(renderAiBatchProposal).join("") + '</div>' +
+      '</div>';
+      document.querySelectorAll("[data-ai-batch-selected]").forEach(input => input.addEventListener("change", event => {
+        event.target.closest(".aiBatchCard").classList.toggle("disabled", !event.target.checked);
+      }));
+      proposals.forEach((_proposal, index) => {
+        const actionSelect = $(aiBatchFieldId(index, "action"));
+        if (actionSelect) actionSelect.addEventListener("change", () => {
+          const kind = aiBatchActionEntityType(actionSelect.value);
+          const entitySelect = $(aiBatchFieldId(index, "entity"));
+          if (entitySelect) entitySelect.innerHTML = entityOptionsHtml(kind, "");
+        });
+      });
+      $("aiBatchApply").addEventListener("click", applyAiBatch);
+    }
+
+    function collectAiBatchItem(index) {
+      const action = $(aiBatchFieldId(index, "action")).value;
+      const payload = {
+        titulo: $(aiBatchFieldId(index, "title")).value,
+        categoria: $(aiBatchFieldId(index, "category")).value,
+        tipo_registro: "Seguimiento",
+        estado_nuevo: $(aiBatchFieldId(index, "state")).value,
+        prioridad_nueva: $(aiBatchFieldId(index, "priority")).value,
+        responsable_nuevo: $(aiBatchFieldId(index, "owner")).value,
+        responsable_proximo_paso: $(aiBatchFieldId(index, "nextOwner")).value,
+        fecha_objetivo_proximo_paso: $(aiBatchFieldId(index, "nextDate")).value,
+        fecha_proxima_revision: $(aiBatchFieldId(index, "nextDate")).value,
+        comentario: $(aiBatchFieldId(index, "comment")).value,
+        proximo_paso: $(aiBatchFieldId(index, "nextStep")).value,
+        motivo_bloqueo: $(aiBatchFieldId(index, "blockReason")).value,
+        id_proyecto: $(aiBatchFieldId(index, "project")).value,
+      };
+      return {
+        action,
+        selected: document.querySelector('[data-ai-batch-selected="' + index + '"]')?.checked,
+        entity_id: $(aiBatchFieldId(index, "entity")).value,
+        payload,
+      };
+    }
+
+    async function analyzeAiBatch() {
+      const text = $("aiBatchText").value;
+      if (!safe(text)) {
+        $("aiBatchMessage").textContent = "Pega primero varios asuntos.";
+        return;
+      }
+      $("aiBatchAnalyze").disabled = true;
+      $("aiBatchMessage").textContent = "Preparando lote...";
+      $("aiBatchResult").innerHTML = "";
+      try {
+        if (!options.responsables.length) await loadOptions();
+        aiBatch = await api("/api/ai/batch-operate", { method: "POST", body: JSON.stringify({ text }) });
+        $("aiBatchMessage").textContent = "Lote preparado. Revisa antes de aplicar.";
+        renderAiBatch();
+      } catch (error) {
+        $("aiBatchMessage").textContent = error.message;
+      } finally {
+        $("aiBatchAnalyze").disabled = false;
+      }
+    }
+
+    async function applyAiBatch() {
+      if (!aiBatch?.proposals?.length) return;
+      const selected = aiBatch.proposals
+        .map((proposal, index) => ({ proposal, index, item: collectAiBatchItem(index) }))
+        .filter(entry => entry.item.selected && !["consulta", "revisar_manual", "fuera_de_alcance"].includes(entry.item.action));
+      if (!selected.length) {
+        $("aiBatchApplyMessage").textContent = "No hay propuestas seleccionadas aplicables.";
+        return;
+      }
+      if (!confirm("Se aplicaran " + selected.length + " propuesta(s) editadas. ¿Confirmas guardar el lote?")) return;
+      $("aiBatchApply").disabled = true;
+      $("aiBatchApplyMessage").textContent = "Aplicando lote...";
+      let saved = 0;
+      let failed = 0;
+      for (const entry of selected) {
+        const message = $(aiBatchFieldId(entry.index, "message"));
+        try {
+          let result;
+          if (entry.item.action === "seguimiento_proyecto" || entry.item.action === "seguimiento_tarea") {
+            const type = entry.item.action === "seguimiento_tarea" ? "task" : "project";
+            if (!entry.item.entity_id) throw new Error("Selecciona el elemento existente.");
+            result = await api("/api/entity/record", { method: "POST", body: JSON.stringify({ type, id: entry.item.entity_id, payload: entry.item.payload }) });
+          } else {
+            const type = entry.item.action === "crear_tarea" ? "task" : "project";
+            result = await api("/api/entity/create", { method: "POST", body: JSON.stringify({ type, payload: entry.item.payload }) });
+          }
+          saved += 1;
+          if (message) message.textContent = "Guardado correctamente.";
+          if ($("aiBatchLearnCorrections")?.checked) {
+            try {
+              await api("/api/ai/rules/action", {
+                method: "POST",
+                body: JSON.stringify({
+                  action: "learn_redaction",
+                  data: {
+                    action: entry.item.action,
+                    source_text: entry.proposal.source_text || "",
+                    original_payload: entry.proposal.payload || {},
+                    final_payload: entry.item.payload,
+                    entity: entry.proposal.entity || null,
+                    origin: "automatizacion_guiada",
+                  },
+                }),
+              });
+            } catch {}
+          }
+          if (result?.type && result?.id) {
+            aiBatch.proposals[entry.index].saved_result = result;
+          }
+        } catch (error) {
+          failed += 1;
+          if (message) message.innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+        }
+      }
+      aiRulesLoaded = false;
+      await loadAiRules(true);
+      await loadOverview();
+      $("aiBatchApply").disabled = false;
+      $("aiBatchApplyMessage").textContent = "Lote finalizado. Guardadas: " + saved + ". Fallidas: " + failed + ".";
     }
 
     async function applyAiProposal() {
@@ -9054,6 +9308,14 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await analyzeOperationalWithAi(session, body.text || ""));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/batch-operate") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede preparar automatizaciones guiadas." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await analyzeGuidedAutomationBatch(session, body.text || ""));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);

@@ -8,9 +8,9 @@ El objetivo final no es tener "una IA que contesta", sino un agente operativo co
 
 ## Estado global
 
-- App web operativa actual: 60%.
-- Plataforma central inteligente final: 35% - 40%.
-- Agente conversacional real: 15% - 20%.
+- App web operativa actual: 68%.
+- Plataforma central inteligente final: 45% - 50%.
+- Agente conversacional real: 28% - 32%.
 
 Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe indicar:
 
@@ -24,21 +24,21 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 4 - Automatizacion guiada |
-| Estado tecnico | 5% |
-| Estado funcional | 5% |
-| Nucleo anterior | Fase 3 - Memoria y reglas aprendidas cerrada al 100% en su nucleo inicial |
-| Accion permitida ahora | Preparar propuestas agrupadas revisables antes de aplicar |
+| Nucleo activo | Fase 5 - Agente completo |
+| Estado tecnico | 0% |
+| Estado funcional | 0% |
+| Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
+| Accion permitida ahora | Planificar agente conversacional completo por herramientas internas |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
-| Riesgo principal | Que una automatizacion por lote oculte demasiadas decisiones al usuario |
+| Riesgo principal | Intentar acciones complejas sin dividirlas en herramientas internas auditables |
 
 Proxima accion:
 
-1. Crear entrada de automatizacion guiada por lote.
-2. Dividir texto largo en propuestas independientes.
-3. Mostrar cada propuesta con seleccion y campos editables.
-4. Permitir aplicar solo las propuestas seleccionadas con confirmacion final.
+1. Definir herramientas internas del agente por modulo.
+2. Priorizar email, contabilidad y documentos solo con modo propuesta.
+3. Crear conversaciones con memoria contextual controlada.
+4. Mantener confirmacion por cada accion sensible.
 
 ## Reglas de trabajo
 
@@ -664,11 +664,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 2 - Acciones con confirmacion | 100% cerrado | Usuario confirma que el flujo se entiende y puede refinarse mas adelante. La mejora de calidad en titulo, comentario y proximo paso se registra para Fase 3 | Abrir memoria controlada y reglas aprendidas |
 | 2026-08-27 | Fase 3 - Memoria y reglas aprendidas | 5% tecnico / 5% funcional | Se crea documento de fase con objetivo, reglas, primer alcance y ramificacion de redaccion operativa | Crear estructura persistente de reglas IA |
 | 2026-08-27 | Fase 3 - Memoria y reglas aprendidas | 100% nucleo inicial cerrado | Se implementa tabla `ia_reglas`, panel Memoria IA, aprendizaje de correcciones de redaccion, aplicacion de reglas en propuestas confirmables y prueba `assert-ai-memory` | Abrir Fase 4 - Automatizacion guiada |
+| 2026-08-27 | Fase 4 - Automatizacion guiada | 100% nucleo inicial cerrado | Se implementa lote guiado con contrato `guided_batch_v1`, separacion en propuestas independientes, tarjetas editables, seleccion por propuesta, confirmacion final y aprendizaje opcional de correcciones | Preparar Fase 5 - Agente completo por herramientas internas |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
-- Nucleo activo: Fase 4 - Automatizacion guiada.
-- Ultimo nucleo cerrado: Fase 3 - Memoria y reglas aprendidas al 100% en su nucleo inicial.
-- Avance actual: 5% tecnico / 5% funcional.
-- Pendiente inmediato: crear bandeja de propuestas agrupadas revisables y aplicables por seleccion.
+- Nucleo activo: Fase 5 - Agente completo.
+- Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
+- Avance actual: 0% tecnico / 0% funcional.
+- Pendiente inmediato: definir herramientas internas del agente y escoger el primer dominio complejo.
