@@ -3705,6 +3705,120 @@ async function analyzeGuidedAutomationBatch(session, text) {
   };
 }
 
+function detectAgentIntent(text) {
+  const cleanText = String(text || "").trim();
+  if (!cleanText) {
+    return {
+      intent: "aclaracion",
+      confidence: 0,
+      reason: "No hay texto suficiente.",
+      questions: ["Escribe una consulta, una actualizacion operativa o varios asuntos para preparar."],
+    };
+  }
+  const normalized = normalizeText(cleanText);
+  const segments = splitGuidedAutomationText(cleanText);
+  if (segments.length > 1) {
+    return {
+      intent: "lote",
+      confidence: 0.82,
+      reason: "El texto contiene varios bloques o asuntos separados.",
+      questions: [],
+    };
+  }
+  const shortText = cleanText.length <= 420;
+  const hasQuestion = /[?¿]/.test(cleanText) || /\b(cual|cuanto|cuando|quien|dime|busca|listado|lista|consulta|ensename|muestrame|muestra|balance|deuda|debe|adeuda|propietario|email|correo|presupuesto)\b/i.test(normalized);
+  const debtOrOwnerQuery = /\b(deuda|morosidad|saldo pendiente|recibos? pendientes?|propietario|titular|email|correo|presupuesto|balance|disponible)\b/i.test(normalized);
+  const operationalVerb = /\b(crea|crear|anade|anadir|añade|añadir|actualiza|actualizar|registra|registrar|seguimiento|incidencia|prepara accion|guardar|alta tarea|alta proyecto)\b/i.test(cleanText);
+  const destructiveOrExternal = /\b(elimina|eliminar|borra|borrar|cambia titularidad|envia|enviar correo|manda correo|remesa|xml|certificado)\b/i.test(normalized);
+  const operational = hasOperationalSignal(cleanText);
+  if (destructiveOrExternal) {
+    return {
+      intent: "aclaracion",
+      confidence: 0.58,
+      reason: "La peticion parece sensible o todavia no tiene herramienta segura completa.",
+      questions: ["Indica si quieres solo una consulta o que prepare una propuesta revisable sin guardar nada."],
+    };
+  }
+  if ((shortText && hasQuestion) || debtOrOwnerQuery) {
+    return {
+      intent: "consulta",
+      confidence: debtOrOwnerQuery ? 0.78 : 0.68,
+      reason: "El mensaje parece pedir datos internos sin solicitar una escritura.",
+      questions: [],
+    };
+  }
+  if (operationalVerb || operational || cleanText.length > 700) {
+    return {
+      intent: "accion",
+      confidence: operationalVerb ? 0.76 : 0.62,
+      reason: "El texto parece describir una actuacion, incidencia o seguimiento operativo.",
+      questions: [],
+    };
+  }
+  return {
+    intent: "aclaracion",
+    confidence: 0.35,
+    reason: "No se distingue con seguridad si es consulta o accion.",
+    questions: ["Aclara si quieres consultar datos o preparar una accion revisable."],
+  };
+}
+
+async function answerAgentMessage(session, text) {
+  const cleanText = String(text || "").trim();
+  const decision = detectAgentIntent(cleanText);
+  const base = {
+    ok: true,
+    agent_contract: "agent_router_v1",
+    intent: decision.intent,
+    confidence: decision.confidence,
+    reason: decision.reason,
+    requires_confirmation: ["accion", "lote"].includes(decision.intent),
+    writes_data: false,
+    tool: "",
+    questions: decision.questions || [],
+    message: "",
+    result: null,
+  };
+  if (decision.intent === "consulta") {
+    const result = await answerAiQuery(session, cleanText);
+    return {
+      ...base,
+      tool: "/api/ai/query",
+      message: "He tratado el mensaje como consulta. La respuesta queda guardada en el historial de consultas IA.",
+      result,
+    };
+  }
+  if (decision.intent === "accion") {
+    const result = await analyzeOperationalWithAi(session, cleanText);
+    return {
+      ...base,
+      tool: "/api/ai/operate",
+      message: result.queryDetected
+        ? "El agente ha detectado que parece una consulta. No se ha guardado nada."
+        : "He preparado una propuesta editable. Revisa y confirma antes de guardar.",
+      result,
+    };
+  }
+  if (decision.intent === "lote") {
+    const result = await analyzeGuidedAutomationBatch(session, cleanText);
+    return {
+      ...base,
+      tool: "/api/ai/batch-operate",
+      message: "He preparado un lote revisable. Nada se guarda hasta que confirmes las tarjetas seleccionadas.",
+      result,
+    };
+  }
+  return {
+    ...base,
+    message: "Necesito una aclaracion antes de preparar una accion o consulta.",
+    result: {
+      action: "revisar_manual",
+      answer: "No se ha guardado nada. Indica si quieres consultar informacion o preparar una propuesta editable.",
+      questions: decision.questions || [],
+    },
+  };
+}
+
 function queryActionOptions(session) {
   const script = `
 import json
@@ -4571,13 +4685,19 @@ function homePage() {
     .aiHub { display:grid; gap:16px; grid-column:1 / -1; }
     .aiQueryLayout { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.65fr); gap:14px; align-items:start; }
     .aiBox { display:grid; gap:12px; border:1px solid var(--line); border-radius:8px; padding:16px; background:var(--surface); }
+    .aiAgentBox { border-left:6px solid #7c3aed; background:#fbfaff; }
     .aiQueryBox { border-left:6px solid var(--blue); }
     .aiOperationBox { border-left:6px solid var(--green); }
     .aiSectionHead { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap; }
     .aiSectionHead h2 { margin:0; }
     .aiSectionHead p { margin:4px 0 0; color:var(--muted); font-size:13px; }
     .aiInput { min-height:180px; resize:vertical; }
+    .aiAgentInput { min-height:132px; }
     .aiQueryInput { min-height:105px; }
+    .agentDecision { background:white; border:1px solid #ddd6fe; border-radius:8px; padding:12px; display:grid; gap:8px; }
+    .agentDecisionHead { display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap; }
+    .agentDecisionHead h3 { margin:0; font-size:18px; }
+    .agentDecision p { margin:0; color:var(--muted); }
     .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
     .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
     .aiHistoryHead h2 { margin:0; font-size:17px; }
@@ -7747,6 +7867,16 @@ function homePage() {
 
     function aiPanelHtml() {
       return '<div class="aiHub">' +
+        '<section class="aiBox aiAgentBox">' +
+          '<div class="aiSectionHead"><div><h2>Agente IA</h2><p>Escribe de forma natural. La app decide si debe consultar, preparar una accion individual o dividirlo en un lote revisable.</p></div><span class="pill">Router seguro</span></div>' +
+          '<textarea id="agentText" class="aiInput aiAgentInput" placeholder="Ejemplos: ¿Cuanto debe PROMAGA? / Actualiza el proyecto de arquetas... / Pega varios asuntos separados por ---"></textarea>' +
+          '<div class="toolbar">' +
+            '<button class="green" id="agentSend">Enviar al agente</button>' +
+            '<button class="ghost" id="agentClear">Limpiar agente</button>' +
+            '<span class="muted" id="agentMessage"></span>' +
+          '</div>' +
+          '<div id="agentResult"></div>' +
+        '</section>' +
         '<div class="aiQueryLayout">' +
           '<section class="aiBox aiQueryBox">' +
             '<div class="aiSectionHead"><div><h2>Consultas IA</h2><p>Pregunta sobre propietarios, deuda, contabilidad, presupuestos, tareas o proyectos.</p></div><span class="pill">Solo lectura</span></div>' +
@@ -7792,6 +7922,19 @@ function homePage() {
     }
 
     function bindAiPanel() {
+      $("agentSend").addEventListener("click", askAgent);
+      $("agentText").addEventListener("keydown", event => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          askAgent();
+        }
+      });
+      $("agentClear").addEventListener("click", () => {
+        $("agentText").value = "";
+        $("agentResult").innerHTML = "";
+        $("agentMessage").textContent = "";
+        $("agentText").focus();
+      });
       $("aiAsk").addEventListener("click", askAiQuery);
       $("aiQueryText").addEventListener("keydown", event => {
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -7946,6 +8089,78 @@ function homePage() {
         await loadAiRules(true);
       } catch (error) {
         if ($("aiRulesMessage")) $("aiRulesMessage").textContent = error.message;
+      }
+    }
+
+    function agentIntentLabel(intent) {
+      return {
+        consulta: "Consulta",
+        accion: "Accion revisable",
+        lote: "Lote revisable",
+        aclaracion: "Aclaracion necesaria",
+      }[intent] || "Agente";
+    }
+
+    function renderAgentDecision(response) {
+      const container = $("agentResult");
+      if (!container) return;
+      const confidence = Math.round((response.confidence || 0) * 100);
+      const targetLabel = response.intent === "accion"
+        ? "Ver propuesta en Entrada inteligente"
+        : response.intent === "lote"
+          ? "Ver lote preparado"
+          : "";
+      container.innerHTML = '<div class="agentDecision">' +
+        '<div class="agentDecisionHead"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><span class="confidence">Confianza: ' + html(confidence) + '%</span></div>' +
+        '<p>' + html(response.message || response.reason || "") + '</p>' +
+        (response.reason ? '<div class="line muted">' + html(response.reason) + '</div>' : '') +
+        (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
+        (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
+        (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
+      '</div>';
+      if (response.intent === "consulta" && response.result) {
+        renderAiProposal(response.result, "agentQueryPreview");
+      }
+      if ($("agentOpenPrepared")) {
+        $("agentOpenPrepared").addEventListener("click", () => {
+          const target = response.intent === "lote" ? $("aiBatchResult") : $("aiOperationResult");
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    }
+
+    async function askAgent() {
+      const text = $("agentText").value;
+      if (!safe(text)) {
+        $("agentMessage").textContent = "Escribe primero una consulta o instruccion.";
+        return;
+      }
+      $("agentSend").disabled = true;
+      $("agentMessage").textContent = "Analizando intencion...";
+      $("agentResult").innerHTML = "";
+      try {
+        if (!options.responsables.length) await loadOptions();
+        const response = await api("/api/agent/message", { method: "POST", body: JSON.stringify({ text }) });
+        $("agentMessage").textContent = response.message || "Respuesta preparada.";
+        if (response.intent === "accion") {
+          aiProposal = response.result;
+          $("aiText").value = text;
+          $("aiMessage").textContent = response.result?.queryDetected ? "No se ha preparado ningun cambio." : "Propuesta generada desde Agente IA.";
+          renderAiProposal(aiProposal, "aiOperationResult");
+        } else if (response.intent === "lote") {
+          aiBatch = response.result;
+          $("aiBatchText").value = text;
+          $("aiBatchMessage").textContent = "Lote generado desde Agente IA.";
+          renderAiBatch();
+        } else if (response.intent === "consulta" && response.result?.history_id) {
+          aiHistoryLoaded = false;
+          await loadAiHistory(true, response.result.history_id || 0);
+        }
+        renderAgentDecision(response);
+      } catch (error) {
+        $("agentMessage").textContent = error.message;
+      } finally {
+        $("agentSend").disabled = false;
       }
     }
 
@@ -9293,6 +9508,14 @@ async function handle(req, res) {
     const action = String(body.action || "");
     if (!["delete", "clear"].includes(action)) return sendJson(res, 400, { ok: false, error: "Accion de historial no permitida." });
     return sendJson(res, 200, await runAiHistoryCommand(session, action, { id_consulta: body.id_consulta }));
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/message") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede usar el agente operativo." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await answerAgentMessage(session, body.text || ""));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/query") {
     const session = readSession(req);

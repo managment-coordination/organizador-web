@@ -8,9 +8,9 @@ El objetivo final no es tener "una IA que contesta", sino un agente operativo co
 
 ## Estado global
 
-- App web operativa actual: 68%.
+- App web operativa actual: 70%.
 - Plataforma central inteligente final: 45% - 50%.
-- Agente conversacional real: 28% - 32%.
+- Agente conversacional real: 34% - 38%.
 
 Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe indicar:
 
@@ -25,10 +25,10 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 5 - Agente completo |
-| Estado tecnico | 0% |
-| Estado funcional | 0% |
+| Estado tecnico | 25% |
+| Estado funcional | 18% |
 | Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
-| Accion permitida ahora | Planificar agente conversacional completo por herramientas internas |
+| Accion permitida ahora | Usar el agente-router de Centro IA para consulta, accion individual revisable o lote revisable |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
 | Riesgo principal | Intentar acciones complejas sin dividirlas en herramientas internas auditables |
@@ -36,9 +36,10 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 Proxima accion:
 
 1. Definir herramientas internas del agente por modulo.
-2. Priorizar email, contabilidad y documentos solo con modo propuesta.
-3. Crear conversaciones con memoria contextual controlada.
+2. Crear memoria contextual de conversacion, separada de reglas aprendidas.
+3. Priorizar email, contabilidad y documentos solo con modo propuesta.
 4. Mantener confirmacion por cada accion sensible.
+5. Evolucionar el agente desde router general a asistente con catalogo de herramientas internas.
 
 ## Reglas de trabajo
 
