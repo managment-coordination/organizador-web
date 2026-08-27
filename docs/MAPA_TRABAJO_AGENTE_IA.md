@@ -24,21 +24,21 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 3 - Memoria y reglas aprendidas |
+| Nucleo activo | Fase 4 - Automatizacion guiada |
 | Estado tecnico | 5% |
 | Estado funcional | 5% |
-| Nucleo anterior | Fase 2 - Acciones con confirmacion cerrada al 100% |
-| Accion permitida ahora | Crear memoria controlada y reglas confirmadas por usuario |
+| Nucleo anterior | Fase 3 - Memoria y reglas aprendidas cerrada al 100% en su nucleo inicial |
+| Accion permitida ahora | Preparar propuestas agrupadas revisables antes de aplicar |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
-| Riesgo principal | Que la app aprenda reglas incorrectas si no exige confirmacion y trazabilidad |
+| Riesgo principal | Que una automatizacion por lote oculte demasiadas decisiones al usuario |
 
 Proxima accion:
 
-1. Crear estructura persistente para reglas IA confirmadas.
-2. Empezar por reglas de redaccion: titulo, comentario y proximo paso.
-3. Mostrar reglas usadas en cada propuesta IA.
-4. Crear panel minimo para ver, desactivar o corregir reglas.
+1. Crear entrada de automatizacion guiada por lote.
+2. Dividir texto largo en propuestas independientes.
+3. Mostrar cada propuesta con seleccion y campos editables.
+4. Permitir aplicar solo las propuestas seleccionadas con confirmacion final.
 
 ## Reglas de trabajo
 
@@ -663,11 +663,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 2 - Acciones con confirmacion | 85% tecnico / 75% funcional | Se anade previsualizacion antes/despues con snapshot actual y valores propuestos; al editar campos se actualiza la columna propuesta. Las pruebas de consultas y contrato siguen correctas | Validacion funcional del usuario en web para cerrar Fase 2 al 100% |
 | 2026-08-27 | Fase 2 - Acciones con confirmacion | 100% cerrado | Usuario confirma que el flujo se entiende y puede refinarse mas adelante. La mejora de calidad en titulo, comentario y proximo paso se registra para Fase 3 | Abrir memoria controlada y reglas aprendidas |
 | 2026-08-27 | Fase 3 - Memoria y reglas aprendidas | 5% tecnico / 5% funcional | Se crea documento de fase con objetivo, reglas, primer alcance y ramificacion de redaccion operativa | Crear estructura persistente de reglas IA |
+| 2026-08-27 | Fase 3 - Memoria y reglas aprendidas | 100% nucleo inicial cerrado | Se implementa tabla `ia_reglas`, panel Memoria IA, aprendizaje de correcciones de redaccion, aplicacion de reglas en propuestas confirmables y prueba `assert-ai-memory` | Abrir Fase 4 - Automatizacion guiada |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
-- Nucleo activo: Fase 3 - Memoria y reglas aprendidas.
-- Ultimo nucleo cerrado: Fase 2 - Acciones con confirmacion al 100%.
+- Nucleo activo: Fase 4 - Automatizacion guiada.
+- Ultimo nucleo cerrado: Fase 3 - Memoria y reglas aprendidas al 100% en su nucleo inicial.
 - Avance actual: 5% tecnico / 5% funcional.
-- Pendiente inmediato: crear estructura persistente de reglas IA y empezar por redaccion de titulo, comentario y proximo paso.
+- Pendiente inmediato: crear bandeja de propuestas agrupadas revisables y aplicables por seleccion.

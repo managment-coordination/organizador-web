@@ -11,6 +11,13 @@ Crear una memoria util pero controlada para que el agente mejore con el uso sin 
 - Porcentaje funcional de partida: 5%.
 - Nucleo anterior cerrado: Fase 2 - Acciones IA con confirmacion.
 
+## Estado de cierre del nucleo inicial
+
+- Fecha de cierre: 2026-08-27.
+- Estado tecnico: 100%.
+- Estado funcional: 100% para el alcance inicial.
+- Alcance cerrado: memoria persistente, panel visible, aprendizaje de correcciones de redaccion, aplicacion de reglas en propuestas y pruebas automaticas.
+
 ## Problema que resuelve
 
 Ahora la IA ya separa consultas y acciones, y exige confirmacion antes de guardar. El siguiente salto es que aprenda de las correcciones:
@@ -125,6 +132,25 @@ Fase 3 podra considerarse al 40% cuando exista:
 - guardado de correcciones de titulo, comentario y proximo paso;
 - aplicacion de esas reglas en la entrada inteligente;
 - prueba automatica de que una regla no ejecuta cambios sin confirmacion.
+
+Resultado: cumplido y ampliado al alcance inicial completo. La fase queda cerrada como primer nucleo de memoria controlada. Las memorias especificas de propietario, banco, proveedores o contabilidad se desarrollaran cuando entren sus nucleos funcionales, usando esta misma estructura.
+
+## Implementado
+
+- Tabla `ia_reglas`.
+- Acciones internas: listar, aprender redaccion, actualizar/desactivar y marcar uso.
+- Panel `Memoria IA` dentro del Centro IA.
+- Checkbox visible para aprender de correcciones al aplicar una propuesta.
+- Registro de reglas para `redaccion_titulo`, `redaccion_comentario` y `redaccion_proximo_paso`.
+- Aplicacion de reglas solo sobre acciones que ya requieren confirmacion.
+- Trazabilidad de reglas usadas mediante `used_rules` y contador de usos.
+
+## Pruebas
+
+- `node scripts/assert-ai-memory.mjs`.
+- `node scripts/assert-ai-action-contract.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+- `npm run check`.
 
 ## Ramificacion registrada
 

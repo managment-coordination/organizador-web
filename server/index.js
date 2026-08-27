@@ -322,6 +322,184 @@ function runAiHistoryCommand(session, action, data = {}) {
   });
 }
 
+function runAiMemoryCommand(session, action, data = {}, pc = "web") {
+  const script = `
+import json
+import re
+import sqlite3
+from datetime import datetime
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+action = ${JSON.stringify(action)}
+data = ${JSON.stringify(data || {})}
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+user_id = int(session.get("id_usuario") or 0)
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def clean(value, limit=4000):
+    return str(value or "").strip()[:limit]
+
+def can_use_memory():
+    return bool(user) and role in {"Superusuario", "Administrador", "Usuario"}
+
+def can_manage_rule(row=None):
+    if role in {"Superusuario", "Administrador"}:
+        return True
+    if row and int(row["id_usuario_creacion"] or 0) == user_id:
+        return True
+    return False
+
+def ensure_schema(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ia_reglas (
+            id_regla INTEGER PRIMARY KEY AUTOINCREMENT,
+            modulo TEXT NOT NULL,
+            tipo_regla TEXT NOT NULL,
+            descripcion TEXT NOT NULL,
+            valor_detectado TEXT,
+            valor_propuesto TEXT NOT NULL,
+            patron TEXT,
+            confianza REAL NOT NULL DEFAULT 0.7,
+            activa INTEGER NOT NULL DEFAULT 1,
+            confirmada INTEGER NOT NULL DEFAULT 1,
+            origen TEXT,
+            usos INTEGER NOT NULL DEFAULT 0,
+            fecha_ultimo_uso TEXT,
+            id_usuario_creacion INTEGER,
+            usuario_creacion TEXT,
+            fecha_creacion TEXT NOT NULL,
+            usuario_confirmacion TEXT,
+            fecha_confirmacion TEXT,
+            pc_creacion TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_reglas_modulo_tipo ON ia_reglas(modulo, tipo_regla, activa)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_reglas_usuario ON ia_reglas(id_usuario_creacion, fecha_creacion DESC)")
+
+def audit(conn, action_name, entity="", entity_id=None, detail=""):
+    conn.execute(
+        "INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
+        (now_iso(), user, pc, action_name, entity, entity_id, clean(detail, 1000)),
+    )
+
+def row_dict(row):
+    return dict(row) if row else None
+
+def meaningful_words(value):
+    words = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]{4,}", str(value or "").lower())
+    skip = {"para","sobre","desde","hasta","como","esta","este","estos","estas","debe","deben","tiene","tienen","hacer","revisar","coordinar","seguimiento","proximo","paso"}
+    result = []
+    for word in words:
+        if word not in skip and word not in result:
+            result.append(word)
+    return " ".join(result[:14])
+
+def create_rule(conn, tipo, field_label, original, final, source_text, origin):
+    original = clean(original, 4000)
+    final = clean(final, 4000)
+    if not final or original == final:
+        return None
+    pattern = meaningful_words(source_text) or meaningful_words(original) or meaningful_words(final)
+    description = f"Preferencia confirmada para {field_label}: usar una redaccion mas ajustada cuando el contexto sea similar."
+    cursor = conn.execute(
+        """
+        INSERT INTO ia_reglas
+        (modulo,tipo_regla,descripcion,valor_detectado,valor_propuesto,patron,confianza,activa,confirmada,
+         origen,id_usuario_creacion,usuario_creacion,fecha_creacion,usuario_confirmacion,fecha_confirmacion,pc_creacion)
+        VALUES ('redaccion',?,?,?,?,?,0.72,1,1,?,?,?,?,?,?)
+        """,
+        (tipo, description, original, final, pattern, origin, user_id, user, now_iso(), user, now_iso(), pc),
+    )
+    rule_id = int(cursor.lastrowid)
+    audit(conn, "Crear regla IA", "ia_regla", rule_id, f"{tipo}: {final[:160]}")
+    return rule_id
+
+if not can_use_memory():
+    raise PermissionError("Tu perfil no puede gestionar memoria IA.")
+
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    with conn:
+        ensure_schema(conn)
+        if action == "list":
+            include_inactive = bool(data.get("include_inactive"))
+            sql = """
+                SELECT *
+                FROM ia_reglas
+                WHERE 1=1
+            """
+            params = []
+            module = clean(data.get("modulo"), 80)
+            if module:
+                sql += " AND modulo = ?"
+                params.append(module)
+            if not include_inactive:
+                sql += " AND activa = 1"
+            sql += " ORDER BY activa DESC, fecha_creacion DESC, id_regla DESC LIMIT ?"
+            params.append(max(1, min(int(data.get("limit") or 80), 200)))
+            rules = [dict(row) for row in conn.execute(sql, params)]
+            print(json.dumps({"ok": True, "rules": rules}, ensure_ascii=False))
+        elif action == "learn_redaction":
+            original = data.get("original_payload") or {}
+            final = data.get("final_payload") or {}
+            source_text = clean(data.get("source_text"), 6000)
+            origin = clean(data.get("origin") or data.get("action") or "entrada_inteligente", 200)
+            created = []
+            mapping = [
+                ("redaccion_titulo", "titulo", "titulo"),
+                ("redaccion_comentario", "comentario", "comentario"),
+                ("redaccion_proximo_paso", "proximo paso", "proximo_paso"),
+            ]
+            for tipo, label, key in mapping:
+                rule_id = create_rule(conn, tipo, label, original.get(key), final.get(key), source_text, origin)
+                if rule_id:
+                    created.append(rule_id)
+            print(json.dumps({"ok": True, "created": created, "count": len(created)}, ensure_ascii=False))
+        elif action == "update":
+            rule_id = int(data.get("id_regla") or 0)
+            row = conn.execute("SELECT * FROM ia_reglas WHERE id_regla=?", (rule_id,)).fetchone()
+            if not row:
+                raise ValueError("La regla no existe.")
+            if not can_manage_rule(row):
+                raise PermissionError("No tienes permiso para modificar esta regla.")
+            fields = []
+            params = []
+            for column in ["descripcion", "valor_propuesto", "patron"]:
+                if column in data:
+                    fields.append(f"{column}=?")
+                    params.append(clean(data.get(column), 4000))
+            if "confianza" in data:
+                fields.append("confianza=?")
+                params.append(float(data.get("confianza") or 0.7))
+            if "activa" in data:
+                fields.append("activa=?")
+                params.append(1 if data.get("activa") else 0)
+            if not fields:
+                raise ValueError("No hay cambios que guardar.")
+            params.append(rule_id)
+            conn.execute(f"UPDATE ia_reglas SET {', '.join(fields)} WHERE id_regla=?", params)
+            audit(conn, "Actualizar regla IA", "ia_regla", rule_id, json.dumps({k:data.get(k) for k in data.keys() if k != "id_regla"}, ensure_ascii=False))
+            print(json.dumps({"ok": True, "id_regla": rule_id}, ensure_ascii=False))
+        elif action == "mark_used":
+            ids = [int(value) for value in data.get("ids") or [] if int(value or 0)]
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                conn.execute(f"UPDATE ia_reglas SET usos=COALESCE(usos,0)+1, fecha_ultimo_uso=? WHERE id_regla IN ({marks})", [now_iso()] + ids)
+            print(json.dumps({"ok": True, "count": len(ids)}, ensure_ascii=False))
+        else:
+            raise ValueError("Accion de memoria IA no valida.")
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function runSecurityCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
@@ -1456,6 +1634,55 @@ function scoreTextMatch(text, title) {
   const source = normalizeText(text);
   const tokens = normalizeText(title).split(" ").filter((token) => token.length > 2);
   return tokens.reduce((score, token) => score + (source.includes(token) ? 1 : 0), 0);
+}
+
+function scoreAiRuleMatch(text, rule) {
+  const source = normalizeText(text);
+  const words = normalizeText([rule?.patron, rule?.valor_detectado, rule?.descripcion].filter(Boolean).join(" "))
+    .split(" ")
+    .filter((token) => token.length > 3);
+  const unique = [...new Set(words)].slice(0, 20);
+  if (!source || !unique.length) return 0;
+  return unique.reduce((score, token) => score + (source.includes(token) ? 1 : 0), 0);
+}
+
+function applyRedactionRulesToProposal(proposal, rules, sourceText) {
+  if (!proposal?.payload || !AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action)) return proposal;
+  const fieldMap = {
+    redaccion_titulo: "titulo",
+    redaccion_comentario: "comentario",
+    redaccion_proximo_paso: "proximo_paso",
+  };
+  const usedRules = [];
+  const payload = { ...proposal.payload };
+  for (const [ruleType, field] of Object.entries(fieldMap)) {
+    if (field === "titulo" && !["crear_tarea", "crear_proyecto"].includes(proposal.action)) continue;
+    const candidates = (rules || [])
+      .filter((rule) => rule.tipo_regla === ruleType && rule.valor_propuesto)
+      .map((rule) => ({ ...rule, match_score: scoreAiRuleMatch(sourceText, rule) }))
+      .filter((rule) => rule.match_score >= 2 || Number(rule.confianza || 0) >= 0.9)
+      .sort((a, b) => (b.match_score - a.match_score) || (Number(b.confianza || 0) - Number(a.confianza || 0)));
+    const selected = candidates[0];
+    if (!selected) continue;
+    const proposed = String(selected.valor_propuesto || "").trim();
+    if (proposed && proposed !== String(payload[field] || "").trim()) {
+      payload[field] = proposed;
+      usedRules.push({
+        id_regla: selected.id_regla,
+        tipo_regla: selected.tipo_regla,
+        descripcion: selected.descripcion,
+        confianza: selected.confianza,
+        match_score: selected.match_score,
+      });
+    }
+  }
+  if (!usedRules.length) return proposal;
+  return {
+    ...proposal,
+    payload,
+    used_rules: [...(proposal.used_rules || []), ...usedRules],
+    memory_note: "Se han aplicado reglas de redaccion confirmadas por usuarios autorizados.",
+  };
 }
 
 function detectState(text, fallback = "En curso") {
@@ -3328,19 +3555,35 @@ async function analyzeWithAi(session, text, target = null) {
   const cleanText = String(text || "").trim();
   if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
   const context = await queryAiContext(session);
+  let redactionRules = [];
+  try {
+    redactionRules = (await runAiMemoryCommand(session, "list", { modulo: "redaccion", limit: 120 })).rules || [];
+  } catch {
+    redactionRules = [];
+  }
+  const finalizeProposal = async (proposal) => {
+    const improved = applyRedactionRulesToProposal(proposal, redactionRules, cleanText);
+    const ids = (improved.used_rules || []).map((rule) => Number(rule.id_regla)).filter(Boolean);
+    if (ids.length) {
+      try {
+        await runAiMemoryCommand(session, "mark_used", { ids });
+      } catch {}
+    }
+    return withAiProposalContract(improved);
+  };
   const targeted = targetedRecordProposal(cleanText, context, target);
-  if (targeted) return withAiProposalContract(targeted);
+  if (targeted) return finalizeProposal(targeted);
   const smart = await querySmartAssistant(session, cleanText);
-  if (smart?.handled) return withAiProposalContract(smart);
+  if (smart?.handled) return finalizeProposal(smart);
   const fallback = localAiProposal(cleanText, context);
   try {
     const external = await externalAiProposal(cleanText, context);
     if (fallback.action === "consulta" && external?.action && external.action !== "consulta") {
-      return withAiProposalContract({ ...fallback, warning: "La IA externa interpreto la consulta como una accion. Se ha mantenido el modo de consulta para evitar crear o modificar datos por error." });
+      return finalizeProposal({ ...fallback, warning: "La IA externa interpreto la consulta como una accion. Se ha mantenido el modo de consulta para evitar crear o modificar datos por error." });
     }
-    return withAiProposalContract(external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback);
+    return finalizeProposal(external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback);
   } catch (error) {
-    return withAiProposalContract({ ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` });
+    return finalizeProposal({ ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` });
   }
 }
 
@@ -4294,6 +4537,14 @@ function homePage() {
     .aiHistoryEmpty { padding:18px 14px; color:var(--muted); }
     .aiHistoryActions { display:flex; gap:6px; }
     .aiHistoryActions button { padding:7px 9px; min-height:34px; }
+    .aiRulesList { display:grid; gap:10px; }
+    .aiRuleCard { background:white; border:1px solid var(--line); border-radius:8px; padding:12px; display:grid; gap:8px; }
+    .aiRuleCard.inactive { opacity:.65; background:#f8fafc; }
+    .aiRuleHead { display:flex; justify-content:space-between; gap:8px; align-items:center; }
+    .aiRuleMeta { display:flex; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:12px; }
+    .aiMemoryApplied { background:#eefdf5; border-color:#bbf7d0; color:#14532d; }
+    .checkLine { display:flex; gap:8px; align-items:center; font-weight:700; color:#334155; }
+    .checkLine input { width:18px; height:18px; }
     .proposal { border:1px solid var(--line); border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:10px; }
     .proposalHead { display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap; align-items:center; }
     .confidence { font-weight:800; color:#1d4ed8; }
@@ -5304,6 +5555,8 @@ function homePage() {
     let aiProposal = null;
     let aiHistory = [];
     let aiHistoryLoaded = false;
+    let aiRules = [];
+    let aiRulesLoaded = false;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -7460,6 +7713,11 @@ function homePage() {
           '</div>' +
           '<div id="aiOperationResult"></div>' +
         '</section>' +
+        '<section class="aiBox aiMemoryBox">' +
+          '<div class="aiSectionHead"><div><h2>Memoria IA</h2><p>Reglas confirmadas que ayudan a redactar y clasificar mejor. Puedes desactivarlas si una no encaja.</p></div><span class="pill">Controlada</span></div>' +
+          '<div class="toolbar"><button class="ghost" id="aiRulesRefresh">Actualizar memoria</button><span class="muted" id="aiRulesMessage"></span></div>' +
+          '<div id="aiRulesList" class="aiRulesList"><div class="aiHistoryEmpty">Cargando memoria...</div></div>' +
+        '</section>' +
       '</div>';
     }
 
@@ -7480,6 +7738,7 @@ function homePage() {
       });
       $("aiHistoryRefresh").addEventListener("click", () => loadAiHistory(true));
       $("aiHistoryClear").addEventListener("click", clearAiHistory);
+      $("aiRulesRefresh").addEventListener("click", () => loadAiRules(true));
       $("aiAnalyze").addEventListener("click", analyzeAiText);
       $("aiClear").addEventListener("click", () => {
         $("aiText").value = "";
@@ -7488,6 +7747,7 @@ function homePage() {
         aiProposal = null;
       });
       loadAiHistory();
+      loadAiRules();
     }
 
     function aiHistoryDate(value) {
@@ -7554,6 +7814,61 @@ function homePage() {
         $("aiQueryMessage").textContent = "Historial eliminado.";
       } catch (error) {
         $("aiQueryMessage").textContent = error.message;
+      }
+    }
+
+    function ruleTypeLabel(type) {
+      return {
+        redaccion_titulo: "Titulo",
+        redaccion_comentario: "Comentario",
+        redaccion_proximo_paso: "Proximo paso",
+      }[type] || type || "Regla";
+    }
+
+    function renderAiRules() {
+      if (!$("aiRulesList")) return;
+      if (!aiRules.length) {
+        $("aiRulesList").innerHTML = '<div class="aiHistoryEmpty">Todavia no hay reglas aprendidas. Se crearan cuando apliques una propuesta IA editada y marques aprender.</div>';
+        return;
+      }
+      $("aiRulesList").innerHTML = aiRules.map(rule =>
+        '<article class="aiRuleCard' + (rule.activa ? '' : ' inactive') + '">' +
+          '<div class="aiRuleHead"><strong>' + html(ruleTypeLabel(rule.tipo_regla)) + '</strong><span class="pill">' + html(rule.activa ? "Activa" : "Inactiva") + '</span></div>' +
+          '<div class="line">' + html(rule.descripcion || "") + '</div>' +
+          '<div class="detailBox"><strong>Redaccion preferida</strong><div>' + html(rule.valor_propuesto || "") + '</div></div>' +
+          (rule.patron ? '<div class="line muted">Patron: ' + html(rule.patron) + '</div>' : '') +
+          '<div class="aiRuleMeta"><span>Usos: ' + html(rule.usos || 0) + '</span><span>Confianza: ' + html(Math.round((rule.confianza || 0) * 100)) + '%</span><span>' + html(rule.usuario_creacion || "") + '</span></div>' +
+          '<div class="toolbar"><button class="ghost" data-ai-rule-toggle="' + html(rule.id_regla) + '" data-ai-rule-active="' + html(rule.activa ? 0 : 1) + '">' + html(rule.activa ? "Desactivar" : "Activar") + '</button></div>' +
+        '</article>'
+      ).join("");
+      document.querySelectorAll("[data-ai-rule-toggle]").forEach(button => button.addEventListener("click", () => updateAiRule(Number(button.dataset.aiRuleToggle), button.dataset.aiRuleActive === "1")));
+    }
+
+    async function loadAiRules(force = false) {
+      if (aiRulesLoaded && !force) {
+        renderAiRules();
+        return;
+      }
+      if ($("aiRulesList")) $("aiRulesList").innerHTML = '<div class="aiHistoryEmpty">Cargando memoria...</div>';
+      try {
+        const data = await api("/api/ai/rules?limit=80&include_inactive=1");
+        aiRules = data.rules || [];
+        aiRulesLoaded = true;
+        renderAiRules();
+        if ($("aiRulesMessage")) $("aiRulesMessage").textContent = aiRules.length ? aiRules.length + " reglas en memoria." : "Sin reglas todavia.";
+      } catch (error) {
+        if ($("aiRulesList")) $("aiRulesList").innerHTML = '<div class="aiHistoryEmpty dangerText">' + html(error.message) + '</div>';
+      }
+    }
+
+    async function updateAiRule(id, active) {
+      if (!id) return;
+      try {
+        await api("/api/ai/rules/action", { method: "POST", body: JSON.stringify({ action: "update", data: { id_regla: id, activa: active } }) });
+        aiRulesLoaded = false;
+        await loadAiRules(true);
+      } catch (error) {
+        if ($("aiRulesMessage")) $("aiRulesMessage").textContent = error.message;
       }
     }
 
@@ -7752,6 +8067,9 @@ function homePage() {
       const beforeAfterHtml = proposal.before_after_preview
         ? '<div class="detailBox"><strong>Antes / despues</strong><div class="muted">' + html(proposal.before_after_preview.mode === "create" ? "Elemento nuevo. No existe valor anterior." : proposal.before_after_preview.title || "Elemento existente") + '</div><table class="answerTable"><thead><tr><th>Campo</th><th>Actual</th><th>Propuesto</th></tr></thead><tbody>' + (proposal.before_after_preview.rows || []).map(row => '<tr><td>' + html(row.field) + '</td><td>' + html(row.before) + '</td><td data-ai-after="' + html(row.field) + '">' + html(row.after) + '</td></tr>').join("") + '</tbody></table></div>'
         : "";
+      const usedRulesHtml = (proposal.used_rules || []).length
+        ? '<div class="detailBox aiMemoryApplied"><strong>Memoria aplicada</strong>' + proposal.used_rules.map(rule => '<div>- ' + html(ruleTypeLabel(rule.tipo_regla)) + ' | confianza ' + html(Math.round((rule.confianza || 0) * 100)) + '%</div>').join("") + '</div>'
+        : "";
       if (proposal.queryDetected) {
         resultContainer.innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Esto parece una consulta</h2><span class="pill">Sin cambios</span></div>' +
@@ -7802,6 +8120,7 @@ function homePage() {
         actionContractHtml +
         impactHtml +
         beforeAfterHtml +
+        usedRulesHtml +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
         questionsHtml +
         candidatesHtml +
@@ -7820,6 +8139,7 @@ function homePage() {
         '<label>Comentario</label><textarea id="aiComment">' + html(payload.comentario || "") + '</textarea>' +
         '<label>Proximo paso</label><textarea id="aiNextStep">' + html(payload.proximo_paso || "") + '</textarea>' +
         '<label>Motivo bloqueo</label><textarea id="aiBlockReason">' + html(payload.motivo_bloqueo || "") + '</textarea>' +
+        '<label class="checkLine"><input type="checkbox" id="aiLearnCorrections" checked /> Aprender de mis correcciones de titulo, comentario y proximo paso</label>' +
         '<div class="toolbar"><button class="green" id="aiApply">Aplicar propuesta</button><span class="muted" id="aiApplyMessage"></span></div>' +
       '</div>';
       $("aiApply").addEventListener("click", applyAiProposal);
@@ -7856,6 +8176,7 @@ function homePage() {
 
     async function applyAiProposal() {
       const action = $("aiAction").value;
+      const originalPayload = { ...(aiProposal?.payload || {}) };
       const payload = {
         titulo: $("aiTitle").value,
         categoria: $("aiCategory").value,
@@ -7888,7 +8209,33 @@ function homePage() {
           const type = action === "crear_tarea" ? "task" : "project";
           result = await api("/api/entity/create", { method: "POST", body: JSON.stringify({ type, payload }) });
         }
-        $("aiApplyMessage").textContent = "Guardado correctamente.";
+        let memoryMessage = "";
+        if ($("aiLearnCorrections")?.checked) {
+          try {
+            const learned = await api("/api/ai/rules/action", {
+              method: "POST",
+              body: JSON.stringify({
+                action: "learn_redaction",
+                data: {
+                  action,
+                  source_text: $("aiText").value,
+                  original_payload: originalPayload,
+                  final_payload: payload,
+                  entity: aiProposal?.entity || null,
+                  origin: "entrada_inteligente",
+                },
+              }),
+            });
+            if (learned.count) {
+              memoryMessage = " Memoria actualizada con " + learned.count + " regla(s).";
+              aiRulesLoaded = false;
+              await loadAiRules(true);
+            }
+          } catch (memoryError) {
+            memoryMessage = " No se pudo actualizar la memoria: " + memoryError.message;
+          }
+        }
+        $("aiApplyMessage").textContent = "Guardado correctamente." + memoryMessage;
         await loadOverview();
         if (result?.type && result?.id) await openEntity(result.type, result.id, false);
       } catch (error) {
@@ -8715,6 +9062,27 @@ async function handle(req, res) {
     const body = await readBody(req);
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await analyzeWithAi(session, body.text || "", body.target || null));
+  }
+  if (req.method === "GET" && url.pathname === "/api/ai/rules") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar memoria IA." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await runAiMemoryCommand(session, "list", {
+      modulo: url.searchParams.get("modulo") || "",
+      include_inactive: url.searchParams.get("include_inactive") === "1",
+      limit: Number(url.searchParams.get("limit") || 80),
+    }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/rules/action") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede gestionar memoria IA." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    const action = String(body.action || "");
+    if (!["learn_redaction", "update"].includes(action)) return sendJson(res, 400, { ok: false, error: "Accion de memoria IA no permitida." });
+    return sendJson(res, 200, await runAiMemoryCommand(session, action, body.data || {}, String(req.socket.remoteAddress || "web")));
   }
   if (req.method === "GET" && url.pathname === "/api/admin") {
     const session = readSession(req);

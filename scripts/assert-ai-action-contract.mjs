@@ -45,7 +45,8 @@ requireIncludes("impact_summary: aiImpactSummary(result, action)", "falta resume
 requireIncludes("before_after_preview: aiBeforeAfterRows(result, action)", "falta previsualizacion antes/despues");
 requireIncludes("current_snapshot", "falta snapshot actual del elemento existente");
 requireIncludes("result = withAiProposalContract(result);", "answerAiQuery no normaliza contrato");
-requireIncludes("return withAiProposalContract(targeted);", "analyzeWithAi no normaliza propuesta dirigida");
+requireIncludes("if (targeted) return finalizeProposal(targeted);", "analyzeWithAi no normaliza propuesta dirigida");
+requireIncludes("return withAiProposalContract(improved);", "finalizeProposal no aplica contrato final");
 requireIncludes("return withAiProposalContract({", "analyzeOperationalWithAi no normaliza consultas mal ubicadas");
 requireIncludes("proposal.requires_confirmation", "la UI no muestra el estado de confirmacion");
 requireIncludes("proposal.impact_summary", "la UI no muestra el resumen de impacto");
