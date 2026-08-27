@@ -391,6 +391,53 @@ Pendiente para cerrar Fase 1:
 - Revisar codificacion historica de datos importados que muestran caracteres corruptos.
 - Documentar el alcance comunitario de contabilidad/propietarios hasta que estas tablas tengan relacion directa con comunidad.
 
+## Septimo ajuste implementado
+
+Fecha: 2026-08-27.
+
+Porcentaje:
+
+- Antes: 82% tecnico / 72% funcional.
+- Despues: 88% tecnico / 78% funcional.
+
+Cambios realizados:
+
+- Se completa la modularizacion interna de todos los dominios actuales del Centro IA:
+  - `propietarios_contacto`;
+  - `seguridad`;
+  - `trabajo`;
+  - `asambleas`;
+  - `presupuesto`;
+  - `contabilidad`;
+  - `propiedad`;
+  - `deuda`.
+- Se elimina el bloque condicional duplicado que seguia debajo del despachador.
+- El flujo principal queda reducido a:
+  - detectar dominio;
+  - llamar al handler correspondiente;
+  - devolver `not_handled()` si la consulta no pertenece a ningun dominio fiable.
+- `scripts/assert-ai-query.mjs` anade comprobacion estructural para impedir que vuelva un bloque `elif query_domain == ...` fuera del despachador.
+
+Pruebas ejecutadas:
+
+- `npm run check`.
+- `node scripts/check-ai-python.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+- `git diff --check`.
+
+Resultado:
+
+- 10 consultas funcionales correctas.
+- 3 controles de permisos correctos.
+- Todos los dominios estan registrados en `QUERY_HANDLERS`.
+- No queda bloque condicional monolitico antiguo de `query_domain`.
+
+Pendiente para cerrar Fase 1:
+
+- Revisar codificacion historica de textos importados que muestran caracteres corruptos.
+- Ampliar pruebas con consultas reales largas, especialmente deuda/listados y trabajo operativo.
+- Documentar claramente las fuentes comunes de contabilidad/propietarios cuando no existe todavia separacion por comunidad.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`
@@ -422,7 +469,7 @@ Cada prueba debe validar:
 
 ## Proximo paso
 
-- continuar la modularizacion del Centro IA por dominios;
+- revisar codificacion historica y consultas reales largas;
 - mantener las pruebas actuales como barrera de regresion;
-- corregir o documentar la codificacion historica de datos importados;
+- documentar el alcance comunitario de contabilidad/propietarios;
 - no activar acciones automaticas hasta Fase 2.

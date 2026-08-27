@@ -2679,9 +2679,359 @@ def handle_work_query():
         return response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]], sources=source_refs("projects", "tasks", "project_records", "task_records"), data_status="confirmado", query_domain="trabajo")
     return response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"], sources=source_refs("projects", "tasks"), data_status="incompleto", query_domain="trabajo")
 
+def handle_assembly_query():
+    required = ["asambleas", "asamblea_puntos", "asamblea_asistencia", "asamblea_votos"]
+    if not all(table_exists(name) for name in required):
+        return response("El modulo de Asambleas aun no tiene todas las tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Asambleas"], sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="incompleto", query_domain="asambleas")
+    scope, params = community_scope("a")
+    assembly = first("""
+        SELECT a.*, COALESCE(c.nombre,'') AS comunidad,
+               (SELECT COUNT(*) FROM asamblea_puntos p WHERE p.id_asamblea=a.id_asamblea AND p.activo=1) AS total_puntos,
+               (SELECT COUNT(*) FROM asamblea_asistencia s WHERE s.id_asamblea=a.id_asamblea) AS total_asistencia,
+               (SELECT COUNT(*) FROM asamblea_proxys x WHERE x.id_asamblea=a.id_asamblea AND COALESCE(x.estado,'')<>'Eliminado') AS total_proxys
+        FROM asambleas a
+        LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+        WHERE 1=1
+    """ + scope + " ORDER BY COALESCE(a.fecha,'') DESC,a.id_asamblea DESC LIMIT 1", tuple(params))
+    if not assembly:
+        return response("No he encontrado asambleas visibles para tu usuario.", 0.5, questions=["Asamblea o comunidad"], sources=source_refs("assemblies"), data_status="incompleto", query_domain="asambleas")
+    assembly_id = int(assembly["id_asamblea"])
+    point_match = re.search(r"\\bPUNTO\\s+(\\d+)\\b", q_norm)
+    if point_match:
+        point_order = int(point_match.group(1))
+        point = first("SELECT * FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 AND orden=?", (assembly_id, point_order))
+        if not point:
+            return response(f"La ultima asamblea visible no tiene punto {point_order}.", 0.55, questions=["Numero de punto correcto"], sources=source_refs("assemblies", "assembly_points"), data_status="incompleto", query_domain="asambleas")
+        votes = rows("""
+            SELECT voto, COUNT(*) AS votos
+            FROM asamblea_votos
+            WHERE id_asamblea=? AND id_punto=?
+            GROUP BY voto
+        """, (assembly_id, int(point["id_punto"])))
+        vote_map = {str(row.get("voto") or "sin"): int(row.get("votos") or 0) for row in votes}
+        answer = f"En la asamblea {assembly['nombre']}, el punto {point['orden']} es: {point['titulo']}. Votos registrados: si {vote_map.get('si',0)}, no {vote_map.get('no',0)}, abstencion {vote_map.get('abs',0)}, sin voto registrado {vote_map.get('sin',0)}."
+        display = {
+            "title": f"Punto {point['orden']} - {point['titulo']}",
+            "subtitle": f"{assembly['nombre']} | {assembly['fecha'] or 'sin fecha'}",
+            "cards": [
+                {"label": "Tipo mayoria", "value": point.get("tipo_mayoria") or "simple"},
+                {"label": "A favor", "value": str(vote_map.get("si", 0))},
+                {"label": "En contra", "value": str(vote_map.get("no", 0))},
+                {"label": "Abstenciones", "value": str(vote_map.get("abs", 0))},
+            ],
+            "tables": [{
+                "title": "Resultado registrado",
+                "columns": ["Voto", "Total"],
+                "rows": [{"Voto": label, "Total": str(vote_map.get(key, 0))} for key, label in [("si", "A favor"), ("no", "En contra"), ("abs", "Abstencion"), ("sin", "Sin registrar")]],
+            }],
+            "note": "Resumen de votos registrados. Para validez formal debe revisarse con quorum, coeficientes y acta.",
+        }
+        return response(answer, 0.82, facts={"id_asamblea": assembly_id, "id_punto": point["id_punto"], "votos": vote_map}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_votes"), data_status="confirmado", query_domain="asambleas")
+    attendance = rows("""
+        SELECT tipo, COUNT(*) AS votos, COALESCE(SUM(CASE WHEN COALESCE(sin_voto,0)=0 THEN 1 ELSE 0 END),0) AS con_voto
+        FROM asamblea_asistencia
+        WHERE id_asamblea=?
+        GROUP BY tipo
+    """, (assembly_id,))
+    points = rows("SELECT orden,titulo,tipo_mayoria FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 ORDER BY orden,id_punto", (assembly_id,))
+    without_vote = first("SELECT COUNT(*) AS total FROM asamblea_asistencia WHERE id_asamblea=? AND COALESCE(sin_voto,0)=1", (assembly_id,))
+    total_attendance = sum(int(row.get("votos") or 0) for row in attendance)
+    answer = f"La ultima asamblea visible es {assembly['nombre']} ({assembly['fecha'] or 'sin fecha'}), estado {assembly['estado'] or 'sin estado'}. Tiene {assembly['total_puntos']} punto(s), {total_attendance} asistente(s)/representado(s) y {assembly['total_proxys']} proxy(s) importado(s)."
+    display = {
+        "title": assembly["nombre"],
+        "subtitle": f"{assembly['comunidad']} | {assembly['fecha'] or 'sin fecha'} | {assembly['estado'] or 'sin estado'}",
+        "cards": [
+            {"label": "Puntos", "value": str(assembly.get("total_puntos") or 0)},
+            {"label": "Asistencia", "value": str(total_attendance)},
+            {"label": "Proxys", "value": str(assembly.get("total_proxys") or 0)},
+            {"label": "Sin derecho a voto", "value": str(without_vote.get("total") or 0)},
+        ],
+        "tables": [
+            {
+                "title": "Asistencia",
+                "columns": ["Tipo", "Total", "Con derecho a voto"],
+                "rows": [{"Tipo": row.get("tipo") or "Sin tipo", "Total": str(row.get("votos") or 0), "Con derecho a voto": str(row.get("con_voto") or 0)} for row in attendance],
+            },
+            {
+                "title": "Orden del dia",
+                "columns": ["Punto", "Titulo", "Mayoria"],
+                "rows": [{"Punto": str(row.get("orden") or ""), "Titulo": row.get("titulo") or "", "Mayoria": row.get("tipo_mayoria") or ""} for row in points],
+            },
+        ],
+        "note": "Consulta de la ultima asamblea visible para tu usuario. Indica un numero de punto para consultar sus votos registrados.",
+    }
+    return response(answer, 0.84, facts={"id_asamblea": assembly_id}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="confirmado", query_domain="asambleas")
+
+def handle_budget_query():
+    report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
+    if not report:
+        return response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto", query_domain="presupuesto")
+    data = json.loads(report["resultado_json"] or "{}")
+    budget = data.get("presupuesto") or []
+    if not budget:
+        return response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto", query_domain="presupuesto")
+    rows_text = []
+    budget_rows = sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:12]
+    for item in budget_rows[:8]:
+        rows_text.append(f"- {item.get('codigo','')} {item.get('categoria','')}: real {money(item.get('real'))} / presupuesto periodo {money(item.get('presupuesto'))} / desviacion {money(item.get('variacion'))} ({pct(item.get('variacion_pct'))})")
+    answer = "\\n".join([
+        f"Presupuesto segun ultimo informe: {report['titulo']} ({report['fecha_desde']} a {report['fecha_hasta']}).",
+        "Principales partidas:",
+        *rows_text,
+        "Si quieres un periodo distinto, indicame fecha desde y fecha hasta."
+    ])
+    display = {
+        "title": "Estado de presupuestos",
+        "subtitle": f"{report['titulo']} · {report['fecha_desde']} a {report['fecha_hasta']}",
+        "cards": [
+            {"label": "Partidas revisadas", "value": str(len(budget))},
+            {"label": "Mayor desviacion", "value": f"{budget_rows[0].get('codigo','')} {budget_rows[0].get('categoria','')}" if budget_rows else "Sin dato"},
+            {"label": "Desviacion mayor", "value": money(budget_rows[0].get("variacion")) if budget_rows else "0,00 EUR"},
+        ],
+        "tables": [{
+            "title": "Principales desviaciones",
+            "columns": ["Codigo", "Categoria", "Presupuesto", "Real", "Desviacion", "%"],
+            "rows": [
+                {
+                    "Codigo": item.get("codigo", ""),
+                    "Categoria": item.get("categoria", ""),
+                    "Presupuesto": money(item.get("presupuesto")),
+                    "Real": money(item.get("real")),
+                    "Desviacion": money(item.get("variacion")),
+                    "%": pct(item.get("variacion_pct")),
+                }
+                for item in budget_rows
+            ],
+        }],
+        "note": "Si quieres un periodo distinto, indica fecha desde y fecha hasta.",
+    }
+    return response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display, sources=source_refs("accounting_reports"), data_status="confirmado", query_domain="presupuesto")
+
+def handle_accounting_query():
+    start, end = dates_from_question(question)
+    if not start or not end:
+        return response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"], sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="incompleto", query_domain="contabilidad")
+    ingresos_emitidos = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    cobros = first("SELECT COALESCE(SUM(-importe),0) AS total FROM cf_movimientos_deuda WHERE tipo_movimiento = 'Cobro' AND date(fecha) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    deuda_periodo = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?) AND COALESCE(deuda,0) > 0", (start, end))["total"]
+    gastos_devengados = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    mejoras = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') = '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    gastos_pagados = first("SELECT COALESCE(SUM(pagado),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_pago) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    pendientes = first("SELECT COALESCE(SUM(pendiente),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
+    saldo_ini = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) < date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (start,))
+    saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
+    answer = "\\n".join([
+        f"Balance financiero provisional del {start} al {end}:",
+        f"- Ingresos/recibos emitidos: {money(ingresos_emitidos)}",
+        f"- Cobros registrados en deuda/recibos: {money(cobros)}",
+        f"- Deuda pendiente generada en el periodo: {money(deuda_periodo)}",
+        f"- Gastos devengados ordinarios: {money(gastos_devengados)}",
+        f"- Gastos pagados ordinarios: {money(gastos_pagados)}",
+        f"- Gastos ordinarios pendientes de pago: {money(pendientes)}",
+        f"- Mejoras/inversiones grupo 610: {money(mejoras)}",
+        f"- Saldo banco inicial disponible: {money(saldo_ini['saldo']) if saldo_ini else 'no disponible'}",
+        f"- Saldo banco final disponible: {money(saldo_fin['saldo']) if saldo_fin else 'no disponible'}",
+        "Nota: es una lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres."
+    ])
+    display = {
+        "title": "Balance financiero provisional",
+        "subtitle": f"{start} a {end}",
+        "cards": [
+            {"label": "Recibos emitidos", "value": money(ingresos_emitidos)},
+            {"label": "Cobros registrados", "value": money(cobros)},
+            {"label": "Gastos devengados", "value": money(gastos_devengados)},
+            {"label": "Saldo final banco", "value": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+        ],
+        "tables": [{
+            "title": "Magnitudes del periodo",
+            "columns": ["Concepto", "Importe"],
+            "rows": [
+                {"Concepto": "Ingresos/recibos emitidos", "Importe": money(ingresos_emitidos)},
+                {"Concepto": "Cobros registrados en deuda/recibos", "Importe": money(cobros)},
+                {"Concepto": "Deuda pendiente generada en el periodo", "Importe": money(deuda_periodo)},
+                {"Concepto": "Gastos devengados ordinarios", "Importe": money(gastos_devengados)},
+                {"Concepto": "Gastos pagados ordinarios", "Importe": money(gastos_pagados)},
+                {"Concepto": "Gastos ordinarios pendientes de pago", "Importe": money(pendientes)},
+                {"Concepto": "Mejoras/inversiones grupo 610", "Importe": money(mejoras)},
+                {"Concepto": "Saldo banco inicial disponible", "Importe": money(saldo_ini["saldo"]) if saldo_ini else "No disponible"},
+                {"Concepto": "Saldo banco final disponible", "Importe": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+            ],
+        }],
+        "note": "Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
+    }
+    return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="inferido", query_domain="contabilidad")
+
+def handle_property_query():
+    prop_query = extract_property_query(question)
+    props = find_properties(prop_query or question)
+    if len(props) == 1:
+        prop = props[0]
+        owners = owner_for_property(prop["id_propiedad"])
+        if owners:
+            answer = "\\n".join([
+                f"Propiedad {prop['codigo_propiedad']} ({prop['zona']}).",
+                f"Coeficiente: {prop['coeficiente']}.",
+                "Propietario actual:",
+                *[f"- {o['nombre']} (codigo Netfincas {o.get('codigo_netfincas') or 'sin codigo'}, NIF {o.get('nif') or 'sin dato'})" for o in owners],
+            ])
+        else:
+            answer = f"La propiedad {prop['codigo_propiedad']} existe, pero no tiene propietario activo vinculado."
+        return response(answer, 0.88, facts={"id_propiedad": prop["id_propiedad"]}, sources=source_refs("properties", "owner_properties", "owners"), data_status="confirmado", query_domain="propiedad")
+    if len(props) > 1:
+        answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:10]])
+        return response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto", query_domain="propiedad")
+    return response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"], sources=source_refs("properties"), data_status="incompleto", query_domain="propiedad")
+
+def handle_global_debt_year(year):
+    total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
+    overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
+    answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
+    display = {
+        "title": f"Deuda pendiente {year}",
+        "cards": [
+            {"label": "Deuda del ejercicio", "value": money(total["total"])},
+            {"label": "Recibos pendientes", "value": str(total["recibos"])},
+            {"label": "Deuda total registrada", "value": money(overall["total"])},
+        ],
+    }
+    return response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado", query_domain="deuda")
+
+def handle_debt_query():
+    years = re.findall(r"\\b(20\\d{2})\\b", question)
+    requested_year = int(years[0]) if years else None
+    minimum_debt = 0
+    minimum_match = re.search(r"(?:mayor|superior|mas)\\s+(?:de|a)?\\s*([\\d\\.]+(?:,\\d{1,2})?)", str(question or ""), re.I)
+    if minimum_match:
+        try:
+            minimum_debt = float(minimum_match.group(1).replace(".", "").replace(",", "."))
+        except ValueError:
+            minimum_debt = 0
+    global_list_pattern = bool(re.search(
+        r"(?:LISTA|LISTADO|RELACION|DETALLE|DESGLOSE).*(?:DEUDORES|MOROSOS|PROPIETARIOS (?:CON DEUDA|QUE DEBEN)|DEUDA POR PROPIETARIO|DEUDA DE TODOS|TODOS LOS QUE DEBEN)",
+        q_norm
+    )) or bool(re.match(r"^(?:DAME |MUESTRA |SACA )?(?:UN )?(?:LISTA|LISTADO|RELACION|DESGLOSE) DE (?:LA )?DEUDA(?: PENDIENTE)?(?: 20\\d{2})?$", q_norm))
+    asks_global_year = bool(years) and not any(token in q_norm for token in ["TIENE DEUDA", "DEUDA DE", "MOROSIDAD DE", "PROPIETARIO"])
+    if asks_global_year and not is_list_request:
+        return handle_global_debt_year(int(years[0]))
+    owner_query = extract_owner_query(question)
+    prop_query = extract_property_query(question)
+    owners = []
+    debt_property_id = None
+    if prop_query:
+        props = find_properties(prop_query)
+        if len(props) == 1:
+            debt_property_id = props[0]["id_propiedad"]
+            owners = owner_for_property(props[0]["id_propiedad"])
+        elif len(props) > 1 and "PROPIETARIO" in q_norm:
+            answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
+            return response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto", query_domain="deuda")
+    if not owners and owner_query and is_debt_question:
+        owners = find_owners(owner_query)
+    if global_list_pattern and not owners:
+        listing = debtor_listing(requested_year, minimum_debt)
+        total_listed = sum(float(item.get("deuda") or 0) for item in listing)
+        period_text = f" del ejercicio {requested_year}" if requested_year else ""
+        minimum_text = f" con deuda igual o superior a {money(minimum_debt)}" if minimum_debt else ""
+        answer = f"He encontrado {len(listing)} propietarios{period_text}{minimum_text}. La deuda pendiente incluida en el listado asciende a {money(total_listed)}."
+        display = {
+            "title": "Listado de propietarios con deuda",
+            "subtitle": (f"Ejercicio {requested_year}" if requested_year else "Todos los ejercicios") + (f" | Minimo {money(minimum_debt)}" if minimum_debt else ""),
+            "cards": [
+                {"label": "Propietarios", "value": str(len(listing))},
+                {"label": "Deuda incluida", "value": money(total_listed)},
+                {"label": "Recibos pendientes", "value": str(sum(int(item.get("recibos") or 0) for item in listing))},
+            ],
+            "tables": [{
+                "title": "Relacion de deudores",
+                "columns": ["Propietario", "Codigo", "Propiedades", "Recibos", "Deuda"],
+                "rows": [{
+                    "Propietario": item["propietario"],
+                    "Codigo": item.get("codigo") or "",
+                    "Propiedades": str(item.get("propiedades") or 0),
+                    "Recibos": str(item.get("recibos") or 0),
+                    "Deuda": money(item.get("deuda")),
+                } for item in listing],
+            }],
+            "note": "Listado ordenado de mayor a menor deuda pendiente segun los recibos actualmente importados.",
+        }
+        return response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display, sources=source_refs("receipts", "owners"), data_status="confirmado", query_domain="deuda")
+    if years and not owners:
+        return handle_global_debt_year(int(years[0]))
+    if len(owners) == 1:
+        owner = owners[0]
+        total, by_year, by_property, receipts = debt_for_owner(owner["id_propietario"], requested_year, debt_property_id)
+        pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
+        if total <= 0:
+            filter_text = f" en {requested_year}" if requested_year else ""
+            answer = f"{owner['nombre']} no tiene deuda pendiente registrada{filter_text}."
+            display = {
+                "title": owner["nombre"],
+                "subtitle": "Consulta de deuda",
+                "cards": [{"label": "Deuda pendiente", "value": money(0)}],
+            }
+        else:
+            year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
+            prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
+            answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
+            debt_tables = [
+                {
+                    "title": "Desglose por ejercicio",
+                    "columns": ["Ejercicio", "Deuda", "Recibos"],
+                    "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
+                },
+                {
+                    "title": "Desglose por propiedad",
+                    "columns": ["Propiedad", "Deuda", "Recibos"],
+                    "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
+                },
+            ]
+            if is_list_request:
+                debt_tables.append({
+                    "title": "Relacion de recibos pendientes",
+                    "columns": ["Referencia", "Fecha", "Ejercicio", "Propiedad", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
+                    "rows": [{
+                        "Referencia": r.get("referencia") or "",
+                        "Fecha": r.get("fecha_emision") or "",
+                        "Ejercicio": str(r.get("ejercicio") or ""),
+                        "Propiedad": r.get("propiedad") or "",
+                        "Tipo": r.get("tipo_recibo") or "",
+                        "Importe": money(r.get("importe")),
+                        "Cobrado": money(r.get("cobrado")),
+                        "Pendiente": money(r.get("deuda")),
+                        "Estado": r.get("estado") or "",
+                    } for r in receipts],
+                })
+            subtitle_parts = ["Listado detallado" if is_list_request else "Consulta de deuda"]
+            if requested_year:
+                subtitle_parts.append(f"Ejercicio {requested_year}")
+            if debt_property_id and by_property:
+                subtitle_parts.append(by_property[0]["propiedad"])
+            display = {
+                "title": owner["nombre"],
+                "subtitle": " | ".join(subtitle_parts),
+                "cards": [
+                    {"label": "Deuda total", "value": money(total)},
+                    {"label": "Recibos pendientes", "value": str(pending_receipts)},
+                    {"label": "Ejercicios con deuda", "value": str(len(by_year))},
+                    {"label": "Propiedades afectadas", "value": str(len(by_property))},
+                ],
+                "tables": debt_tables,
+                "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Datos obtenidos de los recibos actualmente importados."),
+            }
+        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado", query_domain="deuda")
+    if len(owners) > 1:
+        answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
+        return response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"], sources=source_refs("owners"), data_status="incompleto", query_domain="deuda")
+    return response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"], sources=source_refs("receipts", "owners", "properties"), data_status="incompleto", query_domain="deuda")
+
 QUERY_HANDLERS = {
     "propietarios_contacto": lambda: handle_contact_query(email_query),
     "seguridad": handle_security_query,
+    "asambleas": handle_assembly_query,
+    "presupuesto": handle_budget_query,
+    "contabilidad": handle_accounting_query,
+    "deuda": handle_debt_query,
+    "propiedad": handle_property_query,
     "trabajo": handle_work_query,
 }
 
@@ -2706,505 +3056,7 @@ try:
         print(json.dumps(QUERY_HANDLERS[query_domain](), ensure_ascii=False))
         raise SystemExit
 
-    if query_domain == "propietarios_contacto":
-        owners = owners_for_email(email_query)
-        if not owners:
-            answer = f"No he encontrado ningun propietario activo vinculado al correo {email_query}."
-            display = {
-                "title": "Correo sin coincidencias",
-                "subtitle": email_query,
-                "note": "La busqueda se ha realizado por coincidencia exacta entre los contactos activos de propietarios.",
-            }
-            print(json.dumps(response(answer, 0.92, facts={"email": email_query, "propietarios": 0}, display=display, sources=source_refs("contacts", "owners"), data_status="confirmado"), ensure_ascii=False))
-        else:
-            owner_rows = []
-            all_properties = []
-            for owner in owners:
-                properties = properties_for_owner(owner["id_propietario"])
-                property_codes = [p["codigo_propiedad"] for p in properties]
-                owner_rows.append({
-                    "Propietario": owner["nombre"],
-                    "Codigo Netfincas": owner.get("codigo_netfincas") or "",
-                    "Propiedades": ", ".join(property_codes) or "Sin propiedades activas",
-                })
-                all_properties.extend(properties)
-            if len(owners) == 1:
-                owner = owners[0]
-                property_text = ", ".join(p["codigo_propiedad"] for p in all_properties) or "ninguna propiedad activa"
-                answer = f"El correo {email_query} pertenece a {owner['nombre']} (codigo Netfincas {owner.get('codigo_netfincas') or 'sin codigo'}). Propiedades activas: {property_text}."
-            else:
-                answer = f"El correo {email_query} esta vinculado a {len(owners)} propietarios activos. Revisa el detalle mostrado."
-            display = {
-                "title": "Propietario por correo electronico" if len(owners) == 1 else "Propietarios vinculados al correo",
-                "subtitle": email_query,
-                "cards": [
-                    {"label": "Propietarios", "value": str(len(owners))},
-                    {"label": "Propiedades activas", "value": str(len(all_properties))},
-                    {"label": "Contacto principal", "value": "Si" if any(bool(o.get("principal")) for o in owners) else "No"},
-                ],
-                "tables": [{
-                    "title": "Coincidencias",
-                    "columns": ["Propietario", "Codigo Netfincas", "Propiedades"],
-                    "rows": owner_rows,
-                }],
-                "note": "Coincidencia exacta obtenida de los contactos activos importados.",
-            }
-            print(json.dumps(response(answer, 0.98, facts={"email": email_query, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display, sources=source_refs("contacts", "owners", "owner_properties", "properties"), data_status="confirmado"), ensure_ascii=False))
-        raise SystemExit
-
-    elif query_domain == "seguridad":
-        if not table_exists("seguridad_incidencias") or not table_exists("seguridad_documentos"):
-            print(json.dumps(response("El modulo de Seguridad aun no tiene tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Seguridad"], sources=source_refs("security_incidents", "security_documents"), data_status="incompleto"), ensure_ascii=False))
-        elif not can_query_security():
-            print(json.dumps(response("Tu perfil no tiene permiso para consultar incidencias de Seguridad.", 0.99, sources=[], data_status="incompleto"), ensure_ascii=False))
-        else:
-            pending_statuses = ("Pendiente de revision", "En revision")
-            total_docs = first("SELECT COUNT(*) AS total, COALESCE(SUM(incidencias_detectadas),0) AS incidencias FROM seguridad_documentos")
-            counts = rows("SELECT estado_revision AS estado, COUNT(*) AS total FROM seguridad_incidencias GROUP BY estado_revision ORDER BY total DESC")
-            categories = rows("SELECT categoria_normalizada AS categoria, COUNT(*) AS total FROM seguridad_incidencias WHERE estado_revision<>'Descartada' GROUP BY categoria_normalizada ORDER BY total DESC LIMIT 10")
-            incidents = rows("""
-                SELECT id_incidencia,titulo,gravedad,estado_revision,zona,ubicacion,fecha_hora_suceso,categoria_normalizada
-                FROM seguridad_incidencias
-                WHERE estado_revision IN (?,?)
-                ORDER BY CASE gravedad WHEN 'Critica' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
-                         COALESCE(fecha_hora_suceso,fecha_creacion) DESC
-                LIMIT 20
-            """, pending_statuses)
-            pending = sum(int(row.get("total") or 0) for row in counts if row.get("estado") in pending_statuses)
-            answer = f"Seguridad tiene {pending} incidencia(s) pendiente(s) o en revision. Hay {int(total_docs.get('total') or 0)} parte(s) importado(s) y {int(total_docs.get('incidencias') or 0)} incidencia(s) detectada(s) en documentos."
-            display = {
-                "title": "Resumen de Seguridad",
-                "subtitle": "Incidencias pendientes y clasificacion",
-                "cards": [
-                    {"label": "Pendientes / en revision", "value": str(pending)},
-                    {"label": "Partes importados", "value": str(int(total_docs.get("total") or 0))},
-                    {"label": "Incidencias detectadas", "value": str(int(total_docs.get("incidencias") or 0))},
-                    {"label": "Categorias con incidencias", "value": str(len(categories))},
-                ],
-                "tables": [
-                    {
-                        "title": "Estados de revision",
-                        "columns": ["Estado", "Total"],
-                        "rows": [{"Estado": row.get("estado") or "Sin estado", "Total": str(row.get("total") or 0)} for row in counts],
-                    },
-                    {
-                        "title": "Categorias",
-                        "columns": ["Categoria", "Total"],
-                        "rows": [{"Categoria": row.get("categoria") or "Otros", "Total": str(row.get("total") or 0)} for row in categories],
-                    },
-                    {
-                        "title": "Incidencias pendientes",
-                        "columns": ["ID", "Titulo", "Gravedad", "Estado", "Zona", "Ubicacion", "Fecha"],
-                        "rows": [{
-                            "ID": str(row.get("id_incidencia") or ""),
-                            "Titulo": row.get("titulo") or "",
-                            "Gravedad": row.get("gravedad") or "",
-                            "Estado": row.get("estado_revision") or "",
-                            "Zona": row.get("zona") or "",
-                            "Ubicacion": row.get("ubicacion") or "",
-                            "Fecha": row.get("fecha_hora_suceso") or "",
-                        } for row in incidents],
-                    },
-                ],
-                "note": "Consulta de solo lectura. Para crear tareas o proyectos desde una incidencia hay que entrar al modulo Seguridad y confirmar la accion.",
-            }
-            print(json.dumps(response(answer, 0.86, facts={"pendientes": pending, "partes": total_docs.get("total"), "incidencias_detectadas": total_docs.get("incidencias")}, display=display, sources=source_refs("security_incidents", "security_documents"), data_status="confirmado"), ensure_ascii=False))
-
-    elif query_domain == "asambleas":
-        required = ["asambleas", "asamblea_puntos", "asamblea_asistencia", "asamblea_votos"]
-        if not all(table_exists(name) for name in required):
-            print(json.dumps(response("El modulo de Asambleas aun no tiene todas las tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Asambleas"], sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="incompleto"), ensure_ascii=False))
-        else:
-            scope, params = community_scope("a")
-            assembly = first("""
-                SELECT a.*, COALESCE(c.nombre,'') AS comunidad,
-                       (SELECT COUNT(*) FROM asamblea_puntos p WHERE p.id_asamblea=a.id_asamblea AND p.activo=1) AS total_puntos,
-                       (SELECT COUNT(*) FROM asamblea_asistencia s WHERE s.id_asamblea=a.id_asamblea) AS total_asistencia,
-                       (SELECT COUNT(*) FROM asamblea_proxys x WHERE x.id_asamblea=a.id_asamblea AND COALESCE(x.estado,'')<>'Eliminado') AS total_proxys
-                FROM asambleas a
-                LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
-                WHERE 1=1
-            """ + scope + " ORDER BY COALESCE(a.fecha,'') DESC,a.id_asamblea DESC LIMIT 1", tuple(params))
-            if not assembly:
-                print(json.dumps(response("No he encontrado asambleas visibles para tu usuario.", 0.5, questions=["Asamblea o comunidad"], sources=source_refs("assemblies"), data_status="incompleto"), ensure_ascii=False))
-            else:
-                assembly_id = int(assembly["id_asamblea"])
-                point_match = re.search(r"\\bPUNTO\\s+(\\d+)\\b", q_norm)
-                if point_match:
-                    point_order = int(point_match.group(1))
-                    point = first("SELECT * FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 AND orden=?", (assembly_id, point_order))
-                    if not point:
-                        print(json.dumps(response(f"La ultima asamblea visible no tiene punto {point_order}.", 0.55, questions=["Numero de punto correcto"], sources=source_refs("assemblies", "assembly_points"), data_status="incompleto"), ensure_ascii=False))
-                    else:
-                        votes = rows("""
-                            SELECT voto, COUNT(*) AS votos
-                            FROM asamblea_votos
-                            WHERE id_asamblea=? AND id_punto=?
-                            GROUP BY voto
-                        """, (assembly_id, int(point["id_punto"])))
-                        vote_map = {str(row.get("voto") or "sin"): int(row.get("votos") or 0) for row in votes}
-                        answer = f"En la asamblea {assembly['nombre']}, el punto {point['orden']} es: {point['titulo']}. Votos registrados: si {vote_map.get('si',0)}, no {vote_map.get('no',0)}, abstencion {vote_map.get('abs',0)}, sin voto registrado {vote_map.get('sin',0)}."
-                        display = {
-                            "title": f"Punto {point['orden']} - {point['titulo']}",
-                            "subtitle": f"{assembly['nombre']} | {assembly['fecha'] or 'sin fecha'}",
-                            "cards": [
-                                {"label": "Tipo mayoria", "value": point.get("tipo_mayoria") or "simple"},
-                                {"label": "A favor", "value": str(vote_map.get("si", 0))},
-                                {"label": "En contra", "value": str(vote_map.get("no", 0))},
-                                {"label": "Abstenciones", "value": str(vote_map.get("abs", 0))},
-                            ],
-                            "tables": [{
-                                "title": "Resultado registrado",
-                                "columns": ["Voto", "Total"],
-                                "rows": [{"Voto": label, "Total": str(vote_map.get(key, 0))} for key, label in [("si", "A favor"), ("no", "En contra"), ("abs", "Abstencion"), ("sin", "Sin registrar")]],
-                            }],
-                            "note": "Resumen de votos registrados. Para validez formal debe revisarse con quorum, coeficientes y acta.",
-                        }
-                        print(json.dumps(response(answer, 0.82, facts={"id_asamblea": assembly_id, "id_punto": point["id_punto"], "votos": vote_map}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_votes"), data_status="confirmado"), ensure_ascii=False))
-                else:
-                    attendance = rows("""
-                        SELECT tipo, COUNT(*) AS votos, COALESCE(SUM(CASE WHEN COALESCE(sin_voto,0)=0 THEN 1 ELSE 0 END),0) AS con_voto
-                        FROM asamblea_asistencia
-                        WHERE id_asamblea=?
-                        GROUP BY tipo
-                    """, (assembly_id,))
-                    points = rows("SELECT orden,titulo,tipo_mayoria FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 ORDER BY orden,id_punto", (assembly_id,))
-                    without_vote = first("SELECT COUNT(*) AS total FROM asamblea_asistencia WHERE id_asamblea=? AND COALESCE(sin_voto,0)=1", (assembly_id,))
-                    total_attendance = sum(int(row.get("votos") or 0) for row in attendance)
-                    answer = f"La ultima asamblea visible es {assembly['nombre']} ({assembly['fecha'] or 'sin fecha'}), estado {assembly['estado'] or 'sin estado'}. Tiene {assembly['total_puntos']} punto(s), {total_attendance} asistente(s)/representado(s) y {assembly['total_proxys']} proxy(s) importado(s)."
-                    display = {
-                        "title": assembly["nombre"],
-                        "subtitle": f"{assembly['comunidad']} | {assembly['fecha'] or 'sin fecha'} | {assembly['estado'] or 'sin estado'}",
-                        "cards": [
-                            {"label": "Puntos", "value": str(assembly.get("total_puntos") or 0)},
-                            {"label": "Asistencia", "value": str(total_attendance)},
-                            {"label": "Proxys", "value": str(assembly.get("total_proxys") or 0)},
-                            {"label": "Sin derecho a voto", "value": str(without_vote.get("total") or 0)},
-                        ],
-                        "tables": [
-                            {
-                                "title": "Asistencia",
-                                "columns": ["Tipo", "Total", "Con derecho a voto"],
-                                "rows": [{"Tipo": row.get("tipo") or "Sin tipo", "Total": str(row.get("votos") or 0), "Con derecho a voto": str(row.get("con_voto") or 0)} for row in attendance],
-                            },
-                            {
-                                "title": "Orden del dia",
-                                "columns": ["Punto", "Titulo", "Mayoria"],
-                                "rows": [{"Punto": str(row.get("orden") or ""), "Titulo": row.get("titulo") or "", "Mayoria": row.get("tipo_mayoria") or ""} for row in points],
-                            },
-                        ],
-                        "note": "Consulta de la ultima asamblea visible para tu usuario. Indica un numero de punto para consultar sus votos registrados.",
-                    }
-                    print(json.dumps(response(answer, 0.84, facts={"id_asamblea": assembly_id}, display=display, sources=source_refs("assemblies", "assembly_points", "assembly_attendance", "assembly_votes"), data_status="confirmado"), ensure_ascii=False))
-
-    elif query_domain == "presupuesto":
-        report = first("SELECT titulo, fecha_desde, fecha_hasta, resultado_json FROM informes_contables WHERE resultado_json IS NOT NULL AND resultado_json <> '' ORDER BY fecha_ultima_actualizacion DESC, id_informe_contable DESC LIMIT 1")
-        if not report:
-            print(json.dumps(response("No hay todavia un informe contable con presupuesto calculado. Necesito que generes o recalcules el informe economico para poder comparar presupuesto frente a real.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto"), ensure_ascii=False))
-        else:
-            data = json.loads(report["resultado_json"] or "{}")
-            budget = data.get("presupuesto") or []
-            if not budget:
-                print(json.dumps(response("El ultimo informe contable no contiene bloque de presupuesto calculado.", 0.55, sources=source_refs("accounting_reports"), data_status="incompleto"), ensure_ascii=False))
-            else:
-                rows_text = []
-                budget_rows = sorted(budget, key=lambda x: abs(float(x.get("variacion_pct") or 0)), reverse=True)[:12]
-                for item in budget_rows[:8]:
-                    rows_text.append(f"- {item.get('codigo','')} {item.get('categoria','')}: real {money(item.get('real'))} / presupuesto periodo {money(item.get('presupuesto'))} / desviacion {money(item.get('variacion'))} ({pct(item.get('variacion_pct'))})")
-                answer = "\\n".join([
-                    f"Presupuesto segun ultimo informe: {report['titulo']} ({report['fecha_desde']} a {report['fecha_hasta']}).",
-                    "Principales partidas:",
-                    *rows_text,
-                    "Si quieres un periodo distinto, indicame fecha desde y fecha hasta."
-                ])
-                display = {
-                    "title": "Estado de presupuestos",
-                    "subtitle": f"{report['titulo']} · {report['fecha_desde']} a {report['fecha_hasta']}",
-                    "cards": [
-                        {"label": "Partidas revisadas", "value": str(len(budget))},
-                        {"label": "Mayor desviacion", "value": f"{budget_rows[0].get('codigo','')} {budget_rows[0].get('categoria','')}" if budget_rows else "Sin dato"},
-                        {"label": "Desviacion mayor", "value": money(budget_rows[0].get("variacion")) if budget_rows else "0,00 EUR"},
-                    ],
-                    "tables": [{
-                        "title": "Principales desviaciones",
-                        "columns": ["Codigo", "Categoria", "Presupuesto", "Real", "Desviacion", "%"],
-                        "rows": [
-                            {
-                                "Codigo": item.get("codigo", ""),
-                                "Categoria": item.get("categoria", ""),
-                                "Presupuesto": money(item.get("presupuesto")),
-                                "Real": money(item.get("real")),
-                                "Desviacion": money(item.get("variacion")),
-                                "%": pct(item.get("variacion_pct")),
-                            }
-                            for item in budget_rows
-                        ],
-                    }],
-                    "note": "Si quieres un periodo distinto, indica fecha desde y fecha hasta.",
-                }
-                print(json.dumps(response(answer, 0.82, facts={"periodo": [report["fecha_desde"], report["fecha_hasta"]]}, display=display, sources=source_refs("accounting_reports"), data_status="confirmado"), ensure_ascii=False))
-
-    elif query_domain == "contabilidad":
-        start, end = dates_from_question(question)
-        if not start or not end:
-            print(json.dumps(response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"], sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="incompleto"), ensure_ascii=False))
-        else:
-            ingresos_emitidos = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            cobros = first("SELECT COALESCE(SUM(-importe),0) AS total FROM cf_movimientos_deuda WHERE tipo_movimiento = 'Cobro' AND date(fecha) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            deuda_periodo = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?) AND COALESCE(deuda,0) > 0", (start, end))["total"]
-            gastos_devengados = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            mejoras = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') = '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            gastos_pagados = first("SELECT COALESCE(SUM(pagado),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_pago) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            pendientes = first("SELECT COALESCE(SUM(pendiente),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
-            saldo_ini = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) < date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (start,))
-            saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
-            answer = "\\n".join([
-                f"Balance financiero provisional del {start} al {end}:",
-                f"- Ingresos/recibos emitidos: {money(ingresos_emitidos)}",
-                f"- Cobros registrados en deuda/recibos: {money(cobros)}",
-                f"- Deuda pendiente generada en el periodo: {money(deuda_periodo)}",
-                f"- Gastos devengados ordinarios: {money(gastos_devengados)}",
-                f"- Gastos pagados ordinarios: {money(gastos_pagados)}",
-                f"- Gastos ordinarios pendientes de pago: {money(pendientes)}",
-                f"- Mejoras/inversiones grupo 610: {money(mejoras)}",
-                f"- Saldo banco inicial disponible: {money(saldo_ini['saldo']) if saldo_ini else 'no disponible'}",
-                f"- Saldo banco final disponible: {money(saldo_fin['saldo']) if saldo_fin else 'no disponible'}",
-                "Nota: es una lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres."
-            ])
-            display = {
-                "title": "Balance financiero provisional",
-                "subtitle": f"{start} a {end}",
-                "cards": [
-                    {"label": "Recibos emitidos", "value": money(ingresos_emitidos)},
-                    {"label": "Cobros registrados", "value": money(cobros)},
-                    {"label": "Gastos devengados", "value": money(gastos_devengados)},
-                    {"label": "Saldo final banco", "value": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
-                ],
-                "tables": [{
-                    "title": "Magnitudes del periodo",
-                    "columns": ["Concepto", "Importe"],
-                    "rows": [
-                        {"Concepto": "Ingresos/recibos emitidos", "Importe": money(ingresos_emitidos)},
-                        {"Concepto": "Cobros registrados en deuda/recibos", "Importe": money(cobros)},
-                        {"Concepto": "Deuda pendiente generada en el periodo", "Importe": money(deuda_periodo)},
-                        {"Concepto": "Gastos devengados ordinarios", "Importe": money(gastos_devengados)},
-                        {"Concepto": "Gastos pagados ordinarios", "Importe": money(gastos_pagados)},
-                        {"Concepto": "Gastos ordinarios pendientes de pago", "Importe": money(pendientes)},
-                        {"Concepto": "Mejoras/inversiones grupo 610", "Importe": money(mejoras)},
-                        {"Concepto": "Saldo banco inicial disponible", "Importe": money(saldo_ini["saldo"]) if saldo_ini else "No disponible"},
-                        {"Concepto": "Saldo banco final disponible", "Importe": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
-                    ],
-                }],
-                "note": "Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
-            }
-            print(json.dumps(response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="inferido"), ensure_ascii=False))
-
-    elif query_domain == "deuda":
-        years = re.findall(r"\\b(20\\d{2})\\b", question)
-        requested_year = int(years[0]) if years else None
-        minimum_debt = 0
-        minimum_match = re.search(r"(?:mayor|superior|mas)\\s+(?:de|a)?\\s*([\\d\\.]+(?:,\\d{1,2})?)", str(question or ""), re.I)
-        if minimum_match:
-            try:
-                minimum_debt = float(minimum_match.group(1).replace(".", "").replace(",", "."))
-            except ValueError:
-                minimum_debt = 0
-        global_list_pattern = bool(re.search(
-            r"(?:LISTA|LISTADO|RELACION|DETALLE|DESGLOSE).*(?:DEUDORES|MOROSOS|PROPIETARIOS (?:CON DEUDA|QUE DEBEN)|DEUDA POR PROPIETARIO|DEUDA DE TODOS|TODOS LOS QUE DEBEN)",
-            q_norm
-        )) or bool(re.match(r"^(?:DAME |MUESTRA |SACA )?(?:UN )?(?:LISTA|LISTADO|RELACION|DESGLOSE) DE (?:LA )?DEUDA(?: PENDIENTE)?(?: 20\\d{2})?$", q_norm))
-        asks_global_year = bool(years) and not any(token in q_norm for token in ["TIENE DEUDA", "DEUDA DE", "MOROSIDAD DE", "PROPIETARIO"])
-        if asks_global_year and not is_list_request:
-            year = int(years[0])
-            total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
-            overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
-            answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
-            display = {
-                "title": f"Deuda pendiente {year}",
-                "cards": [
-                    {"label": "Deuda del ejercicio", "value": money(total["total"])},
-                    {"label": "Recibos pendientes", "value": str(total["recibos"])},
-                    {"label": "Deuda total registrada", "value": money(overall["total"])},
-                ],
-            }
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado"), ensure_ascii=False))
-            raise SystemExit
-        owner_query = extract_owner_query(question)
-        prop_query = extract_property_query(question)
-        owners = []
-        debt_property_id = None
-        if prop_query:
-            props = find_properties(prop_query)
-            if len(props) == 1:
-                debt_property_id = props[0]["id_propiedad"]
-                owners = owner_for_property(props[0]["id_propiedad"])
-            elif len(props) > 1 and "PROPIETARIO" in q_norm:
-                answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
-                print(json.dumps(response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
-                raise SystemExit
-        if not owners and owner_query and is_debt_question:
-            owners = find_owners(owner_query)
-        if global_list_pattern and not owners:
-            listing = debtor_listing(requested_year, minimum_debt)
-            total_listed = sum(float(item.get("deuda") or 0) for item in listing)
-            period_text = f" del ejercicio {requested_year}" if requested_year else ""
-            minimum_text = f" con deuda igual o superior a {money(minimum_debt)}" if minimum_debt else ""
-            answer = f"He encontrado {len(listing)} propietarios{period_text}{minimum_text}. La deuda pendiente incluida en el listado asciende a {money(total_listed)}."
-            display = {
-                "title": "Listado de propietarios con deuda",
-                "subtitle": (f"Ejercicio {requested_year}" if requested_year else "Todos los ejercicios") + (f" | Minimo {money(minimum_debt)}" if minimum_debt else ""),
-                "cards": [
-                    {"label": "Propietarios", "value": str(len(listing))},
-                    {"label": "Deuda incluida", "value": money(total_listed)},
-                    {"label": "Recibos pendientes", "value": str(sum(int(item.get("recibos") or 0) for item in listing))},
-                ],
-                "tables": [{
-                    "title": "Relacion de deudores",
-                    "columns": ["Propietario", "Codigo", "Propiedades", "Recibos", "Deuda"],
-                    "rows": [{
-                        "Propietario": item["propietario"],
-                        "Codigo": item.get("codigo") or "",
-                        "Propiedades": str(item.get("propiedades") or 0),
-                        "Recibos": str(item.get("recibos") or 0),
-                        "Deuda": money(item.get("deuda")),
-                    } for item in listing],
-                }],
-                "note": "Listado ordenado de mayor a menor deuda pendiente segun los recibos actualmente importados.",
-            }
-            print(json.dumps(response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display, sources=source_refs("receipts", "owners"), data_status="confirmado"), ensure_ascii=False))
-            raise SystemExit
-        if years and not owners:
-            year = int(years[0])
-            total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
-            overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
-            answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
-            display = {
-                "title": f"Deuda pendiente {year}",
-                "cards": [
-                    {"label": "Deuda del ejercicio", "value": money(total["total"])},
-                    {"label": "Recibos pendientes", "value": str(total["recibos"])},
-                    {"label": "Deuda total registrada", "value": money(overall["total"])},
-                ],
-            }
-            print(json.dumps(response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado"), ensure_ascii=False))
-        elif len(owners) == 1:
-            owner = owners[0]
-            total, by_year, by_property, receipts = debt_for_owner(owner["id_propietario"], requested_year, debt_property_id)
-            pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
-            if total <= 0:
-                filter_text = f" en {requested_year}" if requested_year else ""
-                answer = f"{owner['nombre']} no tiene deuda pendiente registrada{filter_text}."
-                display = {
-                    "title": owner["nombre"],
-                    "subtitle": "Consulta de deuda",
-                    "cards": [{"label": "Deuda pendiente", "value": money(0)}],
-                }
-            else:
-                year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
-                prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
-                answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
-                debt_tables = [
-                    {
-                        "title": "Desglose por ejercicio",
-                        "columns": ["Ejercicio", "Deuda", "Recibos"],
-                        "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
-                    },
-                    {
-                        "title": "Desglose por propiedad",
-                        "columns": ["Propiedad", "Deuda", "Recibos"],
-                        "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
-                    },
-                ]
-                if is_list_request:
-                    debt_tables.append({
-                        "title": "Relacion de recibos pendientes",
-                        "columns": ["Referencia", "Fecha", "Ejercicio", "Propiedad", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
-                        "rows": [{
-                            "Referencia": r.get("referencia") or "",
-                            "Fecha": r.get("fecha_emision") or "",
-                            "Ejercicio": str(r.get("ejercicio") or ""),
-                            "Propiedad": r.get("propiedad") or "",
-                            "Tipo": r.get("tipo_recibo") or "",
-                            "Importe": money(r.get("importe")),
-                            "Cobrado": money(r.get("cobrado")),
-                            "Pendiente": money(r.get("deuda")),
-                            "Estado": r.get("estado") or "",
-                        } for r in receipts],
-                    })
-                subtitle_parts = ["Listado detallado" if is_list_request else "Consulta de deuda"]
-                if requested_year:
-                    subtitle_parts.append(f"Ejercicio {requested_year}")
-                if debt_property_id and by_property:
-                    subtitle_parts.append(by_property[0]["propiedad"])
-                display = {
-                    "title": owner["nombre"],
-                    "subtitle": " | ".join(subtitle_parts),
-                    "cards": [
-                        {"label": "Deuda total", "value": money(total)},
-                        {"label": "Recibos pendientes", "value": str(pending_receipts)},
-                        {"label": "Ejercicios con deuda", "value": str(len(by_year))},
-                        {"label": "Propiedades afectadas", "value": str(len(by_property))},
-                    ],
-                    "tables": debt_tables,
-                    "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Datos obtenidos de los recibos actualmente importados."),
-                }
-            print(json.dumps(response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado"), ensure_ascii=False))
-        elif len(owners) > 1:
-            answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
-            print(json.dumps(response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"], sources=source_refs("owners"), data_status="incompleto"), ensure_ascii=False))
-        else:
-            print(json.dumps(response("No he encontrado un propietario o propiedad claro para consultar deuda. Indica el nombre completo o el codigo de propiedad.", 0.45, questions=["Propietario o propiedad"], sources=source_refs("receipts", "owners", "properties"), data_status="incompleto"), ensure_ascii=False))
-
-    elif query_domain == "propiedad":
-        prop_query = extract_property_query(question)
-        props = find_properties(prop_query or question)
-        if len(props) == 1:
-            prop = props[0]
-            owners = owner_for_property(prop["id_propiedad"])
-            if owners:
-                answer = "\\n".join([
-                    f"Propiedad {prop['codigo_propiedad']} ({prop['zona']}).",
-                    f"Coeficiente: {prop['coeficiente']}.",
-                    "Propietario actual:",
-                    *[f"- {o['nombre']} (codigo Netfincas {o.get('codigo_netfincas') or 'sin codigo'}, NIF {o.get('nif') or 'sin dato'})" for o in owners],
-                ])
-            else:
-                answer = f"La propiedad {prop['codigo_propiedad']} existe, pero no tiene propietario activo vinculado."
-            print(json.dumps(response(answer, 0.88, facts={"id_propiedad": prop["id_propiedad"]}, sources=source_refs("properties", "owner_properties", "owners"), data_status="confirmado"), ensure_ascii=False))
-        elif len(props) > 1:
-            answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:10]])
-            print(json.dumps(response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
-        else:
-            print(json.dumps(response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"], sources=source_refs("properties"), data_status="incompleto"), ensure_ascii=False))
-
-    elif query_domain == "trabajo":
-        term = re.sub(r"(?i)\\b(como|va|van|estado|del|de|la|el|proyecto|tarea|quien|responsable|proximo|paso|lista|busca|pendientes?)\\b", " ", question)
-        term = re.sub(r"[?¿]", " ", term).strip()
-        like = "%" + norm(term).replace(" ", "%") + "%"
-        project_scope, project_params = community_scope("p")
-        task_scope, task_params = community_scope("t")
-        project_matches = rows("""
-            SELECT 'Proyecto' AS tipo, p.id_proyecto AS id, p.nombre AS titulo, p.estado_general AS estado,
-                   p.responsable_principal AS responsable, p.responsable_proximo_paso, p.fecha_objetivo_proximo_paso,
-                   p.fecha_ultima_actualizacion, COALESCE(p.observaciones,'') AS contexto
-            FROM proyectos p
-            WHERE COALESCE(p.activo,1)=1 AND (? = '%%' OR UPPER(p.nombre) LIKE ? OR UPPER(COALESCE(p.descripcion,'')) LIKE ?)
-        """ + project_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + project_params))
-        task_matches = rows("""
-            SELECT 'Tarea' AS tipo, t.id_tarea AS id, t.titulo, t.estado,
-                   t.responsable, t.responsable_proximo_paso, t.fecha_objetivo_proximo_paso,
-                   t.fecha_ultima_actualizacion, COALESCE(t.proximo_paso,'') AS contexto
-            FROM tareas t
-            WHERE COALESCE(t.activa,1)=1 AND COALESCE(t.archivada,0)=0 AND (? = '%%' OR UPPER(t.titulo) LIKE ? OR UPPER(COALESCE(t.descripcion,'')) LIKE ?)
-        """ + task_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + task_params))
-        matches = project_matches + task_matches
-        if matches:
-            answer = "He encontrado estos elementos operativos:\\n" + "\\n".join([f"- {m['tipo']} {m['id']}: {m['titulo']} | Estado: {m['estado'] or 'sin estado'} | Responsable: {m['responsable'] or 'sin responsable'} | Proximo: {m['responsable_proximo_paso'] or 'sin dato'} | Paso: {(m['contexto'] or 'sin proximo paso')[:220]}" for m in matches[:8]])
-            print(json.dumps(response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]], sources=source_refs("projects", "tasks", "project_records", "task_records"), data_status="confirmado"), ensure_ascii=False))
-        else:
-            print(json.dumps(response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"], sources=source_refs("projects", "tasks"), data_status="incompleto"), ensure_ascii=False))
-    else:
-        print(json.dumps(not_handled(), ensure_ascii=False))
+    print(json.dumps(not_handled(), ensure_ascii=False))
 finally:
     conn.close()
 `;

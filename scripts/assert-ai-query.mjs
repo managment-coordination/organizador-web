@@ -1,9 +1,21 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const smokeScript = path.join(root, "scripts", "smoke-ai-query.mjs");
+const indexSource = fs.readFileSync(path.join(root, "server", "index.js"), "utf8");
+const expectedHandlers = [
+  "propietarios_contacto",
+  "seguridad",
+  "asambleas",
+  "presupuesto",
+  "contabilidad",
+  "deuda",
+  "propiedad",
+  "trabajo",
+];
 
 const cases = [
   {
@@ -79,6 +91,13 @@ const cases = [
 ];
 
 const failures = [];
+
+for (const domain of expectedHandlers) {
+  if (!indexSource.includes(`"${domain}"`)) failures.push(`estructura: falta handler para ${domain}`);
+}
+if (/\n\s+elif query_domain ==/.test(indexSource)) {
+  failures.push("estructura: queda un bloque condicional antiguo de query_domain");
+}
 
 function runQuery(question, env = {}) {
   const result = spawnSync(process.execPath, [smokeScript, question], {
