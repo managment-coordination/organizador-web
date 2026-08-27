@@ -2552,6 +2552,139 @@ def debtor_listing(year=None, minimum=0):
     """, params)
     return [item for item in listing if float(item.get("deuda") or 0) >= float(minimum or 0)]
 
+def handle_contact_query(email):
+    owners = owners_for_email(email)
+    if not owners:
+        answer = f"No he encontrado ningun propietario activo vinculado al correo {email}."
+        display = {
+            "title": "Correo sin coincidencias",
+            "subtitle": email,
+            "note": "La busqueda se ha realizado por coincidencia exacta entre los contactos activos de propietarios.",
+        }
+        return response(answer, 0.92, facts={"email": email, "propietarios": 0}, display=display, sources=source_refs("contacts", "owners"), data_status="confirmado", query_domain="propietarios_contacto")
+    owner_rows = []
+    all_properties = []
+    for owner in owners:
+        properties = properties_for_owner(owner["id_propietario"])
+        property_codes = [p["codigo_propiedad"] for p in properties]
+        owner_rows.append({
+            "Propietario": owner["nombre"],
+            "Codigo Netfincas": owner.get("codigo_netfincas") or "",
+            "Propiedades": ", ".join(property_codes) or "Sin propiedades activas",
+        })
+        all_properties.extend(properties)
+    if len(owners) == 1:
+        owner = owners[0]
+        property_text = ", ".join(p["codigo_propiedad"] for p in all_properties) or "ninguna propiedad activa"
+        answer = f"El correo {email} pertenece a {owner['nombre']} (codigo Netfincas {owner.get('codigo_netfincas') or 'sin codigo'}). Propiedades activas: {property_text}."
+    else:
+        answer = f"El correo {email} esta vinculado a {len(owners)} propietarios activos. Revisa el detalle mostrado."
+    display = {
+        "title": "Propietario por correo electronico" if len(owners) == 1 else "Propietarios vinculados al correo",
+        "subtitle": email,
+        "cards": [
+            {"label": "Propietarios", "value": str(len(owners))},
+            {"label": "Propiedades activas", "value": str(len(all_properties))},
+            {"label": "Contacto principal", "value": "Si" if any(bool(o.get("principal")) for o in owners) else "No"},
+        ],
+        "tables": [{
+            "title": "Coincidencias",
+            "columns": ["Propietario", "Codigo Netfincas", "Propiedades"],
+            "rows": owner_rows,
+        }],
+        "note": "Coincidencia exacta obtenida de los contactos activos importados.",
+    }
+    return response(answer, 0.98, facts={"email": email, "propietarios": len(owners), "propiedades": len(all_properties)}, display=display, sources=source_refs("contacts", "owners", "owner_properties", "properties"), data_status="confirmado", query_domain="propietarios_contacto")
+
+def handle_security_query():
+    if not table_exists("seguridad_incidencias") or not table_exists("seguridad_documentos"):
+        return response("El modulo de Seguridad aun no tiene tablas inicializadas en esta base.", 0.45, questions=["Inicializar modulo Seguridad"], sources=source_refs("security_incidents", "security_documents"), data_status="incompleto", query_domain="seguridad")
+    if not can_query_security():
+        return response("Tu perfil no tiene permiso para consultar incidencias de Seguridad.", 0.99, sources=[], data_status="incompleto", query_domain="seguridad")
+    pending_statuses = ("Pendiente de revision", "En revision")
+    total_docs = first("SELECT COUNT(*) AS total, COALESCE(SUM(incidencias_detectadas),0) AS incidencias FROM seguridad_documentos")
+    counts = rows("SELECT estado_revision AS estado, COUNT(*) AS total FROM seguridad_incidencias GROUP BY estado_revision ORDER BY total DESC")
+    categories = rows("SELECT categoria_normalizada AS categoria, COUNT(*) AS total FROM seguridad_incidencias WHERE estado_revision<>'Descartada' GROUP BY categoria_normalizada ORDER BY total DESC LIMIT 10")
+    incidents = rows("""
+        SELECT id_incidencia,titulo,gravedad,estado_revision,zona,ubicacion,fecha_hora_suceso,categoria_normalizada
+        FROM seguridad_incidencias
+        WHERE estado_revision IN (?,?)
+        ORDER BY CASE gravedad WHEN 'Critica' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
+                 COALESCE(fecha_hora_suceso,fecha_creacion) DESC
+        LIMIT 20
+    """, pending_statuses)
+    pending = sum(int(row.get("total") or 0) for row in counts if row.get("estado") in pending_statuses)
+    answer = f"Seguridad tiene {pending} incidencia(s) pendiente(s) o en revision. Hay {int(total_docs.get('total') or 0)} parte(s) importado(s) y {int(total_docs.get('incidencias') or 0)} incidencia(s) detectada(s) en documentos."
+    display = {
+        "title": "Resumen de Seguridad",
+        "subtitle": "Incidencias pendientes y clasificacion",
+        "cards": [
+            {"label": "Pendientes / en revision", "value": str(pending)},
+            {"label": "Partes importados", "value": str(int(total_docs.get("total") or 0))},
+            {"label": "Incidencias detectadas", "value": str(int(total_docs.get("incidencias") or 0))},
+            {"label": "Categorias con incidencias", "value": str(len(categories))},
+        ],
+        "tables": [
+            {
+                "title": "Estados de revision",
+                "columns": ["Estado", "Total"],
+                "rows": [{"Estado": row.get("estado") or "Sin estado", "Total": str(row.get("total") or 0)} for row in counts],
+            },
+            {
+                "title": "Categorias",
+                "columns": ["Categoria", "Total"],
+                "rows": [{"Categoria": row.get("categoria") or "Otros", "Total": str(row.get("total") or 0)} for row in categories],
+            },
+            {
+                "title": "Incidencias pendientes",
+                "columns": ["ID", "Titulo", "Gravedad", "Estado", "Zona", "Ubicacion", "Fecha"],
+                "rows": [{
+                    "ID": str(row.get("id_incidencia") or ""),
+                    "Titulo": row.get("titulo") or "",
+                    "Gravedad": row.get("gravedad") or "",
+                    "Estado": row.get("estado_revision") or "",
+                    "Zona": row.get("zona") or "",
+                    "Ubicacion": row.get("ubicacion") or "",
+                    "Fecha": row.get("fecha_hora_suceso") or "",
+                } for row in incidents],
+            },
+        ],
+        "note": "Consulta de solo lectura. Para crear tareas o proyectos desde una incidencia hay que entrar al modulo Seguridad y confirmar la accion.",
+    }
+    return response(answer, 0.86, facts={"pendientes": pending, "partes": total_docs.get("total"), "incidencias_detectadas": total_docs.get("incidencias")}, display=display, sources=source_refs("security_incidents", "security_documents"), data_status="confirmado", query_domain="seguridad")
+
+def handle_work_query():
+    term = re.sub(r"(?i)\\b(como|va|van|estado|del|de|la|el|proyecto|tarea|quien|responsable|proximo|paso|lista|busca|pendientes?)\\b", " ", question)
+    term = re.sub(r"[?¿]", " ", term).strip()
+    like = "%" + norm(term).replace(" ", "%") + "%"
+    project_scope, project_params = community_scope("p")
+    task_scope, task_params = community_scope("t")
+    project_matches = rows("""
+        SELECT 'Proyecto' AS tipo, p.id_proyecto AS id, p.nombre AS titulo, p.estado_general AS estado,
+               p.responsable_principal AS responsable, p.responsable_proximo_paso, p.fecha_objetivo_proximo_paso,
+               p.fecha_ultima_actualizacion, COALESCE(p.observaciones,'') AS contexto
+        FROM proyectos p
+        WHERE COALESCE(p.activo,1)=1 AND (? = '%%' OR UPPER(p.nombre) LIKE ? OR UPPER(COALESCE(p.descripcion,'')) LIKE ?)
+    """ + project_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + project_params))
+    task_matches = rows("""
+        SELECT 'Tarea' AS tipo, t.id_tarea AS id, t.titulo, t.estado,
+               t.responsable, t.responsable_proximo_paso, t.fecha_objetivo_proximo_paso,
+               t.fecha_ultima_actualizacion, COALESCE(t.proximo_paso,'') AS contexto
+        FROM tareas t
+        WHERE COALESCE(t.activa,1)=1 AND COALESCE(t.archivada,0)=0 AND (? = '%%' OR UPPER(t.titulo) LIKE ? OR UPPER(COALESCE(t.descripcion,'')) LIKE ?)
+    """ + task_scope + " ORDER BY fecha_ultima_actualizacion DESC LIMIT 6", tuple([like, like, like] + task_params))
+    matches = project_matches + task_matches
+    if matches:
+        answer = "He encontrado estos elementos operativos:\\n" + "\\n".join([f"- {m['tipo']} {m['id']}: {m['titulo']} | Estado: {m['estado'] or 'sin estado'} | Responsable: {m['responsable'] or 'sin responsable'} | Proximo: {m['responsable_proximo_paso'] or 'sin dato'} | Paso: {(m['contexto'] or 'sin proximo paso')[:220]}" for m in matches[:8]])
+        return response(answer, 0.72, candidates=[{"type":"project" if m["tipo"]=="Proyecto" else "task","id":m["id"],"title":m["titulo"],"score":1} for m in matches[:8]], sources=source_refs("projects", "tasks", "project_records", "task_records"), data_status="confirmado", query_domain="trabajo")
+    return response("No he encontrado tareas o proyectos con esa referencia. Dame alguna palabra clave del titulo o responsable.", 0.45, questions=["Referencia de tarea/proyecto"], sources=source_refs("projects", "tasks"), data_status="incompleto", query_domain="trabajo")
+
+QUERY_HANDLERS = {
+    "propietarios_contacto": lambda: handle_contact_query(email_query),
+    "seguridad": handle_security_query,
+    "trabajo": handle_work_query,
+}
+
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 q_norm = norm(question)
@@ -2568,6 +2701,10 @@ try:
     is_security_question = any(token in q_norm for token in ["SEGURIDAD", "VIGILANCIA", "INCIDENCIA", "INCIDENCIAS", "PARTE", "PARTES"]) and not is_work_question
     email_query = extract_email_query(question)
     query_domain = detect_query_domain(email_query, is_budget_question, is_finance_question, is_debt_question, is_owner_question, is_work_question, is_assembly_question, is_security_question)
+
+    if query_domain in QUERY_HANDLERS:
+        print(json.dumps(QUERY_HANDLERS[query_domain](), ensure_ascii=False))
+        raise SystemExit
 
     if query_domain == "propietarios_contacto":
         owners = owners_for_email(email_query)

@@ -354,6 +354,43 @@ Pendiente para cerrar Fase 1:
 - Revisar codificacion historica de datos importados que muestran caracteres corruptos.
 - Dejar documentado que contabilidad/propietarios siguen siendo fuentes comunes hasta que exista `id_comunidad` en esas tablas o una relacion equivalente.
 
+## Sexto ajuste implementado
+
+Fecha: 2026-08-27.
+
+Porcentaje:
+
+- Antes: 78% tecnico / 68% funcional.
+- Despues: 82% tecnico / 72% funcional.
+
+Cambios realizados:
+
+- Se inicia la modularizacion interna del Centro IA sin cambiar la respuesta visible al usuario.
+- Se extraen a handlers dedicados los dominios:
+  - `propietarios_contacto`;
+  - `seguridad`;
+  - `trabajo`.
+- Se anade un despachador `QUERY_HANDLERS` para que esos dominios no dependan ya del bloque condicional principal.
+- Se mantiene el bloque anterior como continuidad para el resto de dominios mientras se completa la extraccion por fases.
+
+Pruebas ejecutadas:
+
+- `npm run check`.
+- `node scripts/check-ai-python.mjs`.
+- `node scripts/assert-ai-query.mjs`.
+
+Resultado:
+
+- 10 consultas funcionales correctas.
+- 3 controles de permisos correctos.
+- La prueba Python embebida compila correctamente.
+
+Pendiente para cerrar Fase 1:
+
+- Extraer `deuda`, `propiedad`, `contabilidad`, `presupuesto` y `asambleas`.
+- Revisar codificacion historica de datos importados que muestran caracteres corruptos.
+- Documentar el alcance comunitario de contabilidad/propietarios hasta que estas tablas tengan relacion directa con comunidad.
+
 ## Pruebas recomendadas para cerrar la Fase 1
 
 - `quien es el propietario de CB 2 derecha`
@@ -385,7 +422,7 @@ Cada prueba debe validar:
 
 ## Proximo paso
 
-- modularizar el Centro IA por dominios;
+- continuar la modularizacion del Centro IA por dominios;
 - mantener las pruebas actuales como barrera de regresion;
 - corregir o documentar la codificacion historica de datos importados;
 - no activar acciones automaticas hasta Fase 2.

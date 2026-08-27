@@ -654,10 +654,11 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 60% tecnico / 50% funcional | Consultas IA de asambleas y seguridad integradas con dominio, fuentes, permisos y pruebas de punto/asamblea/incidencias | Modularizar consultas y crear pruebas con aserciones |
 | 2026-08-26 | Fase 1 - Agente de consulta fiable | 70% tecnico / 60% funcional | `scripts/assert-ai-query.mjs` valida 10 consultas: propietario/email, propiedad exacta, deuda, listado, presupuesto, balance, trabajo, asambleas y seguridad; incluye permiso negativo de Seguridad | Modularizar consultas y probar permisos por comunidad |
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 78% tecnico / 68% funcional | Pruebas de comunidad anadidas: usuario limitado no ve proyecto/asamblea fuera de su comunidad. Se corrige alias SQL en consulta de trabajo detectado por la prueba | Modularizar consultas y revisar codificacion historica |
+| 2026-08-27 | Fase 1 - Agente de consulta fiable | 82% tecnico / 72% funcional | Primer corte modular del Centro IA: consultas de contacto, seguridad y trabajo pasan a handlers dedicados y mantienen 10 consultas + 3 pruebas de permisos correctas | Extraer deuda, contabilidad, presupuesto y asambleas; revisar codificacion historica |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
 - Nucleo activo: Fase 1 - Agente de consulta fiable.
-- Avance del nucleo: 78% tecnico, 68% funcional.
-- Pendiente inmediato: modularizar consultas y revisar codificacion historica de datos importados.
+- Avance del nucleo: 82% tecnico, 72% funcional.
+- Pendiente inmediato: continuar modularizacion por deuda, contabilidad, presupuesto y asambleas; revisar codificacion historica de datos importados.
