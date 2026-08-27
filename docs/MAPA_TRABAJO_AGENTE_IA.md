@@ -25,8 +25,8 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 2 - Acciones con confirmacion |
-| Estado tecnico | 52% |
-| Estado funcional | 42% |
+| Estado tecnico | 85% |
+| Estado funcional | 75% |
 | Nucleo anterior | Fase 1 - Agente de consulta fiable cerrado al 100% |
 | Accion permitida ahora | Proponer acciones simples con pantalla editable y confirmacion |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
@@ -35,10 +35,10 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 Proxima accion:
 
-1. Probar acciones reales de crear tarea/proyecto y anadir seguimiento desde web.
-2. Anadir previsualizacion completa antes/despues con valores actuales de base de datos.
-3. Extender el contrato a acciones de documentos, banco, emails y cambios de titularidad.
-4. Crear auditoria especifica de propuestas IA aceptadas o descartadas.
+1. Validar desde web una accion de prueba con antes/despues y confirmacion final.
+2. Si el usuario confirma el flujo, cerrar Fase 2 al 100%.
+3. Abrir Fase 3 - Memoria y reglas aprendidas.
+4. Extender el contrato de acciones a documentos, banco, emails y cambios de titularidad cuando entren esos nucleos.
 
 ## Reglas de trabajo
 
@@ -660,11 +660,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 100% nucleo cerrado | La bateria sube a 12 consultas reales + 3 permisos: incluye Inversiones Senada, propietarios con deuda superior a 1000 EUR y limite de filas en listados largos. Fuentes, dominio, estado del dato, permisos y salida legible quedan verificados | Pasar a Fase 2 solo cuando se confirmen acciones con ventana editable |
 | 2026-08-27 | Fase 2 - Acciones con confirmacion | 45% tecnico / 35% funcional | Se anade contrato `editable_confirmation_v1` para crear tarea/proyecto y anadir seguimiento; consultas quedan como `query_v1`; la UI avisa que nada se guarda hasta revisar y confirmar; prueba automatica verifica que rutas IA no escriben directamente | Probar acciones reales, previsualizar impacto antes/despues y extender a documentos/banco/email |
 | 2026-08-27 | Fase 2 - Acciones con confirmacion | 52% tecnico / 42% funcional | Las propuestas IA muestran un resumen de impacto previsto antes de aplicar; la prueba del contrato valida tambien que ese resumen exista | Completar previsualizacion antes/despues con datos actuales y probar acciones reales desde web |
+| 2026-08-27 | Fase 2 - Acciones con confirmacion | 85% tecnico / 75% funcional | Se anade previsualizacion antes/despues con snapshot actual y valores propuestos; al editar campos se actualiza la columna propuesta. Las pruebas de consultas y contrato siguen correctas | Validacion funcional del usuario en web para cerrar Fase 2 al 100% |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
 - Nucleo activo: Fase 2 - Acciones con confirmacion.
 - Ultimo nucleo cerrado: Fase 1 - Agente de consulta fiable al 100%.
-- Avance actual: 52% tecnico / 42% funcional.
-- Pendiente inmediato: probar acciones reales desde web y anadir previsualizacion completa antes/despues.
+- Avance actual: 85% tecnico / 75% funcional.
+- Pendiente inmediato: validacion funcional del usuario en web para cerrar Fase 2 al 100% y abrir Fase 3.

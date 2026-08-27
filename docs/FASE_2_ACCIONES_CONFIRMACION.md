@@ -90,12 +90,15 @@ Incluido:
 - contrato explicito en respuestas IA;
 - aviso visible de confirmacion necesaria;
 - resumen de impacto previsto antes de aplicar;
+- previsualizacion antes/despues para acciones sobre tareas o proyectos existentes;
+- previsualizacion de elemento nuevo para crear tareas o proyectos;
+- actualizacion visual de la columna propuesta cuando el usuario edita campos;
 - proteccion para que una consulta en la caja operativa no cree cambios;
 - prueba estatica de separacion entre IA y escritura.
 
 Pendiente:
 
-- previsualizacion completa antes/despues con valores actuales de base de datos;
+- prueba funcional del usuario en web con una accion real o una accion de prueba;
 - revision por lote de varias acciones propuestas;
 - acciones sobre banco, recibos, documentos, email y cambios de titularidad;
 - panel de auditoria especifico para acciones IA;

@@ -1685,6 +1685,50 @@ function aiImpactSummary(result, action) {
   return null;
 }
 
+function aiValue(value) {
+  const text = String(value ?? "").trim();
+  return text || "-";
+}
+
+function aiBeforeAfterRows(result, action) {
+  const payload = result?.payload || {};
+  const entity = result?.entity || {};
+  if (action === "seguimiento_tarea" || action === "seguimiento_proyecto") {
+    const current = result?.current_snapshot || {};
+    const rows = [
+      ["Estado", current.estado, payload.estado_nuevo],
+      ["Prioridad", current.prioridad, payload.prioridad_nueva],
+      ["Responsable actual", current.responsable, payload.responsable_nuevo],
+      ["Responsable proximo paso", current.responsable_proximo_paso, payload.responsable_proximo_paso],
+      ["Fecha proximo paso", current.fecha_objetivo_proximo_paso, payload.fecha_objetivo_proximo_paso],
+      ["Proximo paso", current.proximo_paso, payload.proximo_paso],
+    ];
+    return {
+      mode: "update",
+      title: entity.title || current.titulo || "Elemento seleccionado",
+      rows: rows.map(([field, before, after]) => ({ field, before: aiValue(before), after: aiValue(after) })),
+    };
+  }
+  if (action === "crear_tarea" || action === "crear_proyecto") {
+    const rows = [
+      ["Titulo", "", payload.titulo],
+      ["Categoria", "", payload.categoria],
+      ["Estado", "", payload.estado_nuevo || payload.estado],
+      ["Prioridad", "", payload.prioridad_nueva || payload.prioridad],
+      ["Responsable actual", "", payload.responsable_nuevo || payload.responsable],
+      ["Responsable proximo paso", "", payload.responsable_proximo_paso],
+      ["Fecha proximo paso", "", payload.fecha_objetivo_proximo_paso || payload.fecha_proxima_revision],
+      ["Proximo paso", "", payload.proximo_paso],
+    ];
+    return {
+      mode: "create",
+      title: payload.titulo || "Nuevo elemento",
+      rows: rows.map(([field, before, after]) => ({ field, before: aiValue(before), after: aiValue(after) })),
+    };
+  }
+  return null;
+}
+
 function withAiProposalContract(result) {
   const action = String(result?.action || "revisar_manual");
   const requiresConfirmation = AI_ACTIONS_REQUIRING_CONFIRMATION.has(action);
@@ -1698,6 +1742,7 @@ function withAiProposalContract(result) {
       allowed_write_endpoint: aiWriteEndpointForAction(action),
       editable_fields: AI_EDITABLE_FIELDS[action] || [],
       impact_summary: aiImpactSummary(result, action),
+      before_after_preview: aiBeforeAfterRows(result, action),
       confirmation_required_message: "Nada se ha guardado todavia. Revisa y edita la propuesta antes de aplicarla.",
     };
   }
@@ -1773,6 +1818,17 @@ function localAiProposal(text, context) {
       confidence: Math.min(0.85, 0.35 + best.score / 10),
       action: isTask ? "seguimiento_tarea" : "seguimiento_proyecto",
       entity: { type: best.kind, id: best.id, title: best.titulo },
+      current_snapshot: {
+        titulo: best.titulo || "",
+        categoria: best.categoria || "",
+        estado: best.estado || "",
+        prioridad: best.prioridad || "",
+        responsable: best.responsable || "",
+        responsable_proximo_paso: best.responsable_proximo_paso || "",
+        fecha_objetivo_proximo_paso: best.fecha_objetivo_proximo_paso || "",
+        proximo_paso: best.proximo_paso || "",
+        comunidad: best.comunidad || "",
+      },
       candidates: [best, ...(best.kind === "task" ? taskMatches : projectMatches).filter((item) => item.id !== best.id).slice(0, 4)].map((m) => ({ type: m.kind, id: m.id, title: m.titulo, score: m.score })),
       payload: {
         tipo_registro: "Seguimiento",
@@ -3241,6 +3297,17 @@ function targetedRecordProposal(text, context, target) {
     action: isTask ? "seguimiento_tarea" : "seguimiento_proyecto",
     answer: "Seguimiento preparado sobre el elemento seleccionado. Revisa los campos antes de guardar.",
     entity: { type, id, title: item.titulo || target?.title || "" },
+    current_snapshot: {
+      titulo: item.titulo || target?.title || "",
+      categoria: item.categoria || "",
+      estado: item.estado || "",
+      prioridad: item.prioridad || "",
+      responsable: item.responsable || "",
+      responsable_proximo_paso: item.responsable_proximo_paso || "",
+      fecha_objetivo_proximo_paso: item.fecha_objetivo_proximo_paso || "",
+      proximo_paso: item.proximo_paso || "",
+      comunidad: item.comunidad || "",
+    },
     candidates: [{ type, id, title: item.titulo || target?.title || "", score: 10 }],
     payload: {
       tipo_registro: "Seguimiento",
@@ -7629,6 +7696,39 @@ function homePage() {
       container.querySelectorAll("[data-answer-export]").forEach(button => button.addEventListener("click", () => downloadAnswerTable(display, button.dataset.answerExport)));
     }
 
+    function aiPreviewInputValue(field) {
+      const fieldInputs = {
+        Titulo: "aiTitle",
+        Categoria: "aiCategory",
+        Estado: "aiState",
+        Prioridad: "aiPriority",
+        "Responsable actual": "aiOwner",
+        "Responsable proximo paso": "aiNextOwner",
+        "Fecha proximo paso": "aiNextDate",
+        "Proximo paso": "aiNextStep",
+      };
+      const id = fieldInputs[field];
+      if (!id || !$(id)) return null;
+      return safe($(id).value) || "-";
+    }
+
+    function bindAiBeforeAfterPreview(container) {
+      if (!container) return;
+      const update = () => {
+        container.querySelectorAll("[data-ai-after]").forEach(cell => {
+          const value = aiPreviewInputValue(cell.dataset.aiAfter);
+          if (value !== null) cell.textContent = value;
+        });
+      };
+      ["aiTitle", "aiCategory", "aiState", "aiPriority", "aiOwner", "aiNextOwner", "aiNextDate", "aiNextStep"].forEach(id => {
+        if ($(id)) {
+          $(id).addEventListener("input", update);
+          $(id).addEventListener("change", update);
+        }
+      });
+      update();
+    }
+
     function renderAiProposal(proposal, resultId = "aiOperationResult") {
       const resultContainer = $(resultId);
       if (!resultContainer) return;
@@ -7648,6 +7748,9 @@ function homePage() {
         : "";
       const impactHtml = proposal.impact_summary
         ? '<div class="detailBox"><strong>Impacto previsto</strong><div>' + html(proposal.impact_summary.title || "") + '</div>' + (proposal.impact_summary.lines || []).map(line => '<div>- ' + html(line) + '</div>').join("") + '</div>'
+        : "";
+      const beforeAfterHtml = proposal.before_after_preview
+        ? '<div class="detailBox"><strong>Antes / despues</strong><div class="muted">' + html(proposal.before_after_preview.mode === "create" ? "Elemento nuevo. No existe valor anterior." : proposal.before_after_preview.title || "Elemento existente") + '</div><table class="answerTable"><thead><tr><th>Campo</th><th>Actual</th><th>Propuesto</th></tr></thead><tbody>' + (proposal.before_after_preview.rows || []).map(row => '<tr><td>' + html(row.field) + '</td><td>' + html(row.before) + '</td><td data-ai-after="' + html(row.field) + '">' + html(row.after) + '</td></tr>').join("") + '</tbody></table></div>'
         : "";
       if (proposal.queryDetected) {
         resultContainer.innerHTML = '<div class="proposal">' +
@@ -7698,6 +7801,7 @@ function homePage() {
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
         actionContractHtml +
         impactHtml +
+        beforeAfterHtml +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
         questionsHtml +
         candidatesHtml +
@@ -7724,6 +7828,7 @@ function homePage() {
         const kind = action.includes("tarea") ? "task" : "project";
         $("aiEntity").innerHTML = entityOptionsHtml(kind, "");
       });
+      bindAiBeforeAfterPreview(resultContainer);
     }
 
     async function analyzeAiText() {
