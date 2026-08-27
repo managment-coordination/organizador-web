@@ -1586,6 +1586,101 @@ function extractIssueTitle(text) {
   return location ? `${issue} en ${location}` : issue;
 }
 
+const AI_ACTIONS_REQUIRING_CONFIRMATION = new Set([
+  "seguimiento_tarea",
+  "seguimiento_proyecto",
+  "crear_tarea",
+  "crear_proyecto",
+]);
+
+const AI_EDITABLE_FIELDS = {
+  seguimiento_tarea: [
+    "entity",
+    "tipo_registro",
+    "comentario",
+    "estado_nuevo",
+    "prioridad_nueva",
+    "responsable_nuevo",
+    "responsable_proximo_paso",
+    "fecha_objetivo_proximo_paso",
+    "fecha_proxima_revision",
+    "proximo_paso",
+    "motivo_bloqueo",
+  ],
+  seguimiento_proyecto: [
+    "entity",
+    "tipo_registro",
+    "comentario",
+    "estado_nuevo",
+    "prioridad_nueva",
+    "responsable_nuevo",
+    "responsable_proximo_paso",
+    "fecha_objetivo_proximo_paso",
+    "fecha_proxima_revision",
+    "proximo_paso",
+    "motivo_bloqueo",
+  ],
+  crear_tarea: [
+    "id_proyecto",
+    "titulo",
+    "categoria",
+    "comentario",
+    "estado_nuevo",
+    "prioridad_nueva",
+    "responsable_nuevo",
+    "responsable_proximo_paso",
+    "fecha_objetivo_proximo_paso",
+    "fecha_proxima_revision",
+    "proximo_paso",
+    "motivo_bloqueo",
+  ],
+  crear_proyecto: [
+    "titulo",
+    "categoria",
+    "comentario",
+    "estado_nuevo",
+    "prioridad_nueva",
+    "responsable_nuevo",
+    "responsable_proximo_paso",
+    "fecha_objetivo_proximo_paso",
+    "fecha_proxima_revision",
+    "proximo_paso",
+    "motivo_bloqueo",
+  ],
+};
+
+function aiWriteEndpointForAction(action) {
+  if (action === "seguimiento_tarea" || action === "seguimiento_proyecto") return "/api/entity/record";
+  if (action === "crear_tarea" || action === "crear_proyecto") return "/api/entity/create";
+  return "";
+}
+
+function withAiProposalContract(result) {
+  const action = String(result?.action || "revisar_manual");
+  const requiresConfirmation = AI_ACTIONS_REQUIRING_CONFIRMATION.has(action);
+  if (requiresConfirmation) {
+    return {
+      ...result,
+      proposal_contract: "editable_confirmation_v1",
+      requires_confirmation: true,
+      writes_data: false,
+      audit_required: true,
+      allowed_write_endpoint: aiWriteEndpointForAction(action),
+      editable_fields: AI_EDITABLE_FIELDS[action] || [],
+      confirmation_required_message: "Nada se ha guardado todavia. Revisa y edita la propuesta antes de aplicarla.",
+    };
+  }
+  return {
+    ...result,
+    proposal_contract: action === "consulta" ? "query_v1" : "manual_review_v1",
+    requires_confirmation: false,
+    writes_data: false,
+    audit_required: false,
+    allowed_write_endpoint: "",
+    editable_fields: [],
+  };
+}
+
 function outOfScopeProposal(text, projectMatches, taskMatches) {
   return {
     source: "local",
@@ -3136,18 +3231,18 @@ async function analyzeWithAi(session, text, target = null) {
   if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
   const context = await queryAiContext(session);
   const targeted = targetedRecordProposal(cleanText, context, target);
-  if (targeted) return targeted;
+  if (targeted) return withAiProposalContract(targeted);
   const smart = await querySmartAssistant(session, cleanText);
-  if (smart?.handled) return smart;
+  if (smart?.handled) return withAiProposalContract(smart);
   const fallback = localAiProposal(cleanText, context);
   try {
     const external = await externalAiProposal(cleanText, context);
     if (fallback.action === "consulta" && external?.action && external.action !== "consulta") {
-      return { ...fallback, warning: "La IA externa interpreto la consulta como una accion. Se ha mantenido el modo de consulta para evitar crear o modificar datos por error." };
+      return withAiProposalContract({ ...fallback, warning: "La IA externa interpreto la consulta como una accion. Se ha mantenido el modo de consulta para evitar crear o modificar datos por error." });
     }
-    return external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback;
+    return withAiProposalContract(external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback);
   } catch (error) {
-    return { ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` };
+    return withAiProposalContract({ ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` });
   }
 }
 
@@ -3195,6 +3290,7 @@ async function answerAiQuery(session, text) {
     data_status: result.data_status || ((result.questions || []).length ? "incompleto" : "inferido"),
     sources: Array.isArray(result.sources) ? result.sources : [],
   };
+  result = withAiProposalContract(result);
   try {
     const saved = await runAiHistoryCommand(session, "save", { pregunta: cleanText, respuesta: result });
     result.history_id = saved.id_consulta;
@@ -3208,12 +3304,12 @@ async function answerAiQuery(session, text) {
 async function analyzeOperationalWithAi(session, text) {
   const result = await analyzeWithAi(session, text);
   if (result.action !== "consulta") return result;
-  return {
+  return withAiProposalContract({
     ...result,
     action: "revisar_manual",
     queryDetected: true,
     answer: "Este texto parece una consulta y no se ha preparado ninguna creacion ni modificacion. Utiliza la caja Consultas IA para obtener y conservar la respuesta.",
-  };
+  });
 }
 
 function queryActionOptions(session) {
@@ -7516,6 +7612,9 @@ function homePage() {
       const questionsHtml = (proposal.questions || []).length
         ? '<div class="detailBox"><strong>Necesito aclarar</strong>' + proposal.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>'
         : "";
+      const actionContractHtml = proposal.requires_confirmation
+        ? '<div class="detailBox"><strong>Confirmacion necesaria</strong><div>' + html(proposal.confirmation_required_message || "Nada se ha guardado todavia. Revisa la propuesta antes de aplicarla.") + '</div><div class="muted">La escritura se hara solo desde ' + html(proposal.allowed_write_endpoint || "el endpoint permitido") + ' despues de confirmar.</div></div>'
+        : "";
       if (proposal.queryDetected) {
         resultContainer.innerHTML = '<div class="proposal">' +
           '<div class="proposalHead"><h2>Esto parece una consulta</h2><span class="pill">Sin cambios</span></div>' +
@@ -7563,6 +7662,7 @@ function homePage() {
       resultContainer.innerHTML = '<div class="proposal">' +
         '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
+        actionContractHtml +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
         questionsHtml +
         candidatesHtml +

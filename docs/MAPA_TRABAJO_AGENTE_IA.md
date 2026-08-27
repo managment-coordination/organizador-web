@@ -24,21 +24,21 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 1 - Agente de consulta fiable |
-| Estado tecnico | 78% |
-| Estado funcional | 68% |
-| Nucleo anterior | Fase 0 - Memoria del proyecto cerrada al 100% |
-| Accion permitida ahora | Separar consultas por dominio, ampliar fuentes internas y probar preguntas reales |
-| Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar produccion o activar conectores externos |
+| Nucleo activo | Fase 2 - Acciones con confirmacion |
+| Estado tecnico | 45% |
+| Estado funcional | 35% |
+| Nucleo anterior | Fase 1 - Agente de consulta fiable cerrado al 100% |
+| Accion permitida ahora | Proponer acciones simples con pantalla editable y confirmacion |
+| Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
-| Riesgo principal | Mantener demasiada logica de consulta dentro de una funcion monolitica |
+| Riesgo principal | Que una entrada operativa futura escriba datos sin contrato comun de confirmacion |
 
 Proxima accion:
 
-1. Extraer cada dominio de consulta a funciones internas claras.
-2. Extraer el bloque monolitico de consultas a funciones o modulo dedicado.
-3. Revisar codificacion de datos importados que aparecen corruptos en algunas respuestas.
-4. Mantener las acciones automaticas fuera de alcance hasta Fase 2.
+1. Probar acciones reales de crear tarea/proyecto y anadir seguimiento desde web.
+2. Anadir previsualizacion de impacto antes/despues.
+3. Extender el contrato a acciones de documentos, banco, emails y cambios de titularidad.
+4. Crear auditoria especifica de propuestas IA aceptadas o descartadas.
 
 ## Reglas de trabajo
 
@@ -658,10 +658,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 88% tecnico / 78% funcional | Todos los dominios principales pasan a `QUERY_HANDLERS`: contacto, seguridad, trabajo, asambleas, presupuesto, contabilidad, propiedad y deuda. Se elimina el bloque antiguo duplicado y la prueba valida que no vuelva | Revisar codificacion historica y ampliar casos reales largos |
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 92% tecnico / 84% funcional | Se fuerza salida UTF-8 en puentes Python, se limpia mojibake en respuestas IA sin modificar la base y la prueba rechaza salidas con caracteres rotos | Documentar alcance comunitario de datos comunes y ampliar consultas reales largas |
 | 2026-08-27 | Fase 1 - Agente de consulta fiable | 100% nucleo cerrado | La bateria sube a 12 consultas reales + 3 permisos: incluye Inversiones Senada, propietarios con deuda superior a 1000 EUR y limite de filas en listados largos. Fuentes, dominio, estado del dato, permisos y salida legible quedan verificados | Pasar a Fase 2 solo cuando se confirmen acciones con ventana editable |
+| 2026-08-27 | Fase 2 - Acciones con confirmacion | 45% tecnico / 35% funcional | Se anade contrato `editable_confirmation_v1` para crear tarea/proyecto y anadir seguimiento; consultas quedan como `query_v1`; la UI avisa que nada se guarda hasta revisar y confirmar; prueba automatica verifica que rutas IA no escriben directamente | Probar acciones reales, previsualizar impacto antes/despues y extender a documentos/banco/email |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-27.
 - Nucleo activo: Fase 2 - Acciones con confirmacion.
 - Ultimo nucleo cerrado: Fase 1 - Agente de consulta fiable al 100%.
-- Pendiente inmediato: empezar Fase 2 solo con acciones propuestas, editables y confirmadas antes de modificar datos.
+- Avance actual: 45% tecnico / 35% funcional.
+- Pendiente inmediato: probar acciones reales desde web y anadir previsualizacion de impacto antes/despues.
