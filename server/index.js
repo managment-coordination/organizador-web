@@ -2819,7 +2819,7 @@ AI_SOURCES = {
 }
 
 def source_refs(*keys):
-    return [AI_SOURCES[key] for key in keys if key in AI_SOURCES]
+    return [dict(AI_SOURCES[key]) for key in keys if key in AI_SOURCES]
 
 def parse_date(value):
     value = str(value or "").strip()
@@ -2844,20 +2844,34 @@ def dates_from_question(q):
 
 def response(answer, confidence=0.75, candidates=None, questions=None, facts=None, display=None, sources=None, data_status=None, query_domain=None):
     status = data_status or ("incompleto" if questions else "confirmado")
+    domain = query_domain or globals().get("query_domain", "general")
+    source_list = sources or []
+    freshness = economic_freshness(domain, source_list)
+    if freshness:
+        answer = str(answer or "").rstrip() + "\\n\\n" + freshness["summary"]
+        display = dict(display or {})
+        existing_note = str(display.get("note") or "").strip()
+        display["note"] = (existing_note + "\\n\\n" if existing_note else "") + freshness["summary"]
+        for source in source_list:
+            matching = [item for item in freshness.get("details", []) if item.get("table") == source.get("table")]
+            if matching:
+                source["freshness"] = "; ".join(f"{item['label']}: {item['date_label']}" for item in matching)
     payload = {
         "handled": True,
         "source": "local-db",
         "confidence": confidence,
         "action": "consulta",
-        "query_domain": query_domain or globals().get("query_domain", "general"),
+        "query_domain": domain,
         "answer": answer,
         "data_status": status,
-        "sources": sources or [],
+        "sources": source_list,
         "candidates": candidates or [],
         "questions": questions or [],
         "facts": facts or {},
         "display": display or {},
     }
+    if freshness:
+        payload["freshness"] = freshness
     return clean_value(payload)
 
 def community_scope(alias):
@@ -2871,6 +2885,82 @@ def community_scope(alias):
 def table_exists(name):
     row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
     return bool(row)
+
+def table_columns(name):
+    if not table_exists(name):
+        return set()
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+
+def max_source_date(table, column, where=""):
+    if column not in table_columns(table):
+        return ""
+    sql = f"SELECT MAX(date({column})) AS value FROM {table} WHERE COALESCE({column}, '') <> ''"
+    if where:
+        sql += " AND " + where
+    row = first(sql)
+    return str((row or {}).get("value") or "")
+
+def human_date(value):
+    value = str(value or "").strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value[:19], fmt).strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return value
+
+def economic_freshness(query_domain, sources):
+    economic_domains = {"deuda", "contabilidad", "presupuesto"}
+    uses_accounting = any(str(source.get("module") or "") == "contabilidad" for source in (sources or []))
+    if query_domain not in economic_domains and not uses_accounting:
+        return None
+    source_dates = {
+        "cf_recibos": [
+            ("Recibos Netfincas emitidos", max_source_date("cf_recibos", "fecha_emision")),
+            ("Recibos Netfincas actualizados/importados", max_source_date("cf_recibos", "fecha_ultima_actualizacion") or max_source_date("cf_recibos", "fecha_creacion")),
+        ],
+        "cf_movimientos_deuda": [
+            ("Cobros/movimientos de deuda Netfincas", max_source_date("cf_movimientos_deuda", "fecha")),
+        ],
+        "cf_gastos_facturas": [
+            ("Gastos Netfincas por fecha de alta", max_source_date("cf_gastos_facturas", "fecha_alta")),
+            ("Gastos Netfincas por fecha de pago", max_source_date("cf_gastos_facturas", "fecha_pago")),
+            ("Gastos Netfincas actualizados/importados", max_source_date("cf_gastos_facturas", "fecha_ultima_actualizacion") or max_source_date("cf_gastos_facturas", "fecha_creacion")),
+        ],
+        "cf_extractos_banco_lineas": [
+            ("Extractos bancarios importados", max_source_date("cf_extractos_banco_lineas", "fecha")),
+        ],
+        "informes_contables": [
+            ("Informes contables calculados", max_source_date("informes_contables", "fecha_hasta")),
+            ("Informes contables actualizados", max_source_date("informes_contables", "fecha_ultima_actualizacion") or max_source_date("informes_contables", "fecha_creacion")),
+        ],
+    }
+    details = []
+    for table, table_dates in source_dates.items():
+        for label, value in table_dates:
+            if value:
+                details.append({"table": table, "label": label, "date": value, "date_label": human_date(value)})
+    if not details:
+        return {
+            "applies": True,
+            "data_until": "",
+            "summary": "Aviso de vigencia: esta respuesta usa datos economicos importados, pero no hay una fecha de cobertura suficiente registrada en la base.",
+            "details": [],
+        }
+    used_tables = {str(source.get("table") or "") for source in (sources or [])}
+    scoped_details = [item for item in details if item["table"] in used_tables] or details
+    scoped_latest = max(item["date"] for item in scoped_details if item.get("date"))
+    global_latest = max(item["date"] for item in details if item.get("date"))
+    return {
+        "applies": True,
+        "data_until": scoped_latest,
+        "data_until_label": human_date(scoped_latest),
+        "global_data_until": global_latest,
+        "global_data_until_label": human_date(global_latest),
+        "summary": f"Aviso de vigencia: la informacion economica disponible en la app llega hasta {human_date(scoped_latest)} segun las fuentes usadas. Comprueba si despues de esa fecha se han descargado nuevos documentos de Netfincas o banco.",
+        "details": scoped_details,
+        "detail_text": "; ".join(f"{item['label']}: {item['date_label']}" for item in scoped_details[:6]),
+    }
 
 def can_query_security():
     if role in ("Superusuario", "Seguridad"):
@@ -9320,16 +9410,21 @@ function homePage() {
         general: "General",
       }[domain] || domain;
       const sources = proposal.sources || [];
-      if (!statusLabel && !domainLabel && !sources.length) return "";
+      const freshness = proposal.freshness || null;
+      if (!statusLabel && !domainLabel && !sources.length && !freshness) return "";
+      const freshnessHtml = freshness?.summary
+        ? '<div class="answerNote"><strong>Vigencia de datos</strong><div>' + html(freshness.summary) + '</div>' + (freshness.detail_text ? '<div class="muted">' + html(freshness.detail_text) + '</div>' : '') + '</div>'
+        : "";
       const sourcesHtml = sources.length
         ? '<div><strong>Fuentes internas</strong>' + sources.map(source =>
             '<div class="line"><span class="pill">' + html(source.module || "fuente") + '</span> ' +
-            html((source.table || "") + (source.description ? " - " + source.description : "")) + '</div>'
+            html((source.table || "") + (source.description ? " - " + source.description : "") + (source.freshness ? " | " + source.freshness : "")) + '</div>'
           ).join("") + '</div>'
         : "";
       return '<div class="detailBox">' +
         (domainLabel ? '<div><strong>Dominio detectado:</strong> ' + html(domainLabel) + '</div>' : '') +
         (statusLabel ? '<div><strong>Estado del dato:</strong> ' + html(statusLabel) + '</div>' : '') +
+        freshnessHtml +
         sourcesHtml +
       '</div>';
     }

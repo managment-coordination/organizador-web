@@ -141,6 +141,13 @@ for (const testCase of cases) {
   if (!String(payload.answer || "").toLowerCase().includes(testCase.contains.toLowerCase())) failures.push(`${testCase.question}: no contiene ${testCase.contains}`);
   if (!Array.isArray(payload.sources) || payload.sources.length < testCase.minSources) failures.push(`${testCase.question}: fuentes insuficientes`);
   if (mojibakePattern.test(JSON.stringify(payload))) failures.push(`${testCase.question}: contiene caracteres mojibake`);
+  if (["deuda", "contabilidad", "presupuesto"].includes(testCase.domain)) {
+    if (!payload.freshness?.summary) failures.push(`${testCase.question}: falta aviso de vigencia economica`);
+    if (!String(payload.answer || "").includes("Aviso de vigencia")) failures.push(`${testCase.question}: la respuesta no avisa de la fecha de datos`);
+    const accountingSources = (payload.sources || []).filter((source) => source.module === "contabilidad");
+    if (accountingSources.length && !accountingSources.some((source) => source.freshness)) failures.push(`${testCase.question}: fuentes contables sin fecha de cobertura`);
+  }
+  if (testCase.domain === "trabajo" && payload.freshness) failures.push(`${testCase.question}: no debe incluir vigencia economica`);
 }
 
 try {

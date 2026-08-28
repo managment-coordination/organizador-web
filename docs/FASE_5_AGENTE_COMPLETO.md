@@ -2,7 +2,7 @@
 
 ## Nucleo trabajado
 
-Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion, respuestas guiadas y primera herramienta avanzada de documentos/informes.
+Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion, respuestas guiadas, primera herramienta avanzada de documentos/informes y aviso de vigencia para datos economicos.
 
 El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un agente-router seguro que lea una instruccion natural y decida si corresponde a:
 
@@ -17,9 +17,9 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Campo | Valor |
 | --- | --- |
 | Porcentaje anterior tecnico | 0% |
-| Porcentaje actual tecnico | 72% |
+| Porcentaje actual tecnico | 74% |
 | Porcentaje anterior funcional | 0% |
-| Porcentaje actual funcional | 58% |
+| Porcentaje actual funcional | 60% |
 | Contrato | `agent_router_v1` |
 | Endpoint | `POST /api/agent/message` |
 | Catalogo | `agent_tool_catalog_v1` |
@@ -28,6 +28,7 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Tabla de contexto | `ia_contexto_conversacion` |
 | Respuesta guiada | `agent_guidance_v1` |
 | Preparacion de informe | `agent_report_prepare_v1` |
+| Vigencia economica | `freshness` en respuestas de deuda, contabilidad y presupuesto |
 | Endpoint documental | `POST /api/agent/documents/query` |
 | Endpoint preparar informe | `POST /api/agent/report/prepare` |
 | Escritura operativa directa | No |
@@ -78,6 +79,8 @@ La herramienta de documentos e informes queda activa en dos niveles:
 - `documents.lookup` y `reports.lookup`: consultan anexos e informes visibles por rol y comunidad, sin guardar cambios.
 - `reports.generate.entity`: prepara el destino de un informe Word sobre tarea o proyecto; el archivo se crea despues en `/api/report/generate` solo si el usuario confirma.
 
+Las consultas economicas incorporan ahora un aviso de vigencia. Cuando el agente responde sobre deuda, contabilidad o presupuesto, calcula la fecha maxima disponible en las fuentes usadas, por ejemplo recibos Netfincas, movimientos de deuda, gastos/facturas, extractos bancarios o informes contables. La respuesta muestra una advertencia del tipo: datos disponibles hasta una fecha concreta y necesidad de comprobar si hay nuevas descargas de Netfincas o banco posteriores.
+
 ## Garantias
 
 - El agente no llama directamente a endpoints de escritura operativa.
@@ -88,6 +91,7 @@ La herramienta de documentos e informes queda activa en dos niveles:
 - El catalogo separa herramientas activas y planificadas para no confundir una solicitud de email, conciliacion bancaria, informe o cambio de titularidad con una tarea comun.
 - El contexto conversacional queda separado de `ia_reglas`, que sigue siendo la memoria permanente confirmada.
 - Las respuestas guiadas ayudan a distinguir lo seguro de lo dudoso antes de consultar, crear o actualizar.
+- Las respuestas economicas no se presentan como datos absolutos actuales sin indicar hasta que fecha llegan las fuentes importadas.
 
 ## Pendiente de Fase 5
 

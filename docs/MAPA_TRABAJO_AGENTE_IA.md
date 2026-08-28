@@ -10,7 +10,7 @@ El objetivo final no es tener "una IA que contesta", sino un agente operativo co
 
 - App web operativa actual: 74%.
 - Plataforma central inteligente final: 45% - 50%.
-- Agente conversacional real: 58% - 62%.
+- Agente conversacional real: 60% - 63%.
 
 Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe indicar:
 
@@ -25,10 +25,10 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 5 - Agente completo |
-| Estado tecnico | 72% |
-| Estado funcional | 58% |
+| Estado tecnico | 74% |
+| Estado funcional | 60% |
 | Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
-| Accion permitida ahora | Usar el agente-router con respuestas guiadas, contexto reciente, catalogo de herramientas y preparacion de informes Word |
+| Accion permitida ahora | Usar el agente-router con respuestas guiadas, contexto reciente, catalogo de herramientas, preparacion de informes Word y avisos de vigencia economica |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
 | Riesgo principal | Intentar acciones complejas sin dividirlas en herramientas internas auditables |
@@ -667,11 +667,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 3 - Memoria y reglas aprendidas | 100% nucleo inicial cerrado | Se implementa tabla `ia_reglas`, panel Memoria IA, aprendizaje de correcciones de redaccion, aplicacion de reglas en propuestas confirmables y prueba `assert-ai-memory` | Abrir Fase 4 - Automatizacion guiada |
 | 2026-08-27 | Fase 4 - Automatizacion guiada | 100% nucleo inicial cerrado | Se implementa lote guiado con contrato `guided_batch_v1`, separacion en propuestas independientes, tarjetas editables, seleccion por propuesta, confirmacion final y aprendizaje opcional de correcciones | Preparar Fase 5 - Agente completo por herramientas internas |
 | 2026-08-28 | Fase 5 - Agente completo | 72% tecnico / 58% funcional | Se activa documentos/informes en el agente: consulta de anexos e informes visibles, contrato `agent_report_prepare_v1`, propuesta revisable de informe Word y generacion solo tras confirmacion | Convertir otra herramienta planificada en flujo seguro: email/Outlook o conciliacion bancaria |
+| 2026-08-28 | Fase 5 - Agente completo | 74% tecnico / 60% funcional | Las consultas de deuda, contabilidad y presupuesto muestran aviso de vigencia con fecha maxima de datos importados desde Netfincas/banco y fuentes con cobertura | Mantener esta logica en futuros modulos economicos y conectores |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-28.
 - Nucleo activo: Fase 5 - Agente completo.
 - Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
-- Avance actual: 72% tecnico / 58% funcional.
+- Avance actual: 74% tecnico / 60% funcional.
 - Pendiente inmediato: escoger el siguiente dominio complejo y mantenerlo como herramienta confirmable, sin ejecucion automatica sensible.
