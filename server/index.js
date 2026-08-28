@@ -4163,6 +4163,95 @@ function summarizeAgentResult(response) {
   return bits.join(" | ").slice(0, 1800);
 }
 
+function compactAgentList(values, limit = 5) {
+  return (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .slice(0, limit);
+}
+
+function agentDataStatusLabel(status) {
+  return {
+    confirmado: "Dato confirmado",
+    inferido: "Inferencia",
+    incompleto: "Dato incompleto",
+  }[status] || "Dato no clasificado";
+}
+
+function buildAgentGuidance(response) {
+  const result = response?.result || {};
+  const tool = response?.selected_tool || {};
+  const payload = result.payload || {};
+  const guidance = {
+    contract: "agent_guidance_v1",
+    summary: response?.message || result.answer || "Respuesta preparada.",
+    confirmed_data: [],
+    inferences: [],
+    risks: [],
+    questions: compactAgentList([...(response?.questions || []), ...(result.questions || [])], 8),
+    review_focus: [],
+    suggested_actions: [],
+  };
+
+  if (tool.label) {
+    guidance.confirmed_data.push(`Herramienta seleccionada: ${tool.label}.`);
+  }
+  if (tool.status === "planned") {
+    guidance.risks.push(tool.limitation || "La herramienta adecuada todavia esta planificada.");
+    guidance.review_focus.push("No ejecutar esta peticion como una tarea comun hasta construir la herramienta segura.");
+  }
+  if (response?.conversation_context?.used) {
+    guidance.inferences.push("Se ha usado el contexto reciente de la conversacion para interpretar la instruccion.");
+    guidance.review_focus.push("Comprueba que el contexto anterior corresponde realmente al asunto actual.");
+  }
+  if (result.data_status) {
+    const label = agentDataStatusLabel(result.data_status);
+    if (result.data_status === "confirmado") guidance.confirmed_data.push(`${label}: la respuesta se basa en fuentes internas visibles para tu usuario.`);
+    if (result.data_status === "inferido") guidance.inferences.push(`${label}: la respuesta combina datos internos y calculo o interpretacion.`);
+    if (result.data_status === "incompleto") guidance.risks.push(`${label}: faltan datos para responder con plena seguridad.`);
+  }
+  if (Array.isArray(result.sources) && result.sources.length) {
+    guidance.confirmed_data.push(`Fuentes internas usadas: ${result.sources.map((source) => source.module || source.table || "fuente").filter(Boolean).slice(0, 4).join(", ")}.`);
+  }
+  if (Number(response?.confidence || result.confidence || 0) < 0.55) {
+    guidance.risks.push("Confianza baja: conviene concretar el propietario, propiedad, tarea, proyecto, periodo o documento.");
+  }
+  if (result.warning) {
+    guidance.risks.push(String(result.warning));
+  }
+
+  if (response?.intent === "consulta") {
+    guidance.review_focus.push("Verifica si la respuesta es un dato confirmado o una inferencia antes de usarla en una comunicacion externa.");
+    if (result.display?.tables?.length) guidance.suggested_actions.push({ label: "Descargar tabla CSV", type: "export", enabled: true });
+    if (result.query_domain === "deuda") guidance.suggested_actions.push({ label: "Preparar recordatorio o certificado como flujo guiado", type: "planned_email_or_document", enabled: false, reason: "Pendiente de herramienta segura de email/documentos." });
+    if (result.query_domain === "trabajo") guidance.suggested_actions.push({ label: "Abrir ficha o preparar seguimiento revisable", type: "work_followup", enabled: true });
+    if (!guidance.suggested_actions.length) guidance.suggested_actions.push({ label: "Hacer una consulta mas concreta si necesitas detalle", type: "clarify", enabled: true });
+  } else if (response?.intent === "accion") {
+    const target = result.entity?.title || payload.titulo || "";
+    if (target) guidance.confirmed_data.push(`Elemento propuesto: ${target}.`);
+    if (result.action) guidance.confirmed_data.push(`Accion propuesta: ${result.action}.`);
+    if (payload.comentario) guidance.review_focus.push("Revisa el comentario antes de guardar; debe quedar formal, claro y sin transcripcion literal innecesaria.");
+    if (payload.proximo_paso) guidance.review_focus.push("Revisa que el proximo paso tenga responsable, accion concreta y fecha si procede.");
+    if ((result.candidates || []).length > 1) guidance.risks.push("Hay varios candidatos posibles; confirma que la tarea o proyecto elegido es correcto.");
+    guidance.suggested_actions.push({ label: "Revisar propuesta editable", type: "review_proposal", enabled: true });
+    guidance.suggested_actions.push({ label: "Aplicar solo tras confirmacion", type: "confirm_write", enabled: true });
+  } else if (response?.intent === "lote") {
+    const total = result.total || (result.proposals || []).length || 0;
+    const actionable = result.actionable || 0;
+    guidance.confirmed_data.push(`Lote detectado: ${total} propuesta(s), ${actionable} aplicable(s).`);
+    guidance.review_focus.push("Revisa cada tarjeta por separado y deja desmarcado lo dudoso.");
+    guidance.risks.push("Un lote puede mezclar asuntos distintos; no apliques en bloque sin comprobar cada destino.");
+    guidance.suggested_actions.push({ label: "Aplicar solo las tarjetas seleccionadas", type: "confirm_batch", enabled: true });
+  } else {
+    guidance.review_focus.push("Aclara si quieres consultar datos, preparar una accion o esperar a una herramienta pendiente.");
+    guidance.suggested_actions.push({ label: "Reformular instruccion", type: "clarify", enabled: true });
+  }
+
+  if (!guidance.confirmed_data.length) guidance.confirmed_data.push("No se ha guardado ningun cambio operativo.");
+  if (!guidance.questions.length && result.data_status === "incompleto") guidance.questions.push("Dato exacto necesario para completar la respuesta.");
+  return guidance;
+}
+
 async function answerAgentMessage(session, text) {
   const cleanText = String(text || "").trim();
   let recentContext = [];
@@ -4199,6 +4288,7 @@ async function answerAgentMessage(session, text) {
     result: null,
   };
   const finalize = async (response) => {
+    response.guidance = buildAgentGuidance(response);
     try {
       await runAgentContextCommand(session, "save", {
         texto_usuario: cleanText,
@@ -5163,6 +5253,14 @@ function homePage() {
     .agentContextList { display:grid; gap:8px; }
     .agentContextItem { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; display:grid; gap:5px; }
     .agentContextItem strong { overflow-wrap:anywhere; }
+    .agentGuidanceGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; }
+    .agentGuidanceCard { background:white; border:1px solid #e2e8f0; border-radius:8px; padding:10px; display:grid; gap:6px; }
+    .agentGuidanceCard h4 { margin:0; font-size:14px; }
+    .agentGuidanceCard ul { margin:0; padding-left:18px; display:grid; gap:4px; }
+    .agentGuidanceCard li { line-height:1.35; overflow-wrap:anywhere; }
+    .agentGuidanceCard.risk { border-color:#fecaca; background:#fffafa; }
+    .agentGuidanceCard.inference { border-color:#fde68a; background:#fffbeb; }
+    .agentGuidanceCard.confirmed { border-color:#bbf7d0; background:#f0fdf4; }
     .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
     .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
     .aiHistoryHead h2 { margin:0; font-size:17px; }
@@ -8638,6 +8736,31 @@ function homePage() {
       '</div>';
     }
 
+    function renderGuidanceList(items) {
+      const rows = (items || []).filter(Boolean);
+      if (!rows.length) return '<div class="line muted">Sin elementos relevantes.</div>';
+      return '<ul>' + rows.map(item => {
+        if (typeof item === "string") return '<li>' + html(item) + '</li>';
+        const label = item.label || item.type || "Accion";
+        const suffix = item.enabled === false && item.reason ? " - " + item.reason : "";
+        return '<li>' + html(label + suffix) + '</li>';
+      }).join("") + '</ul>';
+    }
+
+    function renderAgentGuidance(guidance) {
+      if (!guidance) return "";
+      return '<section class="agentGuidance">' +
+        '<div class="agentGuidanceGrid">' +
+          '<article class="agentGuidanceCard confirmed"><h4>Confirmado</h4>' + renderGuidanceList(guidance.confirmed_data) + '</article>' +
+          '<article class="agentGuidanceCard inference"><h4>Inferencia</h4>' + renderGuidanceList(guidance.inferences) + '</article>' +
+          '<article class="agentGuidanceCard risk"><h4>Riesgos</h4>' + renderGuidanceList(guidance.risks) + '</article>' +
+          '<article class="agentGuidanceCard"><h4>Dudas</h4>' + renderGuidanceList(guidance.questions) + '</article>' +
+          '<article class="agentGuidanceCard"><h4>Revisar</h4>' + renderGuidanceList(guidance.review_focus) + '</article>' +
+          '<article class="agentGuidanceCard"><h4>Siguientes acciones</h4>' + renderGuidanceList(guidance.suggested_actions) + '</article>' +
+        '</div>' +
+      '</section>';
+    }
+
     function renderAgentContext() {
       if (!$("agentContextList")) return;
       if (!agentContext.length) {
@@ -8706,6 +8829,7 @@ function homePage() {
         (response.conversation_context?.used ? '<div class="answerNote">Se ha usado contexto reciente de esta conversacion para interpretar el mensaje.</div>' : '') +
         (response.context_warning ? '<div class="dangerText">' + html(response.context_warning) + '</div>' : '') +
         renderSelectedAgentTool(response.selected_tool) +
+        renderAgentGuidance(response.guidance) +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +

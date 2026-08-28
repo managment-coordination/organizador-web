@@ -2,7 +2,7 @@
 
 ## Nucleo trabajado
 
-Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo y memoria contextual de conversacion.
+Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion y respuestas guiadas.
 
 El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un agente-router seguro que lea una instruccion natural y decida si corresponde a:
 
@@ -16,15 +16,16 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Campo | Valor |
 | --- | --- |
 | Porcentaje anterior tecnico | 0% |
-| Porcentaje actual tecnico | 52% |
+| Porcentaje actual tecnico | 64% |
 | Porcentaje anterior funcional | 0% |
-| Porcentaje actual funcional | 38% |
+| Porcentaje actual funcional | 50% |
 | Contrato | `agent_router_v1` |
 | Endpoint | `POST /api/agent/message` |
 | Catalogo | `agent_tool_catalog_v1` |
 | Endpoint de catalogo | `GET /api/agent/tools` |
 | Contexto | `agent_context_v1` |
 | Tabla de contexto | `ia_contexto_conversacion` |
+| Respuesta guiada | `agent_guidance_v1` |
 | Escritura operativa directa | No |
 | Confirmacion obligatoria | Si, para accion y lote |
 
@@ -56,6 +57,17 @@ El contexto conversacional se guarda en una tabla independiente llamada `ia_cont
 - se usa solo cuando la nueva instruccion depende claramente de lo anterior;
 - no crea reglas permanentes ni cambia criterios de redaccion.
 
+La respuesta guiada usa el contrato `agent_guidance_v1`. Cada respuesta del agente puede separar:
+
+- datos confirmados;
+- inferencias;
+- riesgos;
+- dudas pendientes;
+- campos o decisiones que conviene revisar;
+- siguientes acciones posibles.
+
+Esta capa no inventa datos nuevos: organiza la respuesta generada por las herramientas internas y eleva las advertencias para que sean visibles.
+
 ## Garantias
 
 - El agente no llama directamente a endpoints de escritura operativa.
@@ -65,16 +77,17 @@ El contexto conversacional se guarda en una tabla independiente llamada `ia_cont
 - El flujo reutiliza las piezas ya probadas de Fase 2, Fase 3 y Fase 4.
 - El catalogo separa herramientas activas y planificadas para no confundir una solicitud de email, conciliacion bancaria o cambio de titularidad con una tarea comun.
 - El contexto conversacional queda separado de `ia_reglas`, que sigue siendo la memoria permanente confirmada.
+- Las respuestas guiadas ayudan a distinguir lo seguro de lo dudoso antes de consultar, crear o actualizar.
 
 ## Pendiente de Fase 5
 
-1. Respuestas del agente con pasos sugeridos, dudas y riesgos.
-2. Ejecucion guiada de herramientas avanzadas: informes, asambleas, contabilidad, seguridad y documentos.
-3. Modo auditor: diferenciar dato confirmado, inferencia, recomendacion, riesgo y accion propuesta.
-4. Conectores externos en modo propuesta, especialmente email/Outlook, sin ejecucion automatica inicial.
-5. Convertir herramientas planificadas en flujos seguros uno a uno.
-6. Mejorar la comprension semantica de instrucciones dependientes de contexto.
+1. Ejecucion guiada de herramientas avanzadas: informes, asambleas, contabilidad, seguridad y documentos.
+2. Modo auditor mas profundo para decisiones sensibles: legal, economico, administrativo y operativo.
+3. Conectores externos en modo propuesta, especialmente email/Outlook, sin ejecucion automatica inicial.
+4. Convertir herramientas planificadas en flujos seguros uno a uno.
+5. Mejorar la comprension semantica de instrucciones dependientes de contexto.
+6. Crear acciones sugeridas clicables cuando exista herramienta segura.
 
 ## Ramificaciones detectadas
 
-No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural es enriquecer las respuestas del agente: pasos sugeridos, dudas concretas, riesgos y separacion visible entre dato confirmado, inferencia y accion propuesta.
+No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural es convertir herramientas planificadas en flujos seguros, empezando por una de alto impacto: email/Outlook en modo propuesta, documentos/informes o conciliacion bancaria revisable.

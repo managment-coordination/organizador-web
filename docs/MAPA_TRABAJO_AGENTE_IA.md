@@ -8,9 +8,9 @@ El objetivo final no es tener "una IA que contesta", sino un agente operativo co
 
 ## Estado global
 
-- App web operativa actual: 72%.
+- App web operativa actual: 73%.
 - Plataforma central inteligente final: 45% - 50%.
-- Agente conversacional real: 46% - 50%.
+- Agente conversacional real: 54% - 58%.
 
 Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe indicar:
 
@@ -25,21 +25,21 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 | Campo | Estado |
 | --- | --- |
 | Nucleo activo | Fase 5 - Agente completo |
-| Estado tecnico | 52% |
-| Estado funcional | 38% |
+| Estado tecnico | 64% |
+| Estado funcional | 50% |
 | Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
-| Accion permitida ahora | Usar el agente-router con catalogo de herramientas y contexto conversacional reciente |
+| Accion permitida ahora | Usar el agente-router con respuestas guiadas, contexto reciente y catalogo de herramientas |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
 | Riesgo principal | Intentar acciones complejas sin dividirlas en herramientas internas auditables |
 
 Proxima accion:
 
-1. Mejorar respuestas del agente con pasos sugeridos, dudas y riesgos.
-2. Convertir herramientas planificadas en flujos seguros uno a uno.
-3. Priorizar email, contabilidad y documentos solo con modo propuesta.
-4. Mantener confirmacion por cada accion sensible.
-5. Afinar la comprension de mensajes que dependen del contexto anterior.
+1. Convertir herramientas planificadas en flujos seguros uno a uno.
+2. Priorizar email, contabilidad y documentos solo con modo propuesta.
+3. Mantener confirmacion por cada accion sensible.
+4. Afinar la comprension de mensajes que dependen del contexto anterior.
+5. Crear acciones sugeridas clicables cuando exista herramienta segura.
 
 ## Reglas de trabajo
 
