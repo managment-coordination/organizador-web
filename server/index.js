@@ -330,9 +330,9 @@ import sqlite3
 from datetime import datetime
 
 path = ${JSON.stringify(databasePath)}
-session = ${JSON.stringify(session || {})}
+session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
 action = ${JSON.stringify(action)}
-data = ${JSON.stringify(data || {})}
+data = json.loads(${JSON.stringify(JSON.stringify(data || {}))})
 pc = ${JSON.stringify(pc || "web")}
 user = str(session.get("nombre") or "")
 role = str(session.get("rol") or "")
@@ -507,9 +507,9 @@ import sqlite3
 from datetime import datetime
 
 path = ${JSON.stringify(databasePath)}
-session = ${JSON.stringify(session || {})}
+session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
 action = ${JSON.stringify(action)}
-data = ${JSON.stringify(data || {})}
+data = json.loads(${JSON.stringify(JSON.stringify(data || {}))})
 pc = ${JSON.stringify(pc || "web")}
 user = str(session.get("nombre") or "")
 role = str(session.get("rol") or "")

@@ -34,6 +34,8 @@ requireIncludes("agentContextList", "falta lista visible de contexto");
 requireIncludes("clearAgentContext", "falta accion de vaciar contexto");
 requireIncludes("loadAgentContext", "falta carga de contexto");
 requireIncludes("No se borran reglas permanentes", "falta aviso de separacion entre contexto y memoria permanente");
+requireIncludes("session = json.loads", "el contexto no carga session como JSON seguro");
+requireIncludes("data = json.loads", "el contexto no carga data como JSON seguro");
 
 const contextRoute = routeBlock("/api/agent/context", "/api/agent/context/clear");
 if (!contextRoute.includes("runAgentContextCommand(session, \"list\"")) failures.push("endpoint de contexto no lista con comando dedicado");
@@ -47,6 +49,7 @@ const contextCommandStart = source.indexOf("function runAgentContextCommand");
 const contextCommandEnd = source.indexOf("function runSecurityCommand", contextCommandStart);
 const contextCommand = source.slice(contextCommandStart, contextCommandEnd);
 if (contextCommand.includes("ia_reglas")) failures.push("el contexto se ha mezclado con memoria permanente ia_reglas");
+if (contextCommand.includes("data = ${JSON.stringify(data || {})}")) failures.push("data se inyecta como literal JS y puede romper booleanos false/null");
 
 if (failures.length) {
   console.error(failures.join("\n"));
