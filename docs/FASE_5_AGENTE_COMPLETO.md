@@ -2,13 +2,14 @@
 
 ## Nucleo trabajado
 
-Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion y respuestas guiadas.
+Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion, respuestas guiadas y primera herramienta avanzada de documentos/informes.
 
 El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un agente-router seguro que lea una instruccion natural y decida si corresponde a:
 
 - consulta de datos internos;
 - accion individual revisable;
 - lote de acciones revisables;
+- informe Word revisable;
 - aclaracion necesaria.
 
 ## Estado
@@ -16,9 +17,9 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Campo | Valor |
 | --- | --- |
 | Porcentaje anterior tecnico | 0% |
-| Porcentaje actual tecnico | 64% |
+| Porcentaje actual tecnico | 72% |
 | Porcentaje anterior funcional | 0% |
-| Porcentaje actual funcional | 50% |
+| Porcentaje actual funcional | 58% |
 | Contrato | `agent_router_v1` |
 | Endpoint | `POST /api/agent/message` |
 | Catalogo | `agent_tool_catalog_v1` |
@@ -26,8 +27,11 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Contexto | `agent_context_v1` |
 | Tabla de contexto | `ia_contexto_conversacion` |
 | Respuesta guiada | `agent_guidance_v1` |
+| Preparacion de informe | `agent_report_prepare_v1` |
+| Endpoint documental | `POST /api/agent/documents/query` |
+| Endpoint preparar informe | `POST /api/agent/report/prepare` |
 | Escritura operativa directa | No |
-| Confirmacion obligatoria | Si, para accion y lote |
+| Confirmacion obligatoria | Si, para accion, lote e informe |
 
 ## Funcionamiento
 
@@ -36,6 +40,7 @@ El usuario puede escribir en la caja `Agente IA` de Centro IA. El servidor anali
 - `consulta`: usa `answerAiQuery()` y guarda la respuesta en historial de consultas;
 - `accion`: usa `analyzeOperationalWithAi()` y prepara la pantalla editable de Entrada inteligente;
 - `lote`: usa `analyzeGuidedAutomationBatch()` y prepara tarjetas editables en Automatizacion guiada;
+- `informe`: prepara una propuesta de informe Word sobre tarea/proyecto y solo genera el archivo al confirmar;
 - `aclaracion`: no prepara cambios y pide al usuario concretar.
 
 Ademas, el agente selecciona una herramienta interna mediante `selectAgentTool()` y devuelve:
@@ -68,20 +73,25 @@ La respuesta guiada usa el contrato `agent_guidance_v1`. Cada respuesta del agen
 
 Esta capa no inventa datos nuevos: organiza la respuesta generada por las herramientas internas y eleva las advertencias para que sean visibles.
 
+La herramienta de documentos e informes queda activa en dos niveles:
+
+- `documents.lookup` y `reports.lookup`: consultan anexos e informes visibles por rol y comunidad, sin guardar cambios.
+- `reports.generate.entity`: prepara el destino de un informe Word sobre tarea o proyecto; el archivo se crea despues en `/api/report/generate` solo si el usuario confirma.
+
 ## Garantias
 
 - El agente no llama directamente a endpoints de escritura operativa.
-- Las acciones se siguen aplicando solo desde `/api/entity/record` o `/api/entity/create` despues de confirmacion manual.
+- Las acciones se siguen aplicando solo desde endpoints finales despues de confirmacion manual: `/api/entity/record`, `/api/entity/create` o `/api/report/generate`.
 - El acceso queda limitado a perfiles `Superusuario`, `Administrador` y `Usuario`.
 - El perfil Presidente y el perfil Seguridad no reciben este agente operativo en esta fase.
 - El flujo reutiliza las piezas ya probadas de Fase 2, Fase 3 y Fase 4.
-- El catalogo separa herramientas activas y planificadas para no confundir una solicitud de email, conciliacion bancaria o cambio de titularidad con una tarea comun.
+- El catalogo separa herramientas activas y planificadas para no confundir una solicitud de email, conciliacion bancaria, informe o cambio de titularidad con una tarea comun.
 - El contexto conversacional queda separado de `ia_reglas`, que sigue siendo la memoria permanente confirmada.
 - Las respuestas guiadas ayudan a distinguir lo seguro de lo dudoso antes de consultar, crear o actualizar.
 
 ## Pendiente de Fase 5
 
-1. Ejecucion guiada de herramientas avanzadas: informes, asambleas, contabilidad, seguridad y documentos.
+1. Ejecucion guiada de herramientas avanzadas restantes: asambleas, contabilidad, seguridad, email y documentos con lectura profunda.
 2. Modo auditor mas profundo para decisiones sensibles: legal, economico, administrativo y operativo.
 3. Conectores externos en modo propuesta, especialmente email/Outlook, sin ejecucion automatica inicial.
 4. Convertir herramientas planificadas en flujos seguros uno a uno.
@@ -90,4 +100,4 @@ Esta capa no inventa datos nuevos: organiza la respuesta generada por las herram
 
 ## Ramificaciones detectadas
 
-No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural es convertir herramientas planificadas en flujos seguros, empezando por una de alto impacto: email/Outlook en modo propuesta, documentos/informes o conciliacion bancaria revisable.
+No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural es convertir otra herramienta planificada en flujo seguro, probablemente email/Outlook en modo propuesta o conciliacion bancaria revisable.

@@ -3949,14 +3949,37 @@ const AGENT_TOOL_CATALOG = [
     id: "documents.lookup",
     module: "documentos",
     label: "Consultar documentos y anexos registrados",
-    status: "planned",
-    endpoint: "",
+    status: "active",
+    endpoint: "/api/agent/documents/query",
     intents: ["consulta"],
     roles: ["Superusuario", "Administrador", "Usuario"],
-    keywords: ["documento", "anexo", "archivo", "contrato", "pdf", "adjunto"],
+    keywords: ["documento", "documentos", "anexo", "anexos", "archivo", "contrato", "pdf", "adjunto"],
     writesData: false,
     requiresConfirmation: false,
-    limitation: "Pendiente de buscador documental con lectura profunda de adjuntos.",
+  },
+  {
+    id: "reports.lookup",
+    module: "informes",
+    label: "Consultar informes Word generados",
+    status: "active",
+    endpoint: "/api/agent/documents/query",
+    intents: ["consulta"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["informe", "informes", "word", "generado", "descargar informe", "abrir informe"],
+    writesData: false,
+    requiresConfirmation: false,
+  },
+  {
+    id: "reports.generate.entity",
+    module: "informes",
+    label: "Preparar informe Word de tarea o proyecto",
+    status: "active",
+    endpoint: "/api/report/generate",
+    intents: ["informe"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["generar informe", "sacar informe", "crear informe", "preparar informe", "informe de tarea", "informe de proyecto"],
+    writesData: true,
+    requiresConfirmation: true,
   },
   {
     id: "email.inbox.proposals",
@@ -4031,6 +4054,7 @@ function scoreAgentTool(text, intent, tool) {
   if (tool.id === "ai.query.general" && intent === "consulta") score += 0.2;
   if (tool.id === "work.single.proposal" && intent === "accion") score += 0.2;
   if (tool.id === "work.batch.proposal" && intent === "lote") score += 2.5;
+  if (tool.id === "reports.generate.entity" && intent === "informe") score += 2.5;
   return score;
 }
 
@@ -4065,6 +4089,201 @@ function selectAgentTool(session, text, intent) {
   return selected;
 }
 
+function queryAgentDocumentsReports(session, text) {
+  const script = `
+import json
+import os
+import sqlite3
+
+path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session || {})}
+question = ${JSON.stringify(text || "")}
+role = str(session.get("rol") or "")
+allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+
+def rows(sql, params=()):
+    return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+def table_exists(name):
+    return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
+
+def scope(alias):
+    if role == "Superusuario":
+        return "", []
+    if not allowed_ids:
+        return " AND 1=0", []
+    return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in allowed_ids)})", allowed_ids
+
+def norm(value):
+    return str(value or "").lower()
+
+terms = [part for part in norm(question).replace("/", " ").replace("-", " ").split() if len(part) >= 3]
+like_terms = terms[:8]
+results = []
+
+if table_exists("anexos_registros"):
+    af, ap = scope("a")
+    raw = rows("""
+        SELECT a.id_anexo AS id, 'Anexo' AS tipo, a.nombre_archivo AS nombre, a.fecha_adjuntado AS fecha,
+               a.id_comunidad, c.nombre AS comunidad, t.titulo AS tarea, p.nombre AS proyecto,
+               CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
+               COALESCE(a.id_tarea, a.id_proyecto) AS entity_id
+        FROM anexos_registros a
+        LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
+        LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
+        LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
+        WHERE 1=1
+    """ + af + " ORDER BY a.fecha_adjuntado DESC, a.id_anexo DESC LIMIT 250", tuple(ap))
+    for row in raw:
+        haystack = norm(" ".join(str(row.get(k) or "") for k in ["nombre", "comunidad", "tarea", "proyecto"]))
+        score = sum(1 for term in like_terms if term in haystack)
+        if not like_terms or score:
+            row["score"] = score
+            results.append(row)
+
+if role != "Presidente" and table_exists("informes"):
+    rf, rp = scope("i")
+    raw = rows("""
+        SELECT i.id_informe AS id, 'Informe' AS tipo,
+               COALESCE(NULLIF(i.tipo_informe,''),'Informe') AS subtipo,
+               i.archivo_word AS nombre, i.fecha_generacion AS fecha, i.observaciones,
+               i.id_comunidad, c.nombre AS comunidad, p.nombre AS proyecto,
+               'project' AS entity_type, i.id_proyecto AS entity_id
+        FROM informes i
+        LEFT JOIN comunidades c ON c.id_comunidad=i.id_comunidad
+        LEFT JOIN proyectos p ON p.id_proyecto=i.id_proyecto
+        WHERE COALESCE(i.archivo_word,'')<>''
+    """ + rf + " ORDER BY i.fecha_generacion DESC, i.id_informe DESC LIMIT 250", tuple(rp))
+    for row in raw:
+        row["nombre"] = os.path.basename(str(row.get("nombre") or "").replace("\\\\", "/"))
+        try:
+            metadata = json.loads(row.get("observaciones") or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if metadata.get("tipo_entidad") in ("task", "tarea") and metadata.get("id_entidad"):
+            row["entity_type"] = "task"
+            row["entity_id"] = int(metadata.get("id_entidad") or 0)
+            task = conn.execute("SELECT titulo FROM tareas WHERE id_tarea=?", (row["entity_id"],)).fetchone()
+            if task:
+                row["tarea"] = task["titulo"]
+        haystack = norm(" ".join(str(row.get(k) or "") for k in ["nombre", "subtipo", "comunidad", "proyecto", "tarea"]))
+        score = sum(1 for term in like_terms if term in haystack)
+        if not like_terms or score:
+            row["score"] = score
+            results.append(row)
+
+results.sort(key=lambda item: (int(item.get("score") or 0), str(item.get("fecha") or "")), reverse=True)
+results = results[:60]
+columns = ["Tipo", "Nombre", "Comunidad", "Relacionado", "Fecha"]
+table_rows = []
+for row in results:
+    related = row.get("tarea") or row.get("proyecto") or ""
+    table_rows.append({
+        "Tipo": row.get("tipo") or "",
+        "Nombre": row.get("nombre") or "",
+        "Comunidad": row.get("comunidad") or "",
+        "Relacionado": related,
+        "Fecha": row.get("fecha") or "",
+    })
+
+answer = f"He encontrado {len(results)} documento(s) o informe(s) visibles para tu usuario."
+if not results:
+    answer = "No he encontrado documentos o informes visibles con esos criterios. Prueba con el nombre del archivo, proyecto, tarea o comunidad."
+
+display = {
+    "title": "Documentos e informes",
+    "subtitle": "Resultados visibles segun tus permisos",
+    "cards": [
+        {"label": "Resultados", "value": str(len(results))},
+        {"label": "Anexos", "value": str(sum(1 for row in results if row.get("tipo") == "Anexo"))},
+        {"label": "Informes", "value": str(sum(1 for row in results if row.get("tipo") == "Informe"))},
+    ],
+    "tables": [{"title": "Resultados", "columns": columns, "rows": table_rows}],
+}
+conn.close()
+print(json.dumps({
+    "handled": True,
+    "source": "local",
+    "confidence": 0.82 if results else 0.48,
+    "action": "consulta",
+    "query_domain": "documentos_informes",
+    "data_status": "confirmado" if results else "incompleto",
+    "answer": answer,
+    "display": display,
+    "sources": [
+        {"module": "documentos", "table": "anexos_registros", "description": "Anexos registrados en tareas y proyectos"},
+        {"module": "informes", "table": "informes", "description": "Informes Word generados"},
+    ],
+    "facts": {"resultados": len(results)},
+}, ensure_ascii=False))
+`;
+  return runPythonJson(script).then((result) => withAiProposalContract(result));
+}
+
+async function prepareAgentEntityReport(session, text) {
+  if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
+  const center = await queryReportsCenter(session);
+  const cleanText = String(text || "").trim();
+  const normalized = normalizeText(cleanText);
+  const typeHint = /\btarea\b/i.test(normalized) && !/\bproyecto\b/i.test(normalized) ? "task" : /\bproyecto\b/i.test(normalized) && !/\btarea\b/i.test(normalized) ? "project" : "";
+  const entities = (center.entities || []).filter((row) => !typeHint || row.entity_type === typeHint);
+  const candidates = entities
+    .map((row) => ({
+      type: row.entity_type,
+      id: Number(row.entity_id),
+      title: row.titulo,
+      comunidad: row.comunidad || "",
+      estado: row.estado || "",
+      responsable: row.responsable || "",
+      score: scoreTextMatch(cleanText, row.titulo),
+    }))
+    .filter((row) => row.id)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+  const best = candidates[0] || null;
+  const confident = best && (best.score >= 2 || candidates.length === 1);
+  const payload = confident ? {
+    type: best.type,
+    id: best.id,
+    title: best.title,
+    comunidad: best.comunidad,
+    estado: best.estado,
+    responsable: best.responsable,
+  } : {};
+  return {
+    handled: true,
+    source: "local",
+    confidence: confident ? 0.82 : 0.46,
+    action: "generar_informe_entidad",
+    report_contract: "agent_report_prepare_v1",
+    requires_confirmation: true,
+    writes_data: false,
+    allowed_write_endpoint: "/api/report/generate",
+    query_domain: "documentos_informes",
+    data_status: confident ? "confirmado" : "incompleto",
+    answer: confident
+      ? `He preparado la generacion del informe Word de ${best.type === "task" ? "la tarea" : "el proyecto"}: ${best.title}.`
+      : "No he identificado con seguridad la tarea o proyecto del que quieres generar informe.",
+    payload,
+    candidates,
+    questions: confident ? [] : ["Selecciona la tarea o proyecto exacto antes de generar el informe."],
+    sources: [
+      { module: "informes", table: "informes", description: "Registro de informes generados" },
+      { module: "trabajo", table: "tareas/proyectos", description: "Elementos visibles para generar informe" },
+    ],
+    impact_summary: confident ? {
+      title: `Generar informe Word: ${best.title}`,
+      lines: [
+        `Tipo: ${best.type === "task" ? "Tarea" : "Proyecto"}`,
+        best.comunidad ? `Comunidad: ${best.comunidad}` : "",
+        "El archivo se creara solo despues de confirmar.",
+      ].filter(Boolean),
+    } : null,
+  };
+}
+
 function detectAgentIntent(text) {
   const cleanText = String(text || "").trim();
   if (!cleanText) {
@@ -4086,6 +4305,15 @@ function detectAgentIntent(text) {
     };
   }
   const shortText = cleanText.length <= 420;
+  const reportGeneration = /\b(generar|genera|sacar|saca|crear|crea|preparar|prepara)\b/i.test(normalized) && /\binforme\b/i.test(normalized);
+  if (reportGeneration) {
+    return {
+      intent: "informe",
+      confidence: 0.82,
+      reason: "El mensaje solicita preparar o generar un informe.",
+      questions: [],
+    };
+  }
   const hasQuestion = /[?¿]/.test(cleanText) || /\b(cual|cuanto|cuando|quien|dime|busca|listado|lista|consulta|ensename|muestrame|muestra|balance|deuda|debe|adeuda|propietario|email|correo|presupuesto)\b/i.test(normalized);
   const debtOrOwnerQuery = /\b(deuda|morosidad|saldo pendiente|recibos? pendientes?|propietario|titular|email|correo|presupuesto|balance|disponible)\b/i.test(normalized);
   const operationalVerb = /\b(crea|crear|anade|anadir|añade|añadir|actualiza|actualizar|registra|registrar|seguimiento|incidencia|prepara accion|guardar|alta tarea|alta proyecto)\b/i.test(cleanText);
@@ -4225,6 +4453,7 @@ function buildAgentGuidance(response) {
     if (result.display?.tables?.length) guidance.suggested_actions.push({ label: "Descargar tabla CSV", type: "export", enabled: true });
     if (result.query_domain === "deuda") guidance.suggested_actions.push({ label: "Preparar recordatorio o certificado como flujo guiado", type: "planned_email_or_document", enabled: false, reason: "Pendiente de herramienta segura de email/documentos." });
     if (result.query_domain === "trabajo") guidance.suggested_actions.push({ label: "Abrir ficha o preparar seguimiento revisable", type: "work_followup", enabled: true });
+    if (result.query_domain === "documentos_informes") guidance.suggested_actions.push({ label: "Abrir documento o generar informe desde su modulo", type: "documents_reports", enabled: true });
     if (!guidance.suggested_actions.length) guidance.suggested_actions.push({ label: "Hacer una consulta mas concreta si necesitas detalle", type: "clarify", enabled: true });
   } else if (response?.intent === "accion") {
     const target = result.entity?.title || payload.titulo || "";
@@ -4242,6 +4471,13 @@ function buildAgentGuidance(response) {
     guidance.review_focus.push("Revisa cada tarjeta por separado y deja desmarcado lo dudoso.");
     guidance.risks.push("Un lote puede mezclar asuntos distintos; no apliques en bloque sin comprobar cada destino.");
     guidance.suggested_actions.push({ label: "Aplicar solo las tarjetas seleccionadas", type: "confirm_batch", enabled: true });
+  } else if (response?.intent === "informe") {
+    const target = payload.title || result.impact_summary?.title || "";
+    if (target) guidance.confirmed_data.push(`Informe preparado para: ${target}.`);
+    guidance.review_focus.push("Comprueba que el elemento, comunidad y tipo son correctos antes de generar el Word.");
+    guidance.suggested_actions.push({ label: "Generar Word solo tras confirmacion", type: "confirm_report", enabled: true });
+    if (!payload.id || !payload.type) guidance.risks.push("No hay un elemento unico identificado; selecciona una tarea o proyecto antes de generar.");
+    if ((result.candidates || []).length > 1) guidance.risks.push("Hay varios candidatos posibles; revisa la lista antes de confirmar.");
   } else {
     guidance.review_focus.push("Aclara si quieres consultar datos, preparar una accion o esperar a una herramienta pendiente.");
     guidance.suggested_actions.push({ label: "Reformular instruccion", type: "clarify", enabled: true });
@@ -4271,7 +4507,7 @@ async function answerAgentMessage(session, text) {
     intent: decision.intent,
     confidence: decision.confidence,
     reason: decision.reason,
-    requires_confirmation: ["accion", "lote"].includes(decision.intent),
+    requires_confirmation: ["accion", "lote", "informe"].includes(decision.intent),
     writes_data: false,
     tool: selectedTool?.endpoint || "",
     selected_tool: selectedTool,
@@ -4322,6 +4558,17 @@ async function answerAgentMessage(session, text) {
       },
     });
   }
+  if (decision.intent === "consulta" && ["documents.lookup", "reports.lookup"].includes(selectedTool?.id || "")) {
+    const result = await queryAgentDocumentsReports(session, effectiveText);
+    return finalize({
+      ...base,
+      tool: selectedTool?.endpoint || "/api/agent/documents/query",
+      message: contextual.used
+        ? "He consultado documentos e informes usando el contexto reciente. No se ha guardado ningun cambio."
+        : "He consultado documentos e informes visibles para tu usuario. No se ha guardado ningun cambio.",
+      result,
+    });
+  }
   if (decision.intent === "consulta") {
     const result = await answerAiQuery(session, effectiveText);
     return finalize({
@@ -4330,6 +4577,17 @@ async function answerAgentMessage(session, text) {
       message: contextual.used
         ? "He tratado el mensaje como consulta usando el contexto reciente. La respuesta queda guardada en el historial de consultas IA."
         : "He tratado el mensaje como consulta. La respuesta queda guardada en el historial de consultas IA.",
+      result,
+    });
+  }
+  if (decision.intent === "informe") {
+    const result = await prepareAgentEntityReport(session, effectiveText);
+    return finalize({
+      ...base,
+      tool: selectedTool?.endpoint || "/api/report/generate",
+      message: result.data_status === "confirmado"
+        ? "He preparado el informe Word. Revisa el elemento detectado y confirma antes de generarlo."
+        : "Necesito que selecciones la tarea o proyecto exacto antes de generar el informe.",
       result,
     });
   }
@@ -6304,6 +6562,7 @@ function homePage() {
     let agentToolsLoaded = false;
     let agentContext = [];
     let agentContextLoaded = false;
+    let agentReportProposal = null;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
     let importSourceText = "";
@@ -8673,6 +8932,7 @@ function homePage() {
         consulta: "Consulta",
         accion: "Accion revisable",
         lote: "Lote revisable",
+        informe: "Informe revisable",
         aclaracion: "Aclaracion necesaria",
       }[intent] || "Agente";
     }
@@ -8691,6 +8951,7 @@ function homePage() {
         asambleas: "Asambleas",
         seguridad: "Seguridad",
         documentos: "Documentos",
+        informes: "Informes",
         email: "Email",
       };
       $("agentToolsList").innerHTML = agentTools.map(tool =>
@@ -8821,6 +9082,8 @@ function homePage() {
         ? "Ver propuesta en Entrada inteligente"
         : response.intent === "lote"
           ? "Ver lote preparado"
+          : response.intent === "informe"
+            ? "Ver propuesta de informe"
           : "";
       container.innerHTML = '<div class="agentDecision">' +
         '<div class="agentDecisionHead"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><span class="confidence">Confianza: ' + html(confidence) + '%</span></div>' +
@@ -8832,16 +9095,88 @@ function homePage() {
         renderAgentGuidance(response.guidance) +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
+        (response.intent === "informe" ? '<div id="agentReportPreview"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
       '</div>';
       if (response.intent === "consulta" && response.result) {
         renderAiProposal(response.result, "agentQueryPreview");
       }
+      if (response.intent === "informe" && response.result) {
+        agentReportProposal = response.result;
+        renderAgentReportProposal(response.result, "agentReportPreview");
+      }
       if ($("agentOpenPrepared")) {
         $("agentOpenPrepared").addEventListener("click", () => {
-          const target = response.intent === "lote" ? $("aiBatchResult") : $("aiOperationResult");
+          const target = response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : $("aiOperationResult");
           if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
         });
+      }
+    }
+
+    function renderAgentReportProposal(proposal, resultId = "agentReportPreview") {
+      const container = $(resultId);
+      if (!container) return;
+      const payload = proposal.payload || {};
+      const candidates = proposal.candidates || [];
+      const selectedValue = payload.type && payload.id ? payload.type + ":" + payload.id : (candidates[0] ? candidates[0].type + ":" + candidates[0].id : "");
+      const rows = payload.id
+        ? [payload].concat(candidates.filter(candidate => String(candidate.type + ":" + candidate.id) !== selectedValue))
+        : candidates;
+      const uniqueRows = [];
+      const seen = new Set();
+      rows.forEach(row => {
+        const value = row.type + ":" + row.id;
+        if (!row.type || !row.id || seen.has(value)) return;
+        seen.add(value);
+        uniqueRows.push(row);
+      });
+      const optionsHtml = uniqueRows.length
+        ? uniqueRows.map(row => {
+            const value = row.type + ":" + row.id;
+            const label = (row.type === "task" ? "Tarea" : "Proyecto") + " " + row.id + " - " + (row.title || "") + (row.comunidad ? " | " + row.comunidad : "");
+            return '<option value="' + html(value) + '"' + (value === selectedValue ? " selected" : "") + '>' + html(label) + '</option>';
+          }).join("")
+        : '<option value="">Sin candidatos</option>';
+      container.innerHTML = '<div class="proposal agentReportBox">' +
+        '<div class="proposalHead"><h2>Informe Word preparado</h2><span class="confidence">Confirmacion necesaria</span></div>' +
+        '<p>' + html(proposal.answer || "Selecciona el elemento exacto antes de generar el informe.") + '</p>' +
+        (proposal.impact_summary ? '<div class="detailBox"><strong>Impacto previsto</strong>' + (proposal.impact_summary.lines || []).map(line => '<div>- ' + html(line) + '</div>').join("") + '</div>' : '') +
+        '<div class="formGrid">' +
+          '<div><label>Tarea o proyecto</label><select id="agentReportEntity">' + optionsHtml + '</select></div>' +
+        '</div>' +
+        '<div class="detailBox"><strong>Seguridad</strong><div>Nada se ha generado todavia. El Word se creara solo al pulsar el boton verde.</div></div>' +
+        '<div class="toolbar"><button class="green" id="agentGenerateReport">Generar y abrir Word</button><span class="muted" id="agentReportMessage"></span></div>' +
+      '</div>';
+      const button = $("agentGenerateReport");
+      if (button) {
+        button.disabled = !uniqueRows.length;
+        button.addEventListener("click", generateAgentPreparedReport);
+      }
+    }
+
+    async function generateAgentPreparedReport() {
+      const value = $("agentReportEntity")?.value || "";
+      const [type, id] = value.split(":");
+      if (!["task", "project"].includes(type) || !id) {
+        $("agentReportMessage").textContent = "Selecciona una tarea o proyecto valido.";
+        return;
+      }
+      const selectedText = $("agentReportEntity")?.selectedOptions?.[0]?.textContent || "el elemento seleccionado";
+      if (!confirm("Se generara un informe Word de " + selectedText + ". ¿Confirmas?")) return;
+      $("agentGenerateReport").disabled = true;
+      $("agentReportMessage").textContent = "Generando informe...";
+      try {
+        const result = await api("/api/report/generate", { method: "POST", body: JSON.stringify({ type, id }) });
+        $("agentReportMessage").textContent = "Informe generado.";
+        if (typeof loadReportsCenter === "function") {
+          reportsCenter.loaded = false;
+          await loadReportsCenter(true);
+        }
+        window.open("/api/report/download?id=" + encodeURIComponent(result.report_id) + "&inline=1", "_blank");
+      } catch (error) {
+        $("agentReportMessage").textContent = error.message;
+      } finally {
+        $("agentGenerateReport").disabled = false;
       }
     }
 
@@ -8873,6 +9208,8 @@ function homePage() {
           $("aiBatchText").value = text;
           $("aiBatchMessage").textContent = "Lote generado desde Agente IA.";
           renderAiBatch();
+        } else if (response.intent === "informe") {
+          agentReportProposal = response.result;
         } else if (response.intent === "consulta" && response.result?.history_id) {
           aiHistoryLoaded = false;
           await loadAiHistory(true, response.result.history_id || 0);
@@ -8979,6 +9316,7 @@ function homePage() {
         trabajo: "Tareas / proyectos",
         asambleas: "Asambleas",
         seguridad: "Seguridad",
+        documentos_informes: "Documentos / informes",
         general: "General",
       }[domain] || domain;
       const sources = proposal.sources || [];
@@ -10245,6 +10583,23 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar herramientas del agente." });
     return sendJson(res, 200, { ok: true, tools: getAgentToolCatalog(session) });
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/documents/query") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar documentos e informes." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await queryAgentDocumentsReports(session, body.text || ""));
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/report/prepare") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede preparar informes." });
+    if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await prepareAgentEntityReport(session, body.text || ""));
   }
   if (req.method === "GET" && url.pathname === "/api/agent/context") {
     const session = readSession(req);

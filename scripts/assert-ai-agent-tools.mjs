@@ -43,6 +43,8 @@ for (const toolId of [
   "assemblies.lookup",
   "security.lookup",
   "documents.lookup",
+  "reports.lookup",
+  "reports.generate.entity",
   "email.inbox.proposals",
   "accounting.bank.reconcile",
   "owners.ownership.change",
@@ -55,6 +57,9 @@ requireIncludes('status: "planned"', "falta estado planned");
 requireIncludes("Pendiente de conector Outlook", "falta limitacion de email");
 requireIncludes("Pendiente de flujo legal guiado", "falta limitacion de titularidad");
 requireIncludes("Pendiente de flujo web completo de importacion bancaria", "falta limitacion de conciliacion bancaria");
+requireIncludes('/api/agent/documents/query', "falta endpoint documental activo");
+requireIncludes('/api/report/generate', "falta endpoint de generacion de informes");
+requireIncludes('intents: ["informe"]', "falta intencion informe en catalogo");
 
 const toolsRoute = routeBlock("/api/agent/tools", "/api/ai/query");
 if (!toolsRoute.includes("getAgentToolCatalog(session)")) failures.push("endpoint de herramientas no usa catalogo filtrado");
@@ -68,5 +73,5 @@ if (failures.length) {
 console.log(JSON.stringify({
   ok: true,
   catalog: "agent_tool_catalog_v1",
-  tools_checked: 13,
+  tools_checked: 15,
 }, null, 2));

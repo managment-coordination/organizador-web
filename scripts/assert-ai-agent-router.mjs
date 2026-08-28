@@ -31,7 +31,7 @@ requireIncludes("askAgent", "falta llamada de interfaz al agente");
 requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/query\"", "el agente no declara ruta de consulta");
 requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/operate\"", "el agente no declara ruta de accion");
 requireIncludes("tool: selectedTool?.endpoint || \"/api/ai/batch-operate\"", "el agente no declara ruta de lote");
-requireIncludes("requires_confirmation: [\"accion\", \"lote\"].includes(decision.intent)", "falta confirmacion para acciones/lotes");
+requireIncludes("requires_confirmation: [\"accion\", \"lote\", \"informe\"].includes(decision.intent)", "falta confirmacion para acciones/lotes/informes");
 
 const agentRoute = routeBlock("/api/agent/message", "/api/ai/query");
 if (!agentRoute.includes("answerAgentMessage(session, body.text || \"\")")) failures.push("el endpoint no llama al nucleo del agente");
