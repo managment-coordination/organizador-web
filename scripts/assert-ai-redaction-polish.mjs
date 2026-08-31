@@ -13,6 +13,9 @@ function requireIncludes(fragment, label) {
 requireIncludes("function polishAiProposal", "falta pulidor comun de propuestas IA");
 requireIncludes("function summarizeOperationalText", "falta resumen operativo formal");
 requireIncludes("function professionalNextStep", "falta redaccion profesional del proximo paso");
+requireIncludes("function professionalizeText", "falta redaccion profesional reutilizable");
+requireIncludes('professionalizeText("comentario"', "comentario no usa redaccion profesional reutilizable");
+requireIncludes('professionalizeText("proximo_paso"', "proximo paso no usa redaccion profesional reutilizable");
 requireIncludes("Comentario y proximo paso normalizados para registro operativo.", "falta trazabilidad de redaccion aplicada");
 requireIncludes("const polished = polishAiProposal(proposal, cleanText);", "entrada inteligente no pasa por pulidor");
 requireIncludes("return polishAiProposal({", "importadores no pasan por pulidor");

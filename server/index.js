@@ -631,6 +631,148 @@ finally:
   return runPythonJson(script);
 }
 
+function runAgentActionsCommand(session, action, data = {}, pc = "web") {
+  const script = `
+import json
+import sqlite3
+from datetime import datetime
+
+path = ${JSON.stringify(databasePath)}
+session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
+action = ${JSON.stringify(action)}
+data = json.loads(${JSON.stringify(JSON.stringify(data || {}))})
+pc = ${JSON.stringify(pc || "web")}
+user = str(session.get("nombre") or "")
+role = str(session.get("rol") or "")
+user_id = int(session.get("id_usuario") or 0)
+
+def now_iso():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def clean(value, limit=8000):
+    return str(value or "").strip()[:limit]
+
+def can_use_actions():
+    return bool(user) and role in {"Superusuario", "Administrador", "Usuario"}
+
+def ensure_schema(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ia_propuestas_pendientes (
+            id_propuesta INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_usuario INTEGER,
+            usuario TEXT,
+            rol TEXT,
+            pc TEXT,
+            intent TEXT,
+            titulo TEXT,
+            estado TEXT NOT NULL DEFAULT 'Pendiente',
+            texto_usuario TEXT,
+            resumen TEXT,
+            propuesta_json TEXT,
+            fecha_creacion TEXT NOT NULL,
+            fecha_actualizacion TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_propuestas_usuario_estado ON ia_propuestas_pendientes(id_usuario, estado, fecha_creacion DESC)")
+
+def row_dict(row):
+    result = dict(row)
+    try:
+        result["propuesta"] = json.loads(result.get("propuesta_json") or "{}")
+    except Exception:
+        result["propuesta"] = {}
+    result.pop("propuesta_json", None)
+    return result
+
+if not can_use_actions():
+    raise PermissionError("Tu perfil no puede gestionar propuestas del agente.")
+
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row
+try:
+    with conn:
+        ensure_schema(conn)
+        if action == "list":
+            limit = max(1, min(int(data.get("limit") or 40), 120))
+            status = clean(data.get("estado"), 40)
+            sql = """
+                SELECT *
+                FROM ia_propuestas_pendientes
+                WHERE id_usuario=?
+            """
+            params = [user_id]
+            if status:
+                sql += " AND estado=?"
+                params.append(status)
+            sql += " ORDER BY CASE estado WHEN 'Pendiente' THEN 0 ELSE 1 END, fecha_creacion DESC, id_propuesta DESC LIMIT ?"
+            params.append(limit)
+            rows = [row_dict(row) for row in conn.execute(sql, params)]
+            print(json.dumps({"ok": True, "actions": rows}, ensure_ascii=False))
+        elif action == "save":
+            proposal = data.get("proposal") or {}
+            intent = clean(data.get("intent") or proposal.get("intent") or "", 60)
+            if intent not in {"accion", "lote", "informe", "email"}:
+                print(json.dumps({"ok": True, "skipped": True}, ensure_ascii=False))
+            else:
+                payload = proposal.get("payload") or {}
+                entity = proposal.get("entity") or {}
+                title = clean(
+                    data.get("titulo")
+                    or payload.get("titulo")
+                    or entity.get("title")
+                    or proposal.get("answer")
+                    or intent,
+                    180,
+                )
+                summary = clean(data.get("resumen") or proposal.get("answer") or "", 1600)
+                cursor = conn.execute(
+                    """
+                    INSERT INTO ia_propuestas_pendientes
+                    (id_usuario,usuario,rol,pc,intent,titulo,estado,texto_usuario,resumen,propuesta_json,fecha_creacion,fecha_actualizacion)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        user_id,
+                        user,
+                        role,
+                        clean(pc, 200),
+                        intent,
+                        title,
+                        "Pendiente",
+                        clean(data.get("texto_usuario"), 8000),
+                        summary,
+                        json.dumps(proposal, ensure_ascii=False)[:60000],
+                        now_iso(),
+                        now_iso(),
+                    ),
+                )
+                print(json.dumps({"ok": True, "id_propuesta": int(cursor.lastrowid)}, ensure_ascii=False))
+        elif action == "update":
+            proposal_id = int(data.get("id_propuesta") or 0)
+            status = clean(data.get("estado"), 40)
+            if status not in {"Pendiente", "Gestionada", "Descartada"}:
+                raise ValueError("Estado de propuesta no valido.")
+            cursor = conn.execute(
+                "UPDATE ia_propuestas_pendientes SET estado=?, fecha_actualizacion=? WHERE id_propuesta=? AND id_usuario=?",
+                (status, now_iso(), proposal_id, user_id),
+            )
+            if cursor.rowcount < 1:
+                raise ValueError("No se ha encontrado la propuesta o no pertenece a tu usuario.")
+            print(json.dumps({"ok": True, "id_propuesta": proposal_id, "estado": status}, ensure_ascii=False))
+        elif action == "delete":
+            proposal_id = int(data.get("id_propuesta") or 0)
+            cursor = conn.execute("DELETE FROM ia_propuestas_pendientes WHERE id_propuesta=? AND id_usuario=?", (proposal_id, user_id))
+            if cursor.rowcount < 1:
+                raise ValueError("No se ha encontrado la propuesta o no pertenece a tu usuario.")
+            print(json.dumps({"ok": True, "id_propuesta": proposal_id}, ensure_ascii=False))
+        else:
+            raise ValueError("Accion de propuestas IA no valida.")
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function runSecurityCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
@@ -2006,6 +2148,27 @@ function professionalNextStep(text, fallback = "") {
   return polishSentence(built || fallback || "Revisar la informacion aportada y definir el siguiente paso operativo.");
 }
 
+function professionalizeText(kind, value, sourceText = "", context = {}) {
+  const mode = String(kind || "").toLowerCase();
+  const base = String(value || "").trim();
+  const source = String(sourceText || "").trim();
+  const input = base || source;
+  if (mode === "comentario") {
+    const contextItem = context.item || context.entity || null;
+    return buildFormalComment(input || source, contextItem).slice(0, 8000);
+  }
+  if (mode === "proximo_paso") {
+    return professionalNextStep(input || source, context.fallback || "").slice(0, 2000);
+  }
+  if (mode === "titulo") {
+    return polishTitle(input || extractIssueTitle(source)).slice(0, 140);
+  }
+  if (mode === "email") {
+    return normalizeEmailSummaryText(input || source).slice(0, 12000);
+  }
+  return splitOperationalSentences(input || source).join("\n").slice(0, 8000) || input.slice(0, 8000);
+}
+
 function shouldPolishProposalText(value, sourceText) {
   const text = String(value || "");
   const source = String(sourceText || "");
@@ -2022,17 +2185,17 @@ function polishAiProposal(proposal, sourceText) {
   const payload = { ...proposal.payload };
   const contextItem = proposal.entity?.title ? { title: proposal.entity.title } : null;
   if (shouldPolishProposalText(payload.comentario, sourceText)) {
-    payload.comentario = buildFormalComment(sourceText, contextItem).slice(0, 8000);
+    payload.comentario = professionalizeText("comentario", payload.comentario, sourceText, { item: contextItem });
   } else {
-    payload.comentario = splitOperationalSentences(payload.comentario).join("\n").slice(0, 8000) || payload.comentario;
+    payload.comentario = professionalizeText("comentario", payload.comentario, sourceText, { item: contextItem }) || payload.comentario;
   }
   if (shouldPolishProposalText(payload.proximo_paso, sourceText)) {
-    payload.proximo_paso = professionalNextStep(sourceText, payload.proximo_paso).slice(0, 2000);
+    payload.proximo_paso = professionalizeText("proximo_paso", payload.proximo_paso, sourceText, { fallback: payload.proximo_paso });
   } else {
-    payload.proximo_paso = polishSentence(payload.proximo_paso).slice(0, 2000);
+    payload.proximo_paso = professionalizeText("proximo_paso", payload.proximo_paso, sourceText, { fallback: payload.proximo_paso });
   }
   if (["crear_tarea", "crear_proyecto"].includes(proposal.action) && shouldPolishProposalText(payload.titulo, sourceText)) {
-    payload.titulo = polishTitle(payload.titulo || extractIssueTitle(sourceText));
+    payload.titulo = professionalizeText("titulo", payload.titulo, sourceText);
   }
   return {
     ...proposal,
@@ -2226,6 +2389,13 @@ function aiBeforeAfterRows(result, action) {
 function withAiProposalContract(result) {
   const action = String(result?.action || "revisar_manual");
   const requiresConfirmation = AI_ACTIONS_REQUIRING_CONFIRMATION.has(action);
+  const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+  const firstScore = Number(candidates[0]?.score || 0);
+  const secondScore = Number(candidates[1]?.score || 0);
+  const needsEntityConfirmation = requiresConfirmation
+    && candidates.length > 1
+    && firstScore > 0
+    && (firstScore - secondScore <= 2 || !result?.entity?.id);
   if (requiresConfirmation) {
     return {
       ...result,
@@ -2233,6 +2403,10 @@ function withAiProposalContract(result) {
       requires_confirmation: true,
       writes_data: false,
       audit_required: true,
+      needs_entity_confirmation: needsEntityConfirmation,
+      entity_confirmation_message: needsEntityConfirmation
+        ? "Hay varios destinos posibles. Selecciona expresamente la tarea o proyecto correcto antes de guardar."
+        : "",
       allowed_write_endpoint: aiWriteEndpointForAction(action),
       editable_fields: AI_EDITABLE_FIELDS[action] || [],
       impact_summary: aiImpactSummary(result, action),
@@ -5453,6 +5627,20 @@ async function answerAgentMessage(session, text) {
   };
   const finalize = async (response) => {
     response.guidance = buildAgentGuidance(response);
+    if (["accion", "lote", "informe", "email"].includes(response.intent) && response.result) {
+      try {
+        const savedAction = await runAgentActionsCommand(session, "save", {
+          texto_usuario: cleanText,
+          intent: response.intent,
+          titulo: response.result?.payload?.titulo || response.result?.entity?.title || response.result?.answer || response.intent,
+          resumen: summarizeAgentResult(response),
+          proposal: response.result,
+        });
+        if (savedAction?.id_propuesta) response.action_center_id = savedAction.id_propuesta;
+      } catch (error) {
+        response.action_warning = "La propuesta se ha preparado, pero no se pudo guardar en la bandeja de acciones: " + error.message;
+      }
+    }
     try {
       await runAgentContextCommand(session, "save", {
         texto_usuario: cleanText,
@@ -6456,6 +6644,21 @@ function homePage() {
     .agentGuidanceCard.risk { border-color:#fecaca; background:#fffafa; }
     .agentGuidanceCard.inference { border-color:#fde68a; background:#fffbeb; }
     .agentGuidanceCard.confirmed { border-color:#bbf7d0; background:#f0fdf4; }
+    .proposalUnderstanding { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; }
+    .proposalUnderstandingCard { background:white; border:1px solid #dbeafe; border-radius:8px; padding:10px; display:grid; gap:5px; }
+    .proposalUnderstandingCard strong { font-size:13px; color:#1e3a8a; }
+    .proposalUnderstandingCard span { font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
+    .candidateSelector { background:white; border:1px solid #fde68a; border-radius:8px; padding:10px; display:grid; gap:8px; }
+    .candidateSelectorList { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px; }
+    .candidateOption { border:1px solid var(--line); border-left:5px solid #f59e0b; border-radius:8px; background:#fff; padding:10px; display:grid; gap:6px; text-align:left; color:var(--ink); }
+    .candidateOption.active { border-color:#2563eb; border-left-color:#2563eb; background:#eff6ff; }
+    .candidateOption h4 { margin:0; font-size:14px; overflow-wrap:anywhere; }
+    .candidateOption button { justify-self:start; padding:7px 10px; min-height:32px; }
+    .agentActionsList { display:grid; gap:8px; }
+    .agentActionItem { background:white; border:1px solid var(--line); border-left:5px solid #7c3aed; border-radius:8px; padding:10px; display:grid; gap:6px; }
+    .agentActionItem.managed { opacity:.65; border-left-color:#94a3b8; }
+    .agentActionItem h4 { margin:0; font-size:15px; overflow-wrap:anywhere; }
+    .agentActionMeta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
     .aiHistoryPanel { border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden; }
     .aiHistoryHead { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:13px 14px; border-bottom:1px solid var(--line); }
     .aiHistoryHead h2 { margin:0; font-size:17px; }
@@ -7510,6 +7713,8 @@ function homePage() {
     let agentToolsLoaded = false;
     let agentContext = [];
     let agentContextLoaded = false;
+    let agentActions = [];
+    let agentActionsLoaded = false;
     let agentReportProposal = null;
     let importAnalysis = null;
     let importSourceName = "Texto pegado";
@@ -9771,6 +9976,10 @@ function homePage() {
             '<div class="toolbar"><button class="ghost" id="agentContextRefresh">Actualizar contexto</button><button class="ghost" id="agentContextClear">Vaciar contexto</button><span class="muted" id="agentContextMessage"></span></div>' +
             '<div id="agentContextList" class="agentContextList"><div class="aiHistoryEmpty">Cargando contexto...</div></div>' +
           '</details>' +
+          '<details class="detailBox" open><summary><strong>Centro de acciones del agente</strong></summary>' +
+            '<div class="toolbar"><button class="ghost" id="agentActionsRefresh">Actualizar acciones</button><span class="muted" id="agentActionsMessage"></span></div>' +
+            '<div id="agentActionsList" class="agentActionsList"><div class="aiHistoryEmpty">Cargando acciones pendientes...</div></div>' +
+          '</details>' +
         '</section>' +
         '<div class="aiQueryLayout">' +
           '<section class="aiBox aiQueryBox">' +
@@ -9832,6 +10041,7 @@ function homePage() {
       });
       $("agentContextRefresh").addEventListener("click", () => loadAgentContext(true));
       $("agentContextClear").addEventListener("click", clearAgentContext);
+      $("agentActionsRefresh").addEventListener("click", () => loadAgentActions(true));
       $("aiAsk").addEventListener("click", askAiQuery);
       $("aiQueryText").addEventListener("keydown", event => {
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -9867,6 +10077,7 @@ function homePage() {
       loadAiRules();
       loadAgentTools();
       loadAgentContext();
+      loadAgentActions();
     }
 
     function aiHistoryDate(value) {
@@ -10139,6 +10350,168 @@ function homePage() {
       }
     }
 
+    function proposalActionLabel(action) {
+      return {
+        seguimiento_proyecto: "Actualizar proyecto existente",
+        seguimiento_tarea: "Actualizar tarea existente",
+        crear_proyecto: "Crear proyecto nuevo",
+        crear_tarea: "Crear tarea nueva",
+        consulta: "Consulta sin cambios",
+        revisar_manual: "Revisar manualmente",
+        fuera_de_alcance: "Descartar",
+      }[action] || action || "Sin clasificar";
+    }
+
+    function proposalEntityLabel(type) {
+      return { task: "Tarea", project: "Proyecto", owner: "Propietario", property: "Propiedad" }[type] || "Elemento";
+    }
+
+    function renderProposalUnderstanding(proposal) {
+      const payload = proposal?.payload || {};
+      const entity = proposal?.entity || {};
+      const action = proposalActionLabel(proposal?.action || "");
+      const title = payload.titulo || entity.title || proposal?.before_after_preview?.title || "Pendiente de confirmar";
+      const target = entity.id ? proposalEntityLabel(entity.type) + " " + entity.id : (proposal?.action || "").includes("crear") ? "Nuevo elemento" : "Destino pendiente";
+      const data = [
+        proposal?.source ? "Origen: " + proposal.source : "",
+        proposal?.data_status ? "Dato: " + proposal.data_status : "",
+        (proposal?.candidates || []).length ? (proposal.candidates.length + " candidato(s) detectado(s)") : "",
+        (proposal?.used_rules || []).length ? (proposal.used_rules.length + " regla(s) de memoria aplicada(s)") : "",
+      ].filter(Boolean).join(" | ") || "Datos internos y texto aportado.";
+      const saveState = proposal?.requires_confirmation
+        ? "No se guarda nada hasta pulsar Aplicar propuesta."
+        : "Solo lectura, sin escritura de datos.";
+      const question = (proposal?.questions || [])[0] || (proposal?.needs_entity_confirmation ? proposal.entity_confirmation_message : "Sin dudas obligatorias.");
+      return '<div class="proposalUnderstanding">' +
+        '<article class="proposalUnderstandingCard"><strong>Que he entendido</strong><span>' + html(action) + '</span></article>' +
+        '<article class="proposalUnderstandingCard"><strong>Destino</strong><span>' + html(target + " - " + title) + '</span></article>' +
+        '<article class="proposalUnderstandingCard"><strong>Datos usados</strong><span>' + html(data) + '</span></article>' +
+        '<article class="proposalUnderstandingCard"><strong>Control</strong><span>' + html(saveState) + '</span></article>' +
+        '<article class="proposalUnderstandingCard"><strong>Duda principal</strong><span>' + html(question) + '</span></article>' +
+      '</div>';
+    }
+
+    function renderCandidateSelector(proposal) {
+      const candidates = proposal?.candidates || [];
+      if (!candidates.length) return "";
+      const activeType = proposal?.entity?.type || "";
+      const activeId = String(proposal?.entity?.id || "");
+      return '<div class="candidateSelector">' +
+        '<strong>' + html(proposal?.needs_entity_confirmation ? "Selecciona el destino exacto antes de guardar" : "Candidatos detectados") + '</strong>' +
+        (proposal?.entity_confirmation_message ? '<div class="muted">' + html(proposal.entity_confirmation_message) + '</div>' : '') +
+        '<div class="candidateSelectorList">' + candidates.map(candidate => {
+          const type = candidate.type || "";
+          const id = String(candidate.id || "");
+          const active = type === activeType && id === activeId;
+          return '<article class="candidateOption' + (active ? ' active' : '') + '" data-ai-candidate-card="' + html(type + ":" + id) + '">' +
+            '<h4>' + html(proposalEntityLabel(type) + " " + id + " - " + (candidate.title || "")) + '</h4>' +
+            '<div class="agentActionMeta"><span class="pill">' + html(proposalEntityLabel(type)) + '</span>' +
+              (candidate.score !== undefined ? '<span class="pill">Coincidencia ' + html(candidate.score) + '</span>' : '') +
+              (candidate.comunidad ? '<span class="pill">' + html(candidate.comunidad) + '</span>' : '') +
+            '</div>' +
+            '<button class="ghost" type="button" data-ai-candidate-type="' + html(type) + '" data-ai-candidate-id="' + html(id) + '">Usar este destino</button>' +
+          '</article>';
+        }).join("") + '</div>' +
+      '</div>';
+    }
+
+    function bindCandidateSelector(container) {
+      if (!container) return;
+      container.querySelectorAll("[data-ai-candidate-type]").forEach(button => button.addEventListener("click", () => {
+        const type = button.dataset.aiCandidateType;
+        const id = button.dataset.aiCandidateId;
+        if (!type || !id || !$("aiEntity") || !$("aiAction")) return;
+        $("aiAction").value = type === "task" ? "seguimiento_tarea" : "seguimiento_proyecto";
+        $("aiEntity").innerHTML = entityOptionsHtml(type, id);
+        $("aiEntity").value = id;
+        container.querySelectorAll(".candidateOption").forEach(card => card.classList.remove("active"));
+        button.closest(".candidateOption")?.classList.add("active");
+        bindAiBeforeAfterPreview(container);
+      }));
+    }
+
+    function renderAgentActions() {
+      const container = $("agentActionsList");
+      if (!container) return;
+      if (!agentActions.length) {
+        container.innerHTML = '<div class="aiHistoryEmpty">No hay propuestas pendientes del agente.</div>';
+        if ($("agentActionsMessage")) $("agentActionsMessage").textContent = "Sin acciones pendientes.";
+        return;
+      }
+      container.innerHTML = agentActions.map(item => {
+        const managed = item.estado !== "Pendiente";
+        return '<article class="agentActionItem' + (managed ? ' managed' : '') + '">' +
+          '<h4>' + html(item.titulo || "Propuesta del agente") + '</h4>' +
+          '<div class="agentActionMeta"><span class="pill">' + html(agentIntentLabel(item.intent || "")) + '</span><span class="pill">' + html(item.estado || "") + '</span><span class="pill">' + html(aiHistoryDate(item.fecha_creacion)) + '</span></div>' +
+          (item.resumen ? '<div class="line muted">' + html(item.resumen.length > 260 ? item.resumen.slice(0, 257) + "..." : item.resumen) + '</div>' : '') +
+          '<div class="toolbar"><button class="ghost" data-agent-action-open="' + html(item.id_propuesta) + '">Abrir propuesta</button>' +
+            (item.estado === "Pendiente" ? '<button data-agent-action-status="' + html(item.id_propuesta) + '" data-status="Gestionada">Marcar gestionada</button>' : '<button class="ghost" data-agent-action-status="' + html(item.id_propuesta) + '" data-status="Pendiente">Reabrir</button>') +
+            '<button class="red" data-agent-action-delete="' + html(item.id_propuesta) + '">Eliminar</button></div>' +
+        '</article>';
+      }).join("");
+      if ($("agentActionsMessage")) $("agentActionsMessage").textContent = agentActions.filter(item => item.estado === "Pendiente").length + " pendiente(s).";
+      container.querySelectorAll("[data-agent-action-open]").forEach(button => button.addEventListener("click", () => openAgentAction(button.dataset.agentActionOpen)));
+      container.querySelectorAll("[data-agent-action-status]").forEach(button => button.addEventListener("click", () => updateAgentAction(button.dataset.agentActionStatus, button.dataset.status)));
+      container.querySelectorAll("[data-agent-action-delete]").forEach(button => button.addEventListener("click", () => deleteAgentAction(button.dataset.agentActionDelete)));
+    }
+
+    async function loadAgentActions(force = false) {
+      if (agentActionsLoaded && !force) {
+        renderAgentActions();
+        return;
+      }
+      if ($("agentActionsList")) $("agentActionsList").innerHTML = '<div class="aiHistoryEmpty">Cargando acciones pendientes...</div>';
+      try {
+        const data = await api("/api/agent/actions?limit=50");
+        agentActions = data.actions || [];
+        agentActionsLoaded = true;
+        renderAgentActions();
+      } catch (error) {
+        if ($("agentActionsList")) $("agentActionsList").innerHTML = '<div class="aiHistoryEmpty dangerText">' + html(error.message) + '</div>';
+      }
+    }
+
+    function openAgentAction(id) {
+      const item = agentActions.find(row => String(row.id_propuesta) === String(id));
+      if (!item) return;
+      const proposal = item.propuesta || {};
+      if (item.intent === "email") {
+        renderAgentEmailDraft(proposal, "agentResult");
+      } else if (item.intent === "informe") {
+        renderAgentReportProposal(proposal, "agentResult");
+      } else if (item.intent === "lote") {
+        aiBatch = proposal;
+        renderAiBatch();
+        $("aiBatchResult")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      } else {
+        aiProposal = proposal;
+        renderAiProposal(proposal, "agentResult");
+      }
+      $("agentResult")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    async function updateAgentAction(id, status) {
+      try {
+        await api("/api/agent/actions", { method: "POST", body: JSON.stringify({ action: "update", data: { id_propuesta: id, estado: status } }) });
+        agentActionsLoaded = false;
+        await loadAgentActions(true);
+      } catch (error) {
+        if ($("agentActionsMessage")) $("agentActionsMessage").textContent = error.message;
+      }
+    }
+
+    async function deleteAgentAction(id) {
+      if (!confirm("Se eliminara esta propuesta pendiente del agente. No se borran tareas, proyectos ni datos reales. ¿Continuar?")) return;
+      try {
+        await api("/api/agent/actions", { method: "POST", body: JSON.stringify({ action: "delete", data: { id_propuesta: id } }) });
+        agentActionsLoaded = false;
+        await loadAgentActions(true);
+      } catch (error) {
+        if ($("agentActionsMessage")) $("agentActionsMessage").textContent = error.message;
+      }
+    }
+
     function renderAgentDecision(response) {
       const container = $("agentResult");
       if (!container) return;
@@ -10158,6 +10531,8 @@ function homePage() {
         (response.reason ? '<div class="line muted">' + html(response.reason) + '</div>' : '') +
         (response.conversation_context?.used ? '<div class="answerNote">Se ha usado contexto reciente de esta conversacion para interpretar el mensaje.</div>' : '') +
         (response.context_warning ? '<div class="dangerText">' + html(response.context_warning) + '</div>' : '') +
+        (response.action_warning ? '<div class="dangerText">' + html(response.action_warning) + '</div>' : '') +
+        (response.action_center_id ? '<div class="answerNote">Propuesta guardada en el centro de acciones con ID ' + html(response.action_center_id) + '.</div>' : '') +
         renderSelectedAgentTool(response.selected_tool) +
         renderAgentGuidance(response.guidance) +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
@@ -10325,7 +10700,9 @@ function homePage() {
           await loadAiHistory(true, response.result.history_id || 0);
         }
         agentContextLoaded = false;
+        agentActionsLoaded = false;
         await loadAgentContext(true);
+        await loadAgentActions(true);
         renderAgentDecision(response);
       } catch (error) {
         $("agentMessage").textContent = error.message;
@@ -10519,9 +10896,10 @@ function homePage() {
       const entityType = proposal.entity?.type || (proposal.action === "seguimiento_tarea" ? "task" : "project");
       const entityId = proposal.entity?.id || "";
       const states = entityType === "task" ? options.estados_tarea : options.estados_proyecto;
-      const candidateLabel = (type) => ({ task: "Tarea", project: "Proyecto", owner: "Propietario", property: "Propiedad" }[type] || "Elemento");
-      const candidatesHtml = (proposal.candidates || []).length
-        ? '<div class="detailBox"><strong>Candidatos detectados</strong>' + proposal.candidates.map(c => '<div>' + html(candidateLabel(c.type) + " " + c.id + " - " + c.title + (c.score !== undefined ? " | score " + c.score : "")) + '</div>').join("") + '</div>'
+      const understandingHtml = renderProposalUnderstanding(proposal);
+      const candidateSelectorHtml = renderCandidateSelector(proposal);
+      const candidatesTextHtml = (proposal.candidates || []).length
+        ? '<div class="detailBox"><strong>Candidatos detectados</strong>' + proposal.candidates.map(c => '<div>' + html(proposalEntityLabel(c.type) + " " + c.id + " - " + c.title + (c.score !== undefined ? " | score " + c.score : "")) + '</div>').join("") + '</div>'
         : "";
       const questionsHtml = (proposal.questions || []).length
         ? '<div class="detailBox"><strong>Necesito aclarar</strong>' + proposal.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>'
@@ -10566,7 +10944,7 @@ function homePage() {
           evidenceHtml +
           (proposal.answer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.answer) + '</pre></details>' : '') +
           questionsHtml +
-          candidatesHtml +
+          candidatesTextHtml +
           (proposal.answer ? '<div class="toolbar"><button class="ghost" id="' + copyButtonId + '">Copiar respuesta</button><span class="muted" id="' + copyMessageId + '"></span></div>' : '') +
         '</div>';
         bindAnswerTableExports(proposal.display || {}, resultContainer);
@@ -10585,13 +10963,14 @@ function homePage() {
       resultContainer.innerHTML = '<div class="proposal">' +
         '<div class="proposalHead"><h2>Propuesta revisable</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
         (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
+        understandingHtml +
         actionContractHtml +
         impactHtml +
         beforeAfterHtml +
         usedRulesHtml +
         (proposal.answer ? '<div class="detailBox"><strong>Respuesta / lectura</strong><pre style="white-space:pre-wrap;margin:0">' + html(proposal.answer) + '</pre></div>' : '') +
         questionsHtml +
-        candidatesHtml +
+        candidateSelectorHtml +
         '<div class="formGrid">' +
           '<div><label>Accion</label><select id="aiAction">' + proposalActionOptions(proposal.action || "revisar_manual") + '</select></div>' +
           '<div><label>Elemento existente</label><select id="aiEntity">' + entityOptionsHtml(entityType, entityId) + '</select></div>' +
@@ -10616,6 +10995,7 @@ function homePage() {
         const kind = action.includes("tarea") ? "task" : "project";
         $("aiEntity").innerHTML = entityOptionsHtml(kind, "");
       });
+      bindCandidateSelector(resultContainer);
       bindAiBeforeAfterPreview(resultContainer);
     }
 
@@ -11727,6 +12107,26 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar herramientas del agente." });
     return sendJson(res, 200, { ok: true, tools: getAgentToolCatalog(session) });
+  }
+  if (req.method === "GET" && url.pathname === "/api/agent/actions") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar acciones del agente." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    return sendJson(res, 200, await runAgentActionsCommand(session, "list", {
+      estado: url.searchParams.get("estado") || "",
+      limit: Number(url.searchParams.get("limit") || 40),
+    }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/actions") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede gestionar acciones del agente." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    const action = String(body.action || "");
+    if (!["update", "delete"].includes(action)) return sendJson(res, 400, { ok: false, error: "Accion de propuestas no permitida." });
+    return sendJson(res, 200, await runAgentActionsCommand(session, action, body.data || {}, String(req.socket.remoteAddress || "web")));
   }
   if (req.method === "POST" && url.pathname === "/api/agent/documents/query") {
     const session = readSession(req);
