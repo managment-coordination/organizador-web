@@ -4048,6 +4048,223 @@ function emailDraftLooksLikeDebtNotice(text) {
   return /\b(deuda|debe|adeuda|morosidad|recibos? pendientes?|saldo pendiente|reclamacion|recordatorio)\b/i.test(normalized);
 }
 
+function emailDraftLooksLikeExecutiveSummary(text) {
+  const normalized = normalizeText(text);
+  const asksEmail = /\b(email|correo|enviar|mandar|copiar|borrador|texto)\b/i.test(normalized);
+  const asksSummary = /\b(resumen|resumen ejecutivo|situacion|estado actual|historico|historial|seguimiento)\b/i.test(normalized);
+  const hasEntity = /\b(tarea|proyecto)\b/i.test(normalized);
+  return asksEmail && asksSummary && hasEntity && !emailDraftLooksLikeDebtNotice(text);
+}
+
+function extractExecutiveSummaryTarget(text) {
+  const cleanText = String(text || "").replace(/\s+/g, " ").trim();
+  const typeMatch = cleanText.match(/\b(tarea|proyecto)\b/i);
+  const type = typeMatch ? (normalizeText(typeMatch[1]).includes("tarea") ? "task" : "project") : "";
+  const patterns = [
+    /(?:resumen(?:\s+ejecutivo)?|situacion|estado(?:\s+actual)?|historico|historial)\s+(?:de|del|de la)\s+(?:tarea|proyecto)\s+(.+?)(?:\s+para\s+(?:email|correo|enviar|mandar)|\s+por\s+(?:email|correo)|\s+con\s+(?:historico|historial)|$)/i,
+    /(?:email|correo|borrador|texto)\s+(?:de|del|sobre|para)\s+(?:la\s+)?(?:tarea|proyecto)\s+(.+?)(?:\s+con\s+(?:historico|historial)|$)/i,
+    /(?:tarea|proyecto)\s+(.+?)(?:\s+para\s+(?:email|correo|enviar|mandar)|\s+por\s+(?:email|correo)|$)/i,
+  ];
+  let target = "";
+  for (const pattern of patterns) {
+    const match = cleanText.match(pattern);
+    if (match?.[1]) {
+      target = match[1].replace(/[?¿.,;:]+$/g, "").trim();
+      break;
+    }
+  }
+  if (!target) {
+    target = cleanText
+      .replace(/\b(?:hazme|prepara|redacta|crear|genera|un|una|el|la|para|por|email|correo|borrador|texto|resumen|ejecutivo|historico|historial|seguimiento|situacion|estado|actual|tarea|proyecto|enviar|mandar|copiar|incluyendo|con)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return { type, target };
+}
+
+function findExecutiveSummaryEntity(context, text) {
+  const request = extractExecutiveSummaryTarget(text);
+  const wantedTypes = request.type ? [request.type] : ["project", "task"];
+  const rows = [];
+  for (const type of wantedTypes) {
+    const source = type === "task" ? (context.tasks || []) : (context.projects || []);
+    for (const item of source) {
+      const title = item.titulo || "";
+      const haystack = [title, item.categoria, item.proyecto, item.comunidad, item.responsable, item.proximo_paso].filter(Boolean).join(" ");
+      const targetNorm = normalizeText(request.target);
+      const titleNorm = normalizeText(title);
+      let score = Math.max(scoreTextMatch(request.target, title), scoreTextMatch(title, request.target), scoreTextMatch(text, title));
+      if (targetNorm && titleNorm.includes(targetNorm)) score += 8;
+      if (targetNorm && normalizeText(haystack).includes(targetNorm)) score += 4;
+      rows.push({ type, item, score });
+    }
+  }
+  return rows.filter((row) => row.score > 0).sort((a, b) => b.score - a.score);
+}
+
+function itemTitle(detail, type) {
+  const item = detail?.item || {};
+  return type === "task" ? (item.titulo || "") : (item.nombre || item.titulo || "");
+}
+
+function itemState(detail, type) {
+  const item = detail?.item || {};
+  return type === "task" ? (item.estado || "") : (item.estado_general || item.estado || "");
+}
+
+function itemOwner(detail, type) {
+  const item = detail?.item || {};
+  return type === "task" ? (item.responsable || "") : (item.responsable_principal || item.responsable || "");
+}
+
+function itemNextStep(detail, type) {
+  const item = detail?.item || {};
+  return item.proximo_paso || item.observaciones || "";
+}
+
+function historyComment(row) {
+  return String(row?.comentario || row?.descripcion || row?.detalle || "").trim();
+}
+
+function historyNextStep(row) {
+  return String(row?.proximo_paso || "").trim();
+}
+
+function formatHistoryDate(row) {
+  return String(row?.fecha_hora || row?.fecha || "").slice(0, 10) || "Sin fecha";
+}
+
+function summarizeHistoryLine(row) {
+  const comment = summarizeOperationalText(historyComment(row), 1)[0] || polishSentence(historyComment(row)).slice(0, 240);
+  const next = historyNextStep(row);
+  const nextText = next ? ` Proximo paso indicado: ${polishSentence(next)}` : "";
+  return `- ${formatHistoryDate(row)} | ${row.tipo_registro || "Seguimiento"}: ${comment}${nextText}`.slice(0, 520);
+}
+
+function buildExecutiveSummaryEmailBody(detail, type) {
+  const item = detail.item || {};
+  const history = Array.isArray(detail.history) ? detail.history : [];
+  const chronological = [...history].reverse();
+  const latest = history[0] || {};
+  const title = itemTitle(detail, type);
+  const typeLabel = type === "task" ? "tarea" : "proyecto";
+  const currentState = itemState(detail, type) || latest.estado_nuevo || "No indicado";
+  const owner = itemOwner(detail, type) || latest.responsable_nuevo || "No indicado";
+  const nextOwner = item.responsable_proximo_paso || latest.responsable_proximo_paso || owner;
+  const nextStep = itemNextStep(detail, type) || historyNextStep(latest) || "Pendiente de definir.";
+  const relevantHistory = chronological
+    .filter((row) => historyComment(row) || historyNextStep(row))
+    .slice(-10)
+    .map(summarizeHistoryLine);
+  const combined = chronological.map((row) => [historyComment(row), historyNextStep(row)].filter(Boolean).join(". ")).join(" ");
+  const executive = summarizeOperationalText(combined || nextStep || title, 4);
+  const community = item.comunidad || "";
+  const attachments = Array.isArray(detail.attachments) ? detail.attachments.length : 0;
+
+  return [
+    "Buenos dias,",
+    "",
+    `Te traslado un resumen ejecutivo ${typeLabel === "tarea" ? "de la tarea" : "del proyecto"} "${title}".`,
+    "",
+    "Resumen ejecutivo:",
+    executive.length ? executive.map((line) => `- ${line}`).join("\n") : "- No consta historico suficiente para elaborar un resumen amplio.",
+    "",
+    "Situacion actual:",
+    `- Comunidad: ${community || "No indicada"}`,
+    `- Estado: ${currentState}`,
+    `- Responsable actual: ${owner}`,
+    `- Responsable del proximo paso: ${nextOwner || "No indicado"}`,
+    `- Proximo paso: ${polishSentence(nextStep)}`,
+    "",
+    "Historial resumido:",
+    relevantHistory.length ? relevantHistory.join("\n") : "- No constan seguimientos registrados.",
+    "",
+    attachments ? `Anexos vinculados en la app: ${attachments}.` : "No constan anexos vinculados en la app.",
+    "",
+    "Quedo pendiente de cualquier indicacion o comentario adicional.",
+    "",
+    "Un saludo,",
+  ].join("\n");
+}
+
+async function prepareAgentExecutiveSummaryEmailDraft(session, text) {
+  const context = await queryAiContext(session);
+  const matches = findExecutiveSummaryEntity(context, text);
+  const best = matches[0];
+  if (!best || best.score < 2) {
+    return {
+      handled: true,
+      source: "local-db",
+      confidence: 0.35,
+      action: "borrador_email",
+      draft_contract: "email_draft_v1",
+      query_domain: "email",
+      data_status: "incompleto",
+      requires_confirmation: true,
+      writes_data: false,
+      outlook_ready: false,
+      answer: "No he podido localizar con seguridad la tarea o proyecto para preparar el resumen ejecutivo.",
+      questions: ["Indica el nombre exacto de la tarea o proyecto."],
+      candidates: matches.slice(0, 6).map((row) => ({ type: row.type, id: row.item.id, title: row.item.titulo, score: row.score })),
+      payload: { to: "", subject: "", body: "" },
+      sources: [],
+    };
+  }
+  const detail = await queryEntityDetail(session, best.type, best.item.id);
+  const title = itemTitle(detail, best.type);
+  const typeLabel = best.type === "task" ? "tarea" : "proyecto";
+  const subject = `Resumen ejecutivo - ${title}`;
+  const body = buildExecutiveSummaryEmailBody(detail, best.type);
+  return {
+    handled: true,
+    source: "local-db",
+    confidence: Math.min(0.92, 0.55 + best.score / 20),
+    action: "borrador_email",
+    draft_contract: "email_draft_v1",
+    query_domain: "email",
+    data_status: "confirmado",
+    requires_confirmation: true,
+    writes_data: false,
+    outlook_ready: false,
+    answer: `He preparado un resumen ejecutivo del ${typeLabel} "${title}" para copiarlo en un email. No se ha enviado nada.`,
+    payload: {
+      to: "",
+      to_status: "pendiente_de_completar",
+      recipient_name: "",
+      subject,
+      body,
+      source_query: text,
+    },
+    display: {
+      title,
+      cards: [
+        { label: "Tipo", value: best.type === "task" ? "Tarea" : "Proyecto" },
+        { label: "Estado", value: itemState(detail, best.type) || "No indicado" },
+        { label: "Responsable", value: itemOwner(detail, best.type) || "No indicado" },
+        { label: "Seguimientos", value: String((detail.history || []).length) },
+      ],
+    },
+    sources: [
+      { module: best.type === "task" ? "tareas" : "proyectos", table: best.type === "task" ? "tareas/registros" : "proyectos/registros_proyectos", description: "Ficha e historico visible segun permisos del usuario" },
+    ],
+    facts: {
+      entity_type: best.type,
+      entity_id: best.item.id,
+      historial_registros: (detail.history || []).length,
+      anexos: (detail.attachments || []).length,
+    },
+    questions: [],
+    impact_summary: {
+      title: "Resumen ejecutivo para email",
+      lines: [
+        `Elemento: ${title}`,
+        `Historico incorporado: ${(detail.history || []).length} registro(s)`,
+        "No se crea borrador en Outlook ni se envia correo en esta fase.",
+      ],
+    },
+  };
+}
+
 function tableRows(display, titleIncludes) {
   const tables = Array.isArray(display?.tables) ? display.tables : [];
   const table = tables.find((item) => normalizeText(item.title || "").includes(normalizeText(titleIncludes)));
@@ -4136,6 +4353,9 @@ finally:
 
 async function prepareAgentEmailDraft(session, text) {
   const cleanText = String(text || "").trim();
+  if (emailDraftLooksLikeExecutiveSummary(cleanText)) {
+    return prepareAgentExecutiveSummaryEmailDraft(session, cleanText);
+  }
   if (!emailDraftLooksLikeDebtNotice(cleanText)) {
     return {
       handled: true,
@@ -4147,8 +4367,9 @@ async function prepareAgentEmailDraft(session, text) {
       data_status: "incompleto",
       requires_confirmation: true,
       writes_data: false,
-      answer: "Puedo preparar el borrador, pero necesito que indiques el asunto concreto. En esta primera version esta cubierto el borrador de deuda/recibos pendientes.",
-      questions: ["Propietario, propiedad o deuda concreta para redactar el email."],
+      outlook_ready: false,
+      answer: "Puedo preparar el borrador, pero necesito que indiques el asunto concreto. Ahora estan cubiertos los emails de deuda y los resumenes ejecutivos de tareas/proyectos.",
+      questions: ["Indica si quieres un email de deuda o un resumen ejecutivo de una tarea/proyecto concreto."],
       payload: { to: "", subject: "", body: "" },
       sources: [],
     };
@@ -4571,7 +4792,7 @@ const AGENT_TOOL_CATALOG = [
     endpoint: "/api/agent/email/draft",
     intents: ["email"],
     roles: ["Superusuario", "Administrador", "Usuario"],
-    keywords: ["email", "correo", "borrador", "texto para enviar", "redacta", "redactar", "recordatorio", "reclamacion", "deuda"],
+    keywords: ["email", "correo", "borrador", "texto para enviar", "redacta", "redactar", "recordatorio", "reclamacion", "deuda", "resumen ejecutivo", "historico", "historial", "seguimiento"],
     writesData: false,
     requiresConfirmation: true,
   },
@@ -4910,7 +5131,7 @@ function detectAgentIntent(text) {
     };
   }
   const emailDraft = /\b(email|correo|mail|outlook)\b/i.test(normalized)
-    && /\b(texto|redacta|redactar|prepara|preparar|borrador|escribe|enviar|mandar|recordatorio|reclamacion|reclamar|comunicar)\b/i.test(normalized);
+    && /\b(texto|redacta|redactar|prepara|preparar|borrador|escribe|enviar|mandar|recordatorio|reclamacion|reclamar|comunicar|resumen|historico|historial|situacion|seguimiento)\b/i.test(normalized);
   if (emailDraft) {
     return {
       intent: "email",
