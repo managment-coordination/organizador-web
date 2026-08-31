@@ -668,11 +668,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-27 | Fase 4 - Automatizacion guiada | 100% nucleo inicial cerrado | Se implementa lote guiado con contrato `guided_batch_v1`, separacion en propuestas independientes, tarjetas editables, seleccion por propuesta, confirmacion final y aprendizaje opcional de correcciones | Preparar Fase 5 - Agente completo por herramientas internas |
 | 2026-08-28 | Fase 5 - Agente completo | 72% tecnico / 58% funcional | Se activa documentos/informes en el agente: consulta de anexos e informes visibles, contrato `agent_report_prepare_v1`, propuesta revisable de informe Word y generacion solo tras confirmacion | Convertir otra herramienta planificada en flujo seguro: email/Outlook o conciliacion bancaria |
 | 2026-08-28 | Fase 5 - Agente completo | 74% tecnico / 60% funcional | Las consultas de deuda, contabilidad y presupuesto muestran aviso de vigencia con fecha maxima de datos importados desde Netfincas/banco y fuentes con cobertura | Mantener esta logica en futuros modulos economicos y conectores |
+| 2026-08-28 | Fase 5 - Agente completo | 80% tecnico / 66% funcional | Se activa email en modo propuesta con contrato `email_draft_v1`: prepara borrador editable de deuda/recibos, busca email del propietario, muestra vigencia y no envia ni crea borrador externo | Pasar a conciliacion bancaria revisable |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-08-28.
 - Nucleo activo: Fase 5 - Agente completo.
 - Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
-- Avance actual: 74% tecnico / 60% funcional.
-- Pendiente inmediato: escoger el siguiente dominio complejo y mantenerlo como herramienta confirmable, sin ejecucion automatica sensible.
+- Avance actual: 80% tecnico / 66% funcional.
+- Pendiente inmediato: conciliacion bancaria revisable con bolsa "a revisar", clasificacion editable y confirmacion antes de guardar.

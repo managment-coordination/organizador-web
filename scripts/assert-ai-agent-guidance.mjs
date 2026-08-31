@@ -26,6 +26,8 @@ requireIncludes("Riesgos", "falta tarjeta Riesgos");
 requireIncludes("Dudas", "falta tarjeta Dudas");
 requireIncludes("Siguientes acciones", "falta tarjeta Siguientes acciones");
 requireIncludes("Preparar recordatorio o certificado como flujo guiado", "falta accion sugerida para deuda");
+requireIncludes("Crear borrador real en Outlook", "falta accion sugerida de Outlook en modo no activo");
+requireIncludes("Revisa el texto del email", "falta foco de revision para email");
 requireIncludes("No ejecutar esta peticion como una tarea comun", "falta proteccion para herramientas planificadas");
 requireIncludes("Comprueba que el contexto anterior corresponde realmente al asunto actual", "falta riesgo de contexto");
 

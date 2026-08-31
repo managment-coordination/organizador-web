@@ -2,7 +2,7 @@
 
 ## Nucleo trabajado
 
-Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion, respuestas guiadas, primera herramienta avanzada de documentos/informes y aviso de vigencia para datos economicos.
+Primeros nucleos de Fase 5: entrada conversacional unica para Centro IA, catalogo de herramientas internas por modulo, memoria contextual de conversacion, respuestas guiadas, primera herramienta avanzada de documentos/informes, aviso de vigencia para datos economicos y primer flujo de email en modo propuesta.
 
 El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un agente-router seguro que lea una instruccion natural y decida si corresponde a:
 
@@ -10,6 +10,7 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 - accion individual revisable;
 - lote de acciones revisables;
 - informe Word revisable;
+- borrador de email revisable;
 - aclaracion necesaria.
 
 ## Estado
@@ -17,9 +18,9 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Campo | Valor |
 | --- | --- |
 | Porcentaje anterior tecnico | 0% |
-| Porcentaje actual tecnico | 74% |
+| Porcentaje actual tecnico | 80% |
 | Porcentaje anterior funcional | 0% |
-| Porcentaje actual funcional | 60% |
+| Porcentaje actual funcional | 66% |
 | Contrato | `agent_router_v1` |
 | Endpoint | `POST /api/agent/message` |
 | Catalogo | `agent_tool_catalog_v1` |
@@ -28,11 +29,13 @@ El objetivo de este nucleo no es que la IA ejecute libremente, sino crear un age
 | Tabla de contexto | `ia_contexto_conversacion` |
 | Respuesta guiada | `agent_guidance_v1` |
 | Preparacion de informe | `agent_report_prepare_v1` |
+| Borrador de email | `email_draft_v1` |
 | Vigencia economica | `freshness` en respuestas de deuda, contabilidad y presupuesto |
 | Endpoint documental | `POST /api/agent/documents/query` |
 | Endpoint preparar informe | `POST /api/agent/report/prepare` |
+| Endpoint preparar email | `POST /api/agent/email/draft` |
 | Escritura operativa directa | No |
-| Confirmacion obligatoria | Si, para accion, lote e informe |
+| Confirmacion obligatoria | Si, para accion, lote, informe y email |
 
 ## Funcionamiento
 
@@ -42,6 +45,7 @@ El usuario puede escribir en la caja `Agente IA` de Centro IA. El servidor anali
 - `accion`: usa `analyzeOperationalWithAi()` y prepara la pantalla editable de Entrada inteligente;
 - `lote`: usa `analyzeGuidedAutomationBatch()` y prepara tarjetas editables en Automatizacion guiada;
 - `informe`: prepara una propuesta de informe Word sobre tarea/proyecto y solo genera el archivo al confirmar;
+- `email`: prepara un borrador editable dentro de la app, reutilizando las consultas fiables de deuda/propietarios cuando proceda;
 - `aclaracion`: no prepara cambios y pide al usuario concretar.
 
 Ademas, el agente selecciona una herramienta interna mediante `selectAgentTool()` y devuelve:
@@ -81,10 +85,13 @@ La herramienta de documentos e informes queda activa en dos niveles:
 
 Las consultas economicas incorporan ahora un aviso de vigencia. Cuando el agente responde sobre deuda, contabilidad o presupuesto, calcula la fecha maxima disponible en las fuentes usadas, por ejemplo recibos Netfincas, movimientos de deuda, gastos/facturas, extractos bancarios o informes contables. La respuesta muestra una advertencia del tipo: datos disponibles hasta una fecha concreta y necesidad de comprobar si hay nuevas descargas de Netfincas o banco posteriores.
 
+El flujo de email queda activado solo como propuesta interna. En esta primera version cubre especialmente comunicaciones de deuda y recibos pendientes: localiza el propietario, busca el email principal si existe, consulta la deuda con el mismo motor fiable de Centro IA, redacta asunto y cuerpo formal, incluye aviso de vigencia de datos y ofrece copiar el cuerpo o el email completo. No crea borradores en Outlook, no envia correos y no guarda cambios.
+
 ## Garantias
 
 - El agente no llama directamente a endpoints de escritura operativa.
 - Las acciones se siguen aplicando solo desde endpoints finales despues de confirmacion manual: `/api/entity/record`, `/api/entity/create` o `/api/report/generate`.
+- El email queda limitado a borrador editable: `/api/agent/email/draft` no envia, no crea borradores externos y no escribe datos.
 - El acceso queda limitado a perfiles `Superusuario`, `Administrador` y `Usuario`.
 - El perfil Presidente y el perfil Seguridad no reciben este agente operativo en esta fase.
 - El flujo reutiliza las piezas ya probadas de Fase 2, Fase 3 y Fase 4.
@@ -95,13 +102,13 @@ Las consultas economicas incorporan ahora un aviso de vigencia. Cuando el agente
 
 ## Pendiente de Fase 5
 
-1. Ejecucion guiada de herramientas avanzadas restantes: asambleas, contabilidad, seguridad, email y documentos con lectura profunda.
+1. Ejecucion guiada de herramientas avanzadas restantes: asambleas, contabilidad, seguridad, Outlook real y documentos con lectura profunda.
 2. Modo auditor mas profundo para decisiones sensibles: legal, economico, administrativo y operativo.
-3. Conectores externos en modo propuesta, especialmente email/Outlook, sin ejecucion automatica inicial.
+3. Conectores externos en modo propuesta real, especialmente Outlook, sin ejecucion automatica inicial.
 4. Convertir herramientas planificadas en flujos seguros uno a uno.
 5. Mejorar la comprension semantica de instrucciones dependientes de contexto.
 6. Crear acciones sugeridas clicables cuando exista herramienta segura.
 
 ## Ramificaciones detectadas
 
-No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural es convertir otra herramienta planificada en flujo seguro, probablemente email/Outlook en modo propuesta o conciliacion bancaria revisable.
+No se abre ninguna ramificacion nueva en este nucleo. El siguiente paso natural confirmado es conciliacion bancaria revisable.

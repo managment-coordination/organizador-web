@@ -3730,6 +3730,200 @@ finally:
   return runPythonJson(script);
 }
 
+function extractDebtEmailTarget(text) {
+  const cleanText = String(text || "").replace(/\s+/g, " ").trim();
+  const patterns = [
+    /(?:deuda|recibos?\s+pendientes?|saldo\s+pendiente)\s+(?:de|del|a|para)\s+(.+?)(?:\s+con\s+(?:listado|detalle|relacion|desglose)|\s+para\s+enviar|\s+por\s+email|\s+por\s+correo|$)/i,
+    /(?:reclamar|recordar|comunicar)\s+(?:la\s+)?deuda\s+(?:de|a)\s+(.+?)(?:\s+con\s+(?:listado|detalle|relacion|desglose)|\s+por\s+email|\s+por\s+correo|$)/i,
+    /(?:texto|borrador|correo|email)\s+(?:para\s+)?(?:enviar\s+)?(?:a|para)\s+(.+?)(?:\s+por\s+(?:su\s+)?deuda|\s+con\s+deuda|$)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = cleanText.match(pattern);
+    if (match?.[1]) {
+      return match[1].replace(/[?¿.,;:]+$/g, "").trim();
+    }
+  }
+  return cleanText;
+}
+
+function emailDraftLooksLikeDebtNotice(text) {
+  const normalized = normalizeText(text);
+  return /\b(deuda|debe|adeuda|morosidad|recibos? pendientes?|saldo pendiente|reclamacion|recordatorio)\b/i.test(normalized);
+}
+
+function tableRows(display, titleIncludes) {
+  const tables = Array.isArray(display?.tables) ? display.tables : [];
+  const table = tables.find((item) => normalizeText(item.title || "").includes(normalizeText(titleIncludes)));
+  return Array.isArray(table?.rows) ? table.rows : [];
+}
+
+function displayCardValue(display, label) {
+  const cards = Array.isArray(display?.cards) ? display.cards : [];
+  const card = cards.find((item) => normalizeText(item.label || "") === normalizeText(label));
+  return card?.value || "";
+}
+
+function buildDebtEmailBody(debtResult, ownerName, requestedList) {
+  const display = debtResult.display || {};
+  const total = displayCardValue(display, "Deuda total") || `${debtResult.facts?.deuda || 0} EUR`;
+  const receiptsCount = displayCardValue(display, "Recibos pendientes") || String(debtResult.facts?.recibos || "");
+  const byYearRows = tableRows(display, "ejercicio");
+  const receiptRows = tableRows(display, "recibos pendientes");
+  const freshness = debtResult.freshness?.summary || "Los datos proceden de la informacion actualmente importada en la app.";
+  const yearLines = byYearRows.length
+    ? byYearRows.map((row) => `- ${row.Ejercicio}: ${row.Deuda} (${row.Recibos} recibo(s))`).join("\n")
+    : "- Sin desglose por ejercicio disponible.";
+  const receiptLines = requestedList && receiptRows.length
+    ? receiptRows.slice(0, 60).map((row) => [
+        row.Fecha || "",
+        row.Propiedad ? `Propiedad ${row.Propiedad}` : "",
+        row.Tipo || "",
+        row.Referencia ? `Ref. ${row.Referencia}` : "",
+        row.Pendiente ? `pendiente ${row.Pendiente}` : "",
+      ].filter(Boolean).join(" | ")).join("\n")
+    : "";
+  const receiptNote = requestedList
+    ? receiptRows.length
+      ? `\nDetalle de recibos pendientes:\n${receiptLines}${receiptRows.length > 60 ? `\n\nSe incluyen los primeros 60 recibos. El listado completo consta de ${receiptRows.length} recibos y debe adjuntarse o revisarse desde la app.` : ""}`
+      : "\nNo se ha podido incorporar un listado individual de recibos en el borrador. Revise el detalle desde la app antes de enviar."
+    : "";
+  return [
+    `Estimado/a ${ownerName}:`,
+    "",
+    "Le informamos de que, segun los datos actualmente disponibles en la administracion de la comunidad, consta una deuda pendiente asociada a su titularidad.",
+    "",
+    `Importe total pendiente: ${total}`,
+    receiptsCount ? `Numero de recibos pendientes: ${receiptsCount}` : "",
+    "",
+    "Desglose por ejercicio:",
+    yearLines,
+    receiptNote,
+    "",
+    freshness,
+    "",
+    "Si usted hubiera realizado algun pago no reflejado en esta relacion, le rogamos nos remita el justificante bancario para poder comprobarlo y actualizar la situacion.",
+    "",
+    "Quedamos a su disposicion para cualquier aclaracion.",
+    "",
+    "Atentamente,",
+    "Administracion de la comunidad",
+  ].filter((line) => line !== null && line !== undefined).join("\n");
+}
+
+async function queryOwnerEmailForDraft(ownerId) {
+  if (!ownerId) return {};
+  const script = `
+import json
+import sqlite3
+
+path = ${JSON.stringify(databasePath)}
+owner_id = int(${JSON.stringify(Number(ownerId) || 0)})
+conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+conn.row_factory = sqlite3.Row
+try:
+    row = conn.execute("""
+        SELECT valor, principal
+        FROM cf_contactos_propietario
+        WHERE id_propietario=?
+          AND COALESCE(activo,1)=1
+          AND INSTR(valor, '@') > 0
+        ORDER BY COALESCE(principal,0) DESC, valor
+        LIMIT 1
+    """, (owner_id,)).fetchone()
+    print(json.dumps({"email": row["valor"] if row else "", "principal": bool(row["principal"]) if row else False}, ensure_ascii=False))
+finally:
+    conn.close()
+`;
+  return runPythonJson(script);
+}
+
+async function prepareAgentEmailDraft(session, text) {
+  const cleanText = String(text || "").trim();
+  if (!emailDraftLooksLikeDebtNotice(cleanText)) {
+    return {
+      handled: true,
+      source: "local",
+      confidence: 0.45,
+      action: "borrador_email",
+      draft_contract: "email_draft_v1",
+      query_domain: "email",
+      data_status: "incompleto",
+      requires_confirmation: true,
+      writes_data: false,
+      answer: "Puedo preparar el borrador, pero necesito que indiques el asunto concreto. En esta primera version esta cubierto el borrador de deuda/recibos pendientes.",
+      questions: ["Propietario, propiedad o deuda concreta para redactar el email."],
+      payload: { to: "", subject: "", body: "" },
+      sources: [],
+    };
+  }
+  const target = extractDebtEmailTarget(cleanText);
+  const requestedList = /\b(listado|detalle|relacion|desglose|recibos?)\b/i.test(normalizeText(cleanText));
+  const debtQuery = `listado de recibos pendientes de ${target}`;
+  const debtResult = await querySmartAssistant(session, debtQuery);
+  const ownerName = debtResult?.display?.title || target;
+  const ownerId = Number(debtResult?.facts?.id_propietario || 0);
+  const contact = await queryOwnerEmailForDraft(ownerId);
+  const hasDebt = Number(debtResult?.facts?.deuda || 0) > 0;
+  const subject = hasDebt
+    ? `Deuda pendiente - ${ownerName}`
+    : `Situacion de deuda - ${ownerName}`;
+  const body = hasDebt
+    ? buildDebtEmailBody(debtResult, ownerName, requestedList)
+    : [
+        `Estimado/a ${ownerName}:`,
+        "",
+        "Le informamos de que, segun los datos actualmente disponibles en la administracion de la comunidad, no consta deuda pendiente registrada a su nombre.",
+        "",
+        debtResult?.freshness?.summary || "Los datos proceden de la informacion actualmente importada en la app.",
+        "",
+        "Quedamos a su disposicion para cualquier aclaracion.",
+        "",
+        "Atentamente,",
+        "Administracion de la comunidad",
+      ].join("\n");
+  const result = {
+    handled: true,
+    source: "local-db",
+    confidence: debtResult?.data_status === "confirmado" ? 0.86 : 0.54,
+    action: "borrador_email",
+    draft_contract: "email_draft_v1",
+    query_domain: "email",
+    data_status: debtResult?.data_status || "incompleto",
+    requires_confirmation: true,
+    writes_data: false,
+    outlook_ready: false,
+    answer: hasDebt
+      ? `He preparado un borrador de email para comunicar la deuda pendiente de ${ownerName}. No se ha enviado nada.`
+      : `He preparado un borrador de email para ${ownerName}, pero revisa el resultado porque no consta deuda pendiente en la consulta.`,
+    payload: {
+      to: contact.email || "",
+      to_status: contact.email ? "email_detectado" : "email_no_detectado",
+      recipient_name: ownerName,
+      subject,
+      body,
+      source_query: debtQuery,
+    },
+    display: debtResult?.display || {},
+    freshness: debtResult?.freshness || null,
+    sources: debtResult?.sources || [],
+    facts: {
+      ...(debtResult?.facts || {}),
+      email_detectado: contact.email || "",
+      listado_incluido: requestedList,
+    },
+    questions: contact.email ? [] : ["No he encontrado email principal del propietario. Revisa o completa el destinatario antes de copiar/enviar."],
+    impact_summary: {
+      title: "Borrador de email sin envio",
+      lines: [
+        `Destinatario: ${contact.email || "pendiente de completar"}`,
+        `Asunto: ${subject}`,
+        "No se crea borrador en Outlook ni se envia correo en esta fase.",
+      ],
+    },
+  };
+  return result;
+}
+
 function targetedRecordProposal(text, context, target) {
   const type = String(target?.type || "").trim();
   const id = Number(target?.id || 0);
@@ -4072,6 +4266,18 @@ const AGENT_TOOL_CATALOG = [
     requiresConfirmation: true,
   },
   {
+    id: "email.draft.proposal",
+    module: "email",
+    label: "Preparar borrador de email",
+    status: "active",
+    endpoint: "/api/agent/email/draft",
+    intents: ["email"],
+    roles: ["Superusuario", "Administrador", "Usuario"],
+    keywords: ["email", "correo", "borrador", "texto para enviar", "redacta", "redactar", "recordatorio", "reclamacion", "deuda"],
+    writesData: false,
+    requiresConfirmation: true,
+  },
+  {
     id: "email.inbox.proposals",
     module: "email",
     label: "Revisar bandeja y proponer acciones",
@@ -4145,6 +4351,7 @@ function scoreAgentTool(text, intent, tool) {
   if (tool.id === "work.single.proposal" && intent === "accion") score += 0.2;
   if (tool.id === "work.batch.proposal" && intent === "lote") score += 2.5;
   if (tool.id === "reports.generate.entity" && intent === "informe") score += 2.5;
+  if (tool.id === "email.draft.proposal" && intent === "email") score += 2.5;
   return score;
 }
 
@@ -4404,6 +4611,16 @@ function detectAgentIntent(text) {
       questions: [],
     };
   }
+  const emailDraft = /\b(email|correo|mail|outlook)\b/i.test(normalized)
+    && /\b(texto|redacta|redactar|prepara|preparar|borrador|escribe|enviar|mandar|recordatorio|reclamacion|reclamar|comunicar)\b/i.test(normalized);
+  if (emailDraft) {
+    return {
+      intent: "email",
+      confidence: 0.84,
+      reason: "El mensaje solicita preparar un borrador de comunicacion por email.",
+      questions: [],
+    };
+  }
   const hasQuestion = /[?¿]/.test(cleanText) || /\b(cual|cuanto|cuando|quien|dime|busca|listado|lista|consulta|ensename|muestrame|muestra|balance|deuda|debe|adeuda|propietario|email|correo|presupuesto)\b/i.test(normalized);
   const debtOrOwnerQuery = /\b(deuda|morosidad|saldo pendiente|recibos? pendientes?|propietario|titular|email|correo|presupuesto|balance|disponible)\b/i.test(normalized);
   const operationalVerb = /\b(crea|crear|anade|anadir|añade|añadir|actualiza|actualizar|registra|registrar|seguimiento|incidencia|prepara accion|guardar|alta tarea|alta proyecto)\b/i.test(cleanText);
@@ -4568,6 +4785,14 @@ function buildAgentGuidance(response) {
     guidance.suggested_actions.push({ label: "Generar Word solo tras confirmacion", type: "confirm_report", enabled: true });
     if (!payload.id || !payload.type) guidance.risks.push("No hay un elemento unico identificado; selecciona una tarea o proyecto antes de generar.");
     if ((result.candidates || []).length > 1) guidance.risks.push("Hay varios candidatos posibles; revisa la lista antes de confirmar.");
+  } else if (response?.intent === "email") {
+    if (payload.recipient_name) guidance.confirmed_data.push(`Destinatario propuesto: ${payload.recipient_name}.`);
+    if (payload.to) guidance.confirmed_data.push(`Email detectado: ${payload.to}.`);
+    if (payload.subject) guidance.confirmed_data.push(`Asunto propuesto: ${payload.subject}.`);
+    guidance.review_focus.push("Revisa el texto del email completo antes de copiarlo a Outlook.");
+    guidance.review_focus.push("Comprueba importes, listado de recibos y fecha de vigencia antes de enviarlo.");
+    guidance.suggested_actions.push({ label: "Copiar borrador revisado", type: "copy_email_draft", enabled: true });
+    guidance.suggested_actions.push({ label: "Crear borrador real en Outlook", type: "outlook_draft", enabled: false, reason: "Siguiente capa: conector Outlook con confirmacion." });
   } else {
     guidance.review_focus.push("Aclara si quieres consultar datos, preparar una accion o esperar a una herramienta pendiente.");
     guidance.suggested_actions.push({ label: "Reformular instruccion", type: "clarify", enabled: true });
@@ -4597,7 +4822,7 @@ async function answerAgentMessage(session, text) {
     intent: decision.intent,
     confidence: decision.confidence,
     reason: decision.reason,
-    requires_confirmation: ["accion", "lote", "informe"].includes(decision.intent),
+    requires_confirmation: ["accion", "lote", "informe", "email"].includes(decision.intent),
     writes_data: false,
     tool: selectedTool?.endpoint || "",
     selected_tool: selectedTool,
@@ -4678,6 +4903,15 @@ async function answerAgentMessage(session, text) {
       message: result.data_status === "confirmado"
         ? "He preparado el informe Word. Revisa el elemento detectado y confirma antes de generarlo."
         : "Necesito que selecciones la tarea o proyecto exacto antes de generar el informe.",
+      result,
+    });
+  }
+  if (decision.intent === "email") {
+    const result = await prepareAgentEmailDraft(session, effectiveText);
+    return finalize({
+      ...base,
+      tool: selectedTool?.endpoint || "/api/agent/email/draft",
+      message: "He preparado un borrador de email revisable. No se ha enviado nada ni se ha creado ningun borrador en Outlook.",
       result,
     });
   }
@@ -9023,6 +9257,7 @@ function homePage() {
         accion: "Accion revisable",
         lote: "Lote revisable",
         informe: "Informe revisable",
+        email: "Email revisable",
         aclaracion: "Aclaracion necesaria",
       }[intent] || "Agente";
     }
@@ -9174,6 +9409,8 @@ function homePage() {
           ? "Ver lote preparado"
           : response.intent === "informe"
             ? "Ver propuesta de informe"
+          : response.intent === "email"
+            ? "Ver borrador de email"
           : "";
       container.innerHTML = '<div class="agentDecision">' +
         '<div class="agentDecisionHead"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><span class="confidence">Confianza: ' + html(confidence) + '%</span></div>' +
@@ -9186,6 +9423,7 @@ function homePage() {
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
         (response.intent === "informe" ? '<div id="agentReportPreview"></div>' : '') +
+        (response.intent === "email" ? '<div id="agentEmailPreview"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
       '</div>';
       if (response.intent === "consulta" && response.result) {
@@ -9195,12 +9433,54 @@ function homePage() {
         agentReportProposal = response.result;
         renderAgentReportProposal(response.result, "agentReportPreview");
       }
+      if (response.intent === "email" && response.result) {
+        renderAgentEmailDraft(response.result, "agentEmailPreview");
+      }
       if ($("agentOpenPrepared")) {
         $("agentOpenPrepared").addEventListener("click", () => {
-          const target = response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : $("aiOperationResult");
+          const target = response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : response.intent === "email" ? $("agentEmailPreview") : $("aiOperationResult");
           if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
+    }
+
+    async function copyTextToClipboard(text, messageId) {
+      try {
+        await navigator.clipboard.writeText(text || "");
+        if ($(messageId)) $(messageId).textContent = "Copiado.";
+      } catch {
+        if ($(messageId)) $(messageId).textContent = "No se pudo copiar automaticamente.";
+      }
+    }
+
+    function renderAgentEmailDraft(proposal, resultId = "agentEmailPreview") {
+      const container = $(resultId);
+      if (!container) return;
+      const payload = proposal.payload || {};
+      container.innerHTML = '<div class="proposal agentEmailBox">' +
+        '<div class="proposalHead"><h2>Borrador de email</h2><span class="confidence">Sin envio</span></div>' +
+        '<p>' + html(proposal.answer || "Borrador preparado para revisar.") + '</p>' +
+        '<div class="detailBox"><strong>Modo propuesta</strong><div>No se ha enviado nada y no se ha creado ningun borrador en Outlook. Revisa, ajusta y copia el texto.</div></div>' +
+        (proposal.freshness?.summary ? '<div class="answerNote"><strong>Vigencia de datos</strong><div>' + html(proposal.freshness.summary) + '</div></div>' : '') +
+        '<div class="formGrid">' +
+          '<div><label>Para</label><input id="agentEmailTo" value="' + html(payload.to || "") + '" placeholder="Completar destinatario..." /></div>' +
+          '<div><label>Destinatario</label><input id="agentEmailName" value="' + html(payload.recipient_name || "") + '" /></div>' +
+        '</div>' +
+        '<label>Asunto</label><input id="agentEmailSubject" value="' + html(payload.subject || "") + '" />' +
+        '<label>Cuerpo del email</label><textarea id="agentEmailBody" style="min-height:360px">' + html(payload.body || "") + '</textarea>' +
+        renderAiEvidence(proposal) +
+        '<div class="toolbar"><button class="green" id="copyAgentEmailBody">Copiar cuerpo</button><button class="ghost" id="copyAgentEmailAll">Copiar email completo</button><span class="muted" id="agentEmailMessage"></span></div>' +
+      '</div>';
+      $("copyAgentEmailBody").addEventListener("click", () => copyTextToClipboard($("agentEmailBody").value, "agentEmailMessage"));
+      $("copyAgentEmailAll").addEventListener("click", () => {
+        const lines = [
+          $("agentEmailTo").value ? "Para: " + $("agentEmailTo").value : "",
+          "Asunto: " + $("agentEmailSubject").value,
+          "",
+          $("agentEmailBody").value,
+        ].filter((line, index) => index === 2 || safe(line));
+        copyTextToClipboard(lines.join("\n"), "agentEmailMessage");
+      });
     }
 
     function renderAgentReportProposal(proposal, resultId = "agentReportPreview") {
@@ -10695,6 +10975,14 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await prepareAgentEntityReport(session, body.text || ""));
+  }
+  if (req.method === "POST" && url.pathname === "/api/agent/email/draft") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede preparar borradores de email." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await prepareAgentEmailDraft(session, body.text || ""));
   }
   if (req.method === "GET" && url.pathname === "/api/agent/context") {
     const session = readSession(req);
