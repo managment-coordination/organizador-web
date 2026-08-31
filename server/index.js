@@ -1874,11 +1874,17 @@ function buildFormalComment(text, contextItem = null) {
 
   if (hasOperationalSignal(clean)) {
     const subject = contextItem?.titulo || contextItem?.title || "la actuacion indicada";
-    const summary = clean ? clean.slice(0, 900) : "Se aporta informacion operativa pendiente de revisar.";
-    return `Se registra comunicacion relacionada con ${subject}. Informacion recibida: ${summary}`;
+    const summary = summarizeOperationalText(clean, 5);
+    return [
+      `Se registra comunicacion relacionada con ${subject}.`,
+      summary.length
+        ? "Hechos relevantes:\n" + summary.map((line) => `- ${line}`).join("\n")
+        : "Se aporta informacion operativa pendiente de revisar.",
+      inferOperationalConclusion(clean),
+    ].filter(Boolean).join("\n\n");
   }
 
-  return clean.slice(0, 4000);
+  return summarizeOperationalText(clean, 6).join("\n").slice(0, 4000) || clean.slice(0, 4000);
 }
 
 function buildFormalNextStep(text, fallback = "") {
@@ -1908,6 +1914,136 @@ function buildFormalNextStep(text, fallback = "") {
   }
 
   return extractNextStep(clean) || fallback || "Revisar la informacion aportada y definir el siguiente paso operativo.";
+}
+
+function stripSpeechNoise(text) {
+  return String(text || "")
+    .normalize("NFKC")
+    .replace(/\d{1,2}:\d{2}(?::\d{2})?\s*(?:Speaker|Interlocutor|Persona)\s*\d+/gi, " ")
+    .replace(/\b(?:Speaker|Interlocutor|Persona)\s*\d+\b/gi, " ")
+    .replace(/\b(?:vale|venga|mira|bueno|eh|ehm|mmm|porfi|por favor|hijo|luisillo|hasta ahora|muchas gracias|adios|gracias)\b[,. ]*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function polishSentence(value) {
+  let text = stripSpeechNoise(value)
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/([,.;:])([^\s])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = text.replace(/^[,.;:\-\s]+/, "").replace(/\s+$/, "");
+  if (!text) return "";
+  text = text.charAt(0).toUpperCase() + text.slice(1);
+  if (!/[.!?]$/.test(text)) text += ".";
+  return text;
+}
+
+function splitOperationalSentences(text) {
+  const clean = String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\d{1,2}:\d{2}(?::\d{2})?\s*(?:Speaker|Interlocutor|Persona)\s*\d+/gi, "\n")
+    .replace(/\b(?:Resumen ejecutivo|Puntos clave|Decisiones \/ acuerdos|Decisiones|Acuerdos|Tareas con responsables y plazos|Riesgos \/ dudas abiertas|Pr[oó]ximos pasos)\b\s*/gi, "\n")
+    .replace(/[\u2022•]/g, "\n- ");
+  const parts = clean
+    .split(/\n+|(?<=[.!?])\s+|;\s+|\s+-\s+/)
+    .flatMap((part) => part.length > 260 ? part.split(/\s+(?:pero|entonces|por lo que|ademas|tambien|se confirma que|se solicita que)\s+/i) : [part])
+    .map(polishSentence)
+    .filter((part) => part.length >= 18 && !/^Speaker\s+\d/i.test(part));
+  const seen = new Set();
+  return parts.filter((part) => {
+    const key = normalizeText(part).slice(0, 120);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function summarizeOperationalText(text, limit = 5) {
+  const priority = [
+    "pendiente", "solicita", "confirma", "acuerda", "revis", "presupuesto", "incidencia",
+    "obstru", "atasc", "raiz", "riesgo", "document", "factura", "proveedor", "presidente",
+    "ejecut", "instal", "repar", "modific", "deuda", "email", "correo"
+  ];
+  const sentences = splitOperationalSentences(text);
+  return sentences
+    .map((sentence, index) => {
+      const normalized = normalizeText(sentence);
+      const score = priority.reduce((total, token) => total + (normalized.includes(token) ? 2 : 0), 0) + Math.max(0, 4 - index);
+      return { sentence, score, index };
+    })
+    .sort((a, b) => (b.score - a.score) || (a.index - b.index))
+    .slice(0, limit)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.sentence);
+}
+
+function inferOperationalConclusion(text) {
+  const t = normalizeText(text);
+  if (t.includes("bloque") || t.includes("riesgo") || t.includes("urgente") || t.includes("obstru") || t.includes("atasc")) {
+    return "Situacion actual: requiere seguimiento operativo por posible riesgo o bloqueo.";
+  }
+  if (t.includes("presupuesto") || t.includes("pendiente de tercero") || t.includes("proveedor")) {
+    return "Situacion actual: queda pendiente de respuesta o actuacion por parte de tercero/proveedor.";
+  }
+  if (t.includes("finaliz") || t.includes("terminad") || t.includes("resuelto")) {
+    return "Situacion actual: actuacion informada como finalizada, pendiente de validacion si procede.";
+  }
+  return "Situacion actual: informacion registrada para seguimiento.";
+}
+
+function extractExplicitNextSteps(text) {
+  const source = String(text || "").replace(/\r\n?/g, "\n");
+  const match = source.match(/(?:pr[oó]ximos pasos?|siguiente paso|tareas con responsables y plazos)\s*:?\s*([\s\S]{0,1400})/i);
+  if (!match) return [];
+  return splitOperationalSentences(match[1]).slice(0, 4);
+}
+
+function professionalNextStep(text, fallback = "") {
+  const explicit = extractExplicitNextSteps(text);
+  if (explicit.length) return explicit.join(" ");
+  const built = buildFormalNextStep(text, fallback);
+  return polishSentence(built || fallback || "Revisar la informacion aportada y definir el siguiente paso operativo.");
+}
+
+function shouldPolishProposalText(value, sourceText) {
+  const text = String(value || "");
+  const source = String(sourceText || "");
+  if (!text.trim()) return true;
+  if (/\bSpeaker\s*\d+\b|\d{1,2}:\d{2}(?::\d{2})?/.test(text)) return true;
+  if (text.includes(source.trim().slice(0, Math.min(120, source.trim().length))) && source.length > 160) return true;
+  if (/\b(?:mira|vale|venga|porfi|luisillo|hijo|adios)\b/i.test(text)) return true;
+  if (text.length > 700 && !/Hechos relevantes|Situacion actual|Se registra|Se recibe|Se informa/i.test(text)) return true;
+  return false;
+}
+
+function polishAiProposal(proposal, sourceText) {
+  if (!proposal?.payload || !AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action)) return proposal;
+  const payload = { ...proposal.payload };
+  const contextItem = proposal.entity?.title ? { title: proposal.entity.title } : null;
+  if (shouldPolishProposalText(payload.comentario, sourceText)) {
+    payload.comentario = buildFormalComment(sourceText, contextItem).slice(0, 8000);
+  } else {
+    payload.comentario = splitOperationalSentences(payload.comentario).join("\n").slice(0, 8000) || payload.comentario;
+  }
+  if (shouldPolishProposalText(payload.proximo_paso, sourceText)) {
+    payload.proximo_paso = professionalNextStep(sourceText, payload.proximo_paso).slice(0, 2000);
+  } else {
+    payload.proximo_paso = polishSentence(payload.proximo_paso).slice(0, 2000);
+  }
+  if (["crear_tarea", "crear_proyecto"].includes(proposal.action) && shouldPolishProposalText(payload.titulo, sourceText)) {
+    payload.titulo = polishTitle(payload.titulo || extractIssueTitle(sourceText));
+  }
+  return {
+    ...proposal,
+    payload,
+    redaction_note: "Comentario y proximo paso normalizados para registro operativo.",
+  };
+}
+
+function polishTitle(value) {
+  const clean = polishSentence(value).replace(/[.!?]$/, "");
+  return clean.length > 120 ? clean.slice(0, 117).trim() + "..." : clean;
 }
 
 function hasOperationalSignal(text) {
@@ -2356,7 +2492,7 @@ function structuredImportProposal(block, context, index) {
   const kind = action.includes("tarea") ? "task" : "project";
   const fallbackState = kind === "task" ? "Pendiente" : "En curso";
   const commentParts = [fields.comment, fields.attachments && `Anexos mencionados:\n${fields.attachments}`].filter(Boolean);
-  return {
+  return polishAiProposal({
     client_id: index + 1,
     selected: action !== "revisar_manual",
     action,
@@ -2378,7 +2514,7 @@ function structuredImportProposal(block, context, index) {
       motivo_bloqueo: normalizeText(fields.state).includes("bloque") ? (fields.justification || fields.comment || "") : ""
     },
     original: block
-  };
+  }, block);
 }
 
 function detectRecordType(text) {
@@ -2416,20 +2552,21 @@ function historicalImportProposal(text) {
   const records = matches.map((match, index) => {
     const end = matches[index + 1]?.index ?? source.length;
     const comment = cleanImportText(source.slice((match.index || 0) + match[0].length, end).replace(/^[\s:\-]+/, ""));
+    const formalComment = buildFormalComment(comment || source).slice(0, 8000);
     return {
       fecha: normalizeImportDate(match[1]),
       tipo_registro: detectRecordType(`${match[0]} ${comment}`),
-      comentario: comment || "Actuación histórica pendiente de completar.",
+      comentario: formalComment || "Actuacion historica pendiente de completar.",
       estado_nuevo: normalizeImportState(kind, detectState(comment, kind === "task" ? "Pendiente" : "En curso"), kind === "task" ? "Pendiente" : "En curso"),
       prioridad_nueva: detectPriority(comment, priority),
       responsable_nuevo: owner,
       responsable_proximo_paso: owner,
-      proximo_paso: extractNextStep(comment) || "Revisar la siguiente actuación."
+      proximo_paso: professionalNextStep(comment, "Revisar la siguiente actuacion.")
     };
   }).filter(record => record.comentario);
-  if (!records.length) records.push({ fecha: new Date().toISOString().slice(0, 10), tipo_registro: detectRecordType(source), comentario: source, estado_nuevo: kind === "task" ? "Pendiente" : "En curso", prioridad_nueva: priority, responsable_nuevo: owner, responsable_proximo_paso: owner, proximo_paso: extractNextStep(source) || "Revisar la siguiente actuación." });
+  if (!records.length) records.push({ fecha: new Date().toISOString().slice(0, 10), tipo_registro: detectRecordType(source), comentario: buildFormalComment(source).slice(0, 8000), estado_nuevo: kind === "task" ? "Pendiente" : "En curso", prioridad_nueva: priority, responsable_nuevo: owner, responsable_proximo_paso: owner, proximo_paso: professionalNextStep(source, "Revisar la siguiente actuacion.") });
   const last = records.at(-1);
-  return {
+  return polishAiProposal({
     client_id: 1, selected: true, action: kind === "task" ? "crear_tarea" : "crear_proyecto", confidence: 0.8,
     entity: null, candidates: [], historical: true, records,
     payload: {
@@ -2438,7 +2575,7 @@ function historicalImportProposal(text) {
       responsable_proximo_paso: last.responsable_proximo_paso, fecha_objetivo_proximo_paso: "",
       fecha_proxima_revision: "", proximo_paso: last.proximo_paso, motivo_bloqueo: "", descripcion: source.slice(0, 8000)
     }, original: source
-  };
+  }, source);
 }
 
 async function analyzeImportBatch(session, text, mode = "updates") {
@@ -2623,6 +2760,9 @@ async function externalAiProposal(text, context) {
     "Eres el clasificador operativo de una aplicacion de gestion de comunidades.",
     "Devuelve solo JSON valido.",
     "Nunca ordenes guardar directamente. Solo propones.",
+    "No copies transcripciones literalmente en comentario ni proximo_paso.",
+    "Redacta comentario como registro administrativo claro: hechos relevantes, decisiones o riesgos, y situacion actual.",
+    "Redacta proximo_paso como accion concreta, breve, con responsable/plazo si se deduce.",
     "Acciones permitidas: fuera_de_alcance, consulta, seguimiento_proyecto, seguimiento_tarea, crear_proyecto, crear_tarea, revisar_manual.",
     "Si dudas entre varias entidades, usa revisar_manual y rellena candidates.",
     "Usa ids existentes solo si la coincidencia es clara.",
@@ -4134,7 +4274,8 @@ async function analyzeWithAi(session, text, target = null) {
     redactionRules = [];
   }
   const finalizeProposal = async (proposal) => {
-    const improved = applyRedactionRulesToProposal(proposal, redactionRules, cleanText);
+    const polished = polishAiProposal(proposal, cleanText);
+    const improved = applyRedactionRulesToProposal(polished, redactionRules, cleanText);
     const ids = (improved.used_rules || []).map((rule) => Number(rule.id_regla)).filter(Boolean);
     if (ids.length) {
       try {
