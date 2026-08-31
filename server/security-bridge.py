@@ -201,6 +201,200 @@ def require_uploader(conn: sqlite3.Connection) -> None:
     raise PermissionError("Tu perfil no puede subir partes de Seguridad.")
 
 
+def expand_lookup_aliases(value: object) -> str:
+    text = normalize(value)
+    replacements = {
+        "ALBOAIRE": "ALB",
+        "ALBOAIRE 1": "ALB 1",
+        "CONDOMINIO B": "CB",
+        "CONDOMINIO": "CB",
+        "HOYO 17": "17H",
+        "HOYO": "17H",
+        "EMERALD GREEN": "EG",
+        "EMERALD": "EG",
+        "FAIRWAYS GREEN": "FG",
+        "FAIRWAYS": "FG",
+        "PUEBLO 1 FASE 1": "P1F1",
+        "PUEBLO 1 FASE 2": "P1F2",
+        "PUEBLO MEDITERRANEO": "PM",
+        "PUEBLO MEDITERRANEO 1": "PM1",
+        "PUEBLO MEDITERRANEO 2": "PM2",
+        "PUEBLO MEDITERRANEO 3": "PM3",
+        "PUEBLO MEDITERRANEO 4": "PM4",
+        "PLAZA DE GARAJE": "PLZ",
+        "PLAZA": "PLZ",
+        "GARAJE": "PLZ",
+        "VILLAS SRC": "SRC",
+        "VILLA SRC": "SRC",
+        "VILLA": "SRC",
+        "PARCELAS VILLAS": "SRC",
+        "PARCELA": "SRC",
+    }
+    for old, new in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        text = re.sub(rf"\b{re.escape(old)}\b", new, text)
+    text = re.sub(r"\bBLOQUE\b", "", text)
+    text = re.sub(r"\bPISO\b", "", text)
+    text = re.sub(r"\bPUERTA\b", "", text)
+    text = re.sub(r"\bDERECHA\b|\bDCHA\b", "DCH", text)
+    text = re.sub(r"\bIZQUIERDA\b|\bIZQDA\b", "IZQ", text)
+    text = re.sub(r"\bPRIMERO\b|\b1O\b|\b1RO\b", "1", text)
+    text = re.sub(r"\bSEGUNDO\b|\b2O\b|\b2DO\b", "2", text)
+    text = re.sub(r"\bTERCERO\b|\b3O\b|\b3RO\b", "3", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def digits_only(value: object) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def lookup_score(query: str, value: str) -> float:
+    q = expand_lookup_aliases(query)
+    v = expand_lookup_aliases(value)
+    if not q or not v:
+        return 0.0
+    q_tokens = [token for token in q.split() if token not in {"A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "POR", "PARA", "PROPIETARIO", "PROPIEDAD", "CORREO", "EMAIL", "TELEFONO", "MOVIL"}]
+    v_tokens = set(v.split())
+    if not q_tokens:
+        return 0.0
+    score = 0.0
+    if q in v or v in q:
+        score += 5.0
+    score += sum(2.0 for token in q_tokens if token in v_tokens)
+    score += sum(0.8 for token in q_tokens if len(token) >= 4 and token not in v_tokens and token in v)
+    score += SequenceMatcher(None, q, v).ratio()
+    return score
+
+
+def owner_contacts(conn: sqlite3.Connection, owner_id: int) -> list[dict]:
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cf_contactos_propietario'").fetchone():
+        return []
+    rows = conn.execute(
+        """SELECT tipo, valor, principal
+           FROM cf_contactos_propietario
+           WHERE id_propietario=? AND COALESCE(activo,1)=1
+           ORDER BY COALESCE(principal,0) DESC, tipo, valor""",
+        (owner_id,),
+    ).fetchall()
+    return dictionaries(rows)
+
+
+def owner_properties(conn: sqlite3.Connection, owner_id: int) -> list[dict]:
+    rows = conn.execute(
+        """SELECT p.id_propiedad, p.codigo_propiedad, p.tipo_propiedad, p.zona, p.subzona, p.grupo, p.coeficiente
+           FROM cf_propietario_propiedad pp
+           JOIN cf_propiedades p ON p.id_propiedad=pp.id_propiedad
+           WHERE pp.id_propietario=? AND COALESCE(pp.activo,1)=1 AND COALESCE(p.activa,1)=1
+           ORDER BY p.codigo_propiedad""",
+        (owner_id,),
+    ).fetchall()
+    return dictionaries(rows)
+
+
+def build_owner_lookup_result(conn: sqlite3.Connection, owner: sqlite3.Row, match_type: str, score: float, matched_property: dict | None = None) -> dict:
+    properties = owner_properties(conn, int(owner["id_propietario"]))
+    contacts = owner_contacts(conn, int(owner["id_propietario"]))
+    if matched_property:
+        properties.sort(key=lambda row: 0 if int(row.get("id_propiedad") or 0) == int(matched_property.get("id_propiedad") or 0) else 1)
+    return {
+        "id_propietario": int(owner["id_propietario"]),
+        "nombre": str(owner["nombre"] or ""),
+        "codigo_netfincas": str(owner["codigo_netfincas"] or ""),
+        "direccion": str(owner["direccion"] or ""),
+        "match_type": match_type,
+        "score": round(score, 3),
+        "matched_property": matched_property,
+        "properties": properties[:12],
+        "contacts": contacts[:12],
+    }
+
+
+def owner_lookup() -> dict:
+    conn = connection()
+    require_uploader(conn)
+    query = str(DATA.get("query") or "").strip()
+    if len(query) < 2:
+        raise ValueError("Escribe al menos dos caracteres para buscar.")
+    matches: dict[int, dict] = {}
+
+    contact_email = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", query, re.I)
+    phone_digits = digits_only(query)
+    if contact_email or len(phone_digits) >= 6:
+        contact_rows = conn.execute(
+            """SELECT DISTINCT o.*
+               FROM cf_contactos_propietario c
+               JOIN cf_propietarios o ON o.id_propietario=c.id_propietario
+               WHERE COALESCE(c.activo,1)=1 AND COALESCE(o.activo,1)=1""",
+        ).fetchall()
+        for owner in contact_rows:
+            contacts = owner_contacts(conn, int(owner["id_propietario"]))
+            score = 0.0
+            for contact in contacts:
+                value = str(contact.get("valor") or "")
+                if contact_email and value.lower().strip() == contact_email.group(0).lower().strip():
+                    score = max(score, 30.0)
+                if len(phone_digits) >= 6 and phone_digits in digits_only(value):
+                    score = max(score, 25.0)
+            if score > 0:
+                matches[int(owner["id_propietario"])] = build_owner_lookup_result(conn, owner, "contacto", score)
+
+    property_rows = conn.execute(
+        """SELECT id_propiedad, codigo_propiedad, tipo_propiedad, zona, subzona, grupo, coeficiente
+           FROM cf_propiedades
+           WHERE COALESCE(activa,1)=1""",
+    ).fetchall()
+    property_candidates: list[tuple[float, sqlite3.Row]] = []
+    for prop in property_rows:
+        hay = " ".join(str(prop[key] or "") for key in ("codigo_propiedad", "tipo_propiedad", "zona", "subzona", "grupo"))
+        score = lookup_score(query, hay)
+        if score >= 4.0:
+            property_candidates.append((score, prop))
+    property_candidates.sort(key=lambda item: (-item[0], str(item[1]["codigo_propiedad"] or "")))
+    best_property_score = property_candidates[0][0] if property_candidates else 0.0
+    for score, prop in [item for item in property_candidates if item[0] >= max(4.0, best_property_score - 2.0)][:8]:
+        owners = conn.execute(
+            """SELECT o.*
+               FROM cf_propietario_propiedad pp
+               JOIN cf_propietarios o ON o.id_propietario=pp.id_propietario
+               WHERE pp.id_propiedad=? AND COALESCE(pp.activo,1)=1 AND COALESCE(o.activo,1)=1
+               ORDER BY o.nombre""",
+            (prop["id_propiedad"],),
+        ).fetchall()
+        matched_property = dict(prop)
+        for owner in owners:
+            owner_id = int(owner["id_propietario"])
+            if owner_id not in matches or score > float(matches[owner_id].get("score") or 0):
+                matches[owner_id] = build_owner_lookup_result(conn, owner, "propiedad", score, matched_property)
+
+    owner_rows = conn.execute(
+        """SELECT id_propietario, codigo_netfincas, nombre, direccion
+           FROM cf_propietarios
+           WHERE COALESCE(activo,1)=1""",
+    ).fetchall()
+    owner_candidates: list[tuple[float, sqlite3.Row]] = []
+    for owner in owner_rows:
+        score = lookup_score(query, " ".join([str(owner["nombre"] or ""), str(owner["codigo_netfincas"] or ""), str(owner["direccion"] or "")]))
+        if score >= 4.0:
+            owner_candidates.append((score, owner))
+    owner_candidates.sort(key=lambda item: (-item[0], str(item[1]["nombre"] or "")))
+    best_owner_score = owner_candidates[0][0] if owner_candidates else 0.0
+    for score, owner in [item for item in owner_candidates if item[0] >= max(4.0, best_owner_score - 2.0)][:8]:
+        owner_id = int(owner["id_propietario"])
+        if owner_id not in matches or score > float(matches[owner_id].get("score") or 0):
+            matches[owner_id] = build_owner_lookup_result(conn, owner, "propietario", score)
+
+    results = sorted(matches.values(), key=lambda row: (-float(row.get("score") or 0), row.get("nombre") or ""))[:10]
+    with conn:
+        audit(conn, "Consulta Seguridad propietarios", "cf_propietarios", None, query[:180])
+    conn.close()
+    return {
+        "ok": True,
+        "query": query,
+        "normalized_query": expand_lookup_aliases(query),
+        "total": len(results),
+        "matches": results,
+    }
+
+
 def audit(conn: sqlite3.Connection, action: str, entity: str, entity_id: int | None, detail: str) -> None:
     conn.execute(
         """INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle)
@@ -744,6 +938,7 @@ def main() -> dict:
         "resolve": resolve_incident,
         "link": link_incident,
         "document_info": document_info,
+        "owner_lookup": owner_lookup,
     }
     if ACTION not in actions:
         raise ValueError("Accion de Seguridad no permitida.")

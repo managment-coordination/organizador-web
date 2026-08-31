@@ -6163,6 +6163,15 @@ function homePage() {
     .temporaryKey { border:2px solid #16a34a; background:#f0fdf4; border-radius:8px; padding:12px; display:grid; gap:7px; }
     .temporaryKey code { font-size:20px; font-weight:900; letter-spacing:1px; }
     .securityShell { display:grid; gap:12px; }
+    .securityLookup { border:1px solid var(--line); border-radius:8px; padding:14px; background:white; display:grid; gap:10px; }
+    .securityLookupBar { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; }
+    .securityLookupResults { display:grid; grid-template-columns:repeat(auto-fill,minmax(290px,1fr)); gap:9px; }
+    .securityLookupCard { border:1px solid #dbe3ee; border-radius:8px; padding:11px; display:grid; gap:9px; background:#f8fafc; min-width:0; }
+    .securityLookupCardHead { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .securityLookupCard h3 { margin:0; font-size:16px; overflow-wrap:anywhere; }
+    .securityPropertyList { display:flex; flex-wrap:wrap; gap:6px; }
+    .securityPropertyChip { border:1px solid #cbd5e1; background:white; border-radius:999px; padding:4px 8px; font-size:12px; color:#334155; }
+    .securityContactList { display:grid; gap:4px; font-size:13px; }
     .securityUploader { border:2px dashed #64748b; border-radius:8px; padding:16px; background:#f8fafc; display:grid; gap:10px; }
     .securityUploader h3 { margin:0; font-size:18px; }
     .securityUploader input { background:white; }
@@ -6238,6 +6247,8 @@ function homePage() {
       .securityMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .securityFilters { grid-template-columns:1fr; }
       .securityIncidentList { grid-template-columns:1fr; }
+      .securityLookupBar { grid-template-columns:1fr; }
+      .securityLookupResults { grid-template-columns:1fr; }
       .homeHero { align-items:flex-start; flex-direction:column; }
       .homeActions { justify-content:flex-start; width:100%; }
       .homeActions button { flex:1 1 140px; }
@@ -7068,7 +7079,7 @@ function homePage() {
     let selectedAdminUserId = 0;
     let selectedAdminCommunityId = 0;
     let lastTemporaryKey = null;
-    let securityData = { access:null, overview:null, receipts:[], selected:null, filters:{ status:"", severity:"", category:"", query:"" } };
+    let securityData = { access:null, overview:null, receipts:[], selected:null, lookup:null, filters:{ status:"", severity:"", category:"", query:"" } };
     const $ = (id) => document.getElementById(id);
     const safe = (value) => String(value || "").trim();
     const html = (value) => safe(value).replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
@@ -8903,6 +8914,20 @@ function homePage() {
       return '<section class="securityUploader"><h3>Cargar partes de Seguridad</h3><input id="securityFiles" type="file" multiple accept=".pdf,.doc,.docx,.txt" /><div class="toolbar"><button class="green" id="securityUploadButton">Subir documentos</button><span class="muted" id="securityUploadMessage"></span></div><div class="securityReceipts" id="securityReceipts">' + (securityData.receipts || []).map(row => '<div class="securityReceipt ' + (row.error ? 'error' : '') + '"><strong>' + html(row.name) + '</strong><div>' + html(row.message) + '</div></div>').join('') + '</div></section>';
     }
 
+    function securityLookupCardHtml(row) {
+      const matched = row.matched_property || {};
+      const properties = (row.properties || []).slice(0, 5).map(prop => '<span class="securityPropertyChip">' + html(prop.codigo_propiedad || '') + (prop.zona ? ' · ' + html(prop.zona) : '') + '</span>').join('');
+      const contacts = (row.contacts || []).slice(0, 5).map(contact => '<div><strong>' + html(contact.tipo || 'Contacto') + ':</strong> ' + html(contact.valor || '') + (contact.principal ? ' <span class="pill">Principal</span>' : '') + '</div>').join('');
+      return '<article class="securityLookupCard"><div class="securityLookupCardHead"><div><h3>' + html(row.nombre || 'Sin nombre') + '</h3><div class="muted">' + html(row.codigo_netfincas ? 'Codigo Netfincas ' + row.codigo_netfincas : 'Sin codigo Netfincas') + ' · coincidencia por ' + html(row.match_type || 'busqueda') + '</div></div><span class="pill">' + html(String(Math.round(Number(row.score || 0)))) + '</span></div>' + (matched.codigo_propiedad ? '<div class="detailBox"><strong>Propiedad localizada</strong>' + html(matched.codigo_propiedad || '') + (matched.zona ? ' · ' + html(matched.zona) : '') + (matched.subzona ? ' · ' + html(matched.subzona) : '') + '</div>' : '') + '<div class="securityPropertyList">' + (properties || '<span class="muted">Sin propiedades activas vinculadas.</span>') + '</div><div class="securityContactList">' + (contacts || '<span class="muted">Sin contactos cargados.</span>') + '</div></article>';
+    }
+
+    function securityLookupHtml() {
+      const lookup = securityData.lookup;
+      const result = lookup ? (lookup.matches || []).map(securityLookupCardHtml).join('') : '';
+      const empty = lookup && !(lookup.matches || []).length ? '<div class="empty">No he encontrado coincidencias claras. Prueba con nombre, vivienda, telefono o email.</div>' : '';
+      return '<section class="securityLookup"><div class="contentHead"><div><h2>Consulta rápida de propietarios</h2><p class="muted">Busca por propietario, vivienda, email o telefono. Entiende abreviaturas como ALB, Alboaire, CB, PLZ, 17H o Emerald.</p></div></div><div class="securityLookupBar"><input id="securityOwnerLookupQuery" placeholder="Ejemplo: bloque 1 alboaire 1 A, CB 2 derecha, email o telefono" value="' + html(lookup?.query || '') + '" /><button id="securityOwnerLookupButton">Buscar</button></div><div class="muted" id="securityOwnerLookupMessage">' + (lookup ? html(String(lookup.total || 0)) + ' coincidencia(s). Busqueda normalizada: ' + html(lookup.normalized_query || '') : 'Consulta de solo lectura auditada.') + '</div><div class="securityLookupResults">' + result + empty + '</div></section>';
+    }
+
     function securityChartHtml(title, rows) {
       const values = rows || [];
       const maximum = Math.max(1, ...values.map(row => Number(row.total || 0)));
@@ -8933,7 +8958,7 @@ function homePage() {
 
     function securityPanelHtml() {
       const access = securityData.access || {};
-      if (!access.can_manage) return '<div class="securityShell">' + securityUploaderHtml() + '</div>';
+      if (!access.can_manage) return '<div class="securityShell">' + securityLookupHtml() + securityUploaderHtml() + '</div>';
       const data = securityData.overview;
       if (!data) return '<div class="empty">Cargando Seguridad...</div>';
       const incidents = filteredSecurityIncidents();
@@ -8954,11 +8979,13 @@ function homePage() {
       ];
       const reviewBreakdown = '<div class="securityBreakdown"><h3>Estado de la revisi&oacute;n</h3>' + reviewCounts.map(row => '<div class="securityBreakdownRow"><span>' + row[0] + '</span><strong>' + html(String(row[1])) + '</strong></div>').join('') + '<p class="muted">' + html(String(documentSummary.total || 0)) + ' documentos cargados' + (Number(documentSummary.errors || 0) ? ' &middot; ' + html(String(documentSummary.errors)) + ' con error' : '') + '.</p></div>';
       const documents = (data.documents || []).slice(0, 20).map(row => '<div class="reportRow"><div><h3>' + html(row.nombre_original) + '</h3><div class="muted">' + html(row.tipo_documento || 'Documento') + ' · ' + html(row.fecha_carga || '') + ' · ' + html(String(row.incidencias_nuevas || 0)) + ' nuevas / ' + html(String(row.incidencias_duplicadas || 0)) + ' repetidas</div></div><a href="/api/security/document?id=' + row.id_documento + '&inline=1" target="_blank"><button class="ghost">Abrir</button></a></div>').join('');
-      return '<div class="securityShell"><div class="securityMetrics">' + countCard('Partes examinados',String(documentSummary.examined || 0)) + countCard('Incidencias detectadas',String(data.total || 0)) + countCard('Pendientes de revisar',String(data.pending || 0)) + countCard('Revisadas',String(data.reviewed || 0)) + countCard('Tipos de incidencia',String((data.categories || []).length)) + '</div><div class="securityAnalytics">' + securityChartHtml('Incidencias por clasificación',data.categories) + reviewBreakdown + '</div>' + securityUploaderHtml() + '<div class="securityFilters"><input id="securityQuery" placeholder="Buscar incidencia, zona o reporte" value="' + html(filters.query || '') + '" /><select id="securityStatus"><option value="">Todos los estados</option>' + statusOptions.map(value => '<option' + (value === filters.status ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select><select id="securitySeverity"><option value="">Todas las gravedades</option>' + (data.severity_options || []).map(value => '<option' + (value === filters.severity ? ' selected' : '') + '>' + html(value === 'Critica' ? 'Crítica' : value) + '</option>').join('') + '</select><select id="securityCategory"><option value="">Todas las categorías</option>' + categoryOptions.map(value => '<option' + (value === filters.category ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select></div><section class="securityQueue"><div class="securityQueueHead"><div><h2>Pendientes de revisar</h2><p class="muted">Incidencias que requieren validaci&oacute;n de Luis o Elena.</p></div><span class="pill">' + html(String(pendingRows.length)) + '</span></div><div class="securityIncidentList">' + (pendingCards || '<div class="empty">No hay incidencias pendientes con estos filtros.</div>') + '</div></section><section class="securityQueue securityReviewed"><div class="securityQueueHead"><div><h2>Partes revisados</h2><p class="muted">Hist&oacute;rico de incidencias ya clasificadas o gestionadas.</p></div><span class="pill">' + html(String(reviewedRows.length)) + '</span></div><div class="securityIncidentList">' + (reviewedCards || '<div class="empty">No hay partes revisados con estos filtros.</div>') + '</div></section><section><div class="contentHead"><div><h2>Documentos protegidos</h2><p class="muted">Aperturas y descargas quedan auditadas.</p></div></div><div class="reportList">' + (documents || '<div class="empty">No hay documentos cargados.</div>') + '</div></section></div>';
+      return '<div class="securityShell"><div class="securityMetrics">' + countCard('Partes examinados',String(documentSummary.examined || 0)) + countCard('Incidencias detectadas',String(data.total || 0)) + countCard('Pendientes de revisar',String(data.pending || 0)) + countCard('Revisadas',String(data.reviewed || 0)) + countCard('Tipos de incidencia',String((data.categories || []).length)) + '</div><div class="securityAnalytics">' + securityChartHtml('Incidencias por clasificación',data.categories) + reviewBreakdown + '</div>' + securityLookupHtml() + securityUploaderHtml() + '<div class="securityFilters"><input id="securityQuery" placeholder="Buscar incidencia, zona o reporte" value="' + html(filters.query || '') + '" /><select id="securityStatus"><option value="">Todos los estados</option>' + statusOptions.map(value => '<option' + (value === filters.status ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select><select id="securitySeverity"><option value="">Todas las gravedades</option>' + (data.severity_options || []).map(value => '<option' + (value === filters.severity ? ' selected' : '') + '>' + html(value === 'Critica' ? 'Crítica' : value) + '</option>').join('') + '</select><select id="securityCategory"><option value="">Todas las categorías</option>' + categoryOptions.map(value => '<option' + (value === filters.category ? ' selected' : '') + '>' + html(value) + '</option>').join('') + '</select></div><section class="securityQueue"><div class="securityQueueHead"><div><h2>Pendientes de revisar</h2><p class="muted">Incidencias que requieren validaci&oacute;n de Luis o Elena.</p></div><span class="pill">' + html(String(pendingRows.length)) + '</span></div><div class="securityIncidentList">' + (pendingCards || '<div class="empty">No hay incidencias pendientes con estos filtros.</div>') + '</div></section><section class="securityQueue securityReviewed"><div class="securityQueueHead"><div><h2>Partes revisados</h2><p class="muted">Hist&oacute;rico de incidencias ya clasificadas o gestionadas.</p></div><span class="pill">' + html(String(reviewedRows.length)) + '</span></div><div class="securityIncidentList">' + (reviewedCards || '<div class="empty">No hay partes revisados con estos filtros.</div>') + '</div></section><section><div class="contentHead"><div><h2>Documentos protegidos</h2><p class="muted">Aperturas y descargas quedan auditadas.</p></div></div><div class="reportList">' + (documents || '<div class="empty">No hay documentos cargados.</div>') + '</div></section></div>';
     }
 
     function bindSecurityPanel() {
       if ($('securityUploadButton')) $('securityUploadButton').addEventListener('click', uploadSecurityFiles);
+      if ($('securityOwnerLookupButton')) $('securityOwnerLookupButton').addEventListener('click', runSecurityOwnerLookup);
+      if ($('securityOwnerLookupQuery')) $('securityOwnerLookupQuery').addEventListener('keydown', event => { if(event.key === 'Enter') runSecurityOwnerLookup(); });
       ['securityStatus','securitySeverity','securityCategory'].forEach(id => {
         if (!$(id)) return;
         $(id).addEventListener('change', event => {
@@ -8972,6 +8999,20 @@ function homePage() {
         $('securityQuery').addEventListener('keydown', event => { if(event.key==='Enter'){securityData.filters.query=event.target.value;render();} });
       }
       document.querySelectorAll('[data-security-incident]').forEach(card => card.addEventListener('click', () => openSecurityIncident(Number(card.dataset.securityIncident))));
+    }
+
+    async function runSecurityOwnerLookup() {
+      const query = safe(($('securityOwnerLookupQuery') || {}).value);
+      if (!query) { $('securityOwnerLookupMessage').textContent = 'Escribe una vivienda, propietario, email o telefono.'; return; }
+      $('securityOwnerLookupButton').disabled = true;
+      $('securityOwnerLookupMessage').textContent = 'Buscando...';
+      try {
+        securityData.lookup = await api('/api/security/lookup',{method:'POST',body:JSON.stringify({query})});
+      } catch (error) {
+        securityData.lookup = { query, total:0, matches:[], normalized_query:'', error:error.message };
+      }
+      render();
+      if (securityData.lookup?.error && $('securityOwnerLookupMessage')) $('securityOwnerLookupMessage').innerHTML = '<span class="dangerText">' + html(securityData.lookup.error) + '</span>';
     }
 
     async function uploadSecurityFiles() {
@@ -10725,6 +10766,14 @@ async function handle(req, res) {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     return sendJson(res, 200, await runSecurityCommand(session, "detail", { id: url.searchParams.get("id") }, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "POST" && url.pathname === "/api/security/lookup") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    const access = await runSecurityCommand(session, "access", {}, String(req.socket.remoteAddress || "web"));
+    if (!access.can_upload) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede consultar propietarios desde Seguridad." });
+    const body = await readBody(req);
+    return sendJson(res, 200, await runSecurityCommand(session, "owner_lookup", { query: body.query }, String(req.socket.remoteAddress || "web")));
   }
   if (req.method === "POST" && url.pathname === "/api/security/upload") {
     const session = readSession(req);
