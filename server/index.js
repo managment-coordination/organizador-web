@@ -8200,7 +8200,7 @@ function homePage() {
     function assemblyDetailHtml(detail) {
       const item = detail.assembly || {};
       const content = assemblySection === "registration" ? assemblyRegistrationHtml(detail) : assemblySection === "voting" ? assemblyVotingHtml(detail) : assemblySection === "documents" ? assemblyDocumentsHtml(detail) : assemblySection === "minutes" ? assemblyMinutesHtml(detail) : assemblySection === "history" ? assemblyHistoryHtml(detail) : assemblySection === "configuration" ? assemblyEditHtml(detail) : assemblySummaryHtml(detail);
-      return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button>' + (canWrite() ? '<button class="green" id="assemblyEditShortcut">Editar</button>' : '') + '<button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
+      return '<div class="assemblyShell"><div class="assemblyHeader"><div><div class="meta"><span class="pill ' + assemblyStatusClass(item.estado) + '">' + html(item.estado) + '</span><span class="pill">' + html(item.comunidad) + '</span></div><h2>' + html(item.nombre) + '</h2><p>' + html([item.fecha,item.hora_inicio,item.lugar_celebracion || item.ubicacion].filter(Boolean).join(" | ")) + '</p></div><div class="toolbar"><button class="ghost" id="backAssemblies">Volver</button>' + (canWrite() ? '<button class="green" id="assemblyEditShortcut">Editar</button><button id="assemblyWebHtmlExport">Generar HTML web</button>' : '') + '<button id="reloadAssembly">Actualizar</button></div></div>' + assemblyTabsHtml() + '<div id="assemblySectionContent">' + content + '</div></div>';
     }
 
     function assembliesPanelHtml() {
@@ -8250,6 +8250,7 @@ function homePage() {
       $("backAssemblies").addEventListener("click", () => { selectedAssemblyId=0; assemblyDetail=null; assemblyMinutes=null; assemblySection="summary"; render(); });
       $("reloadAssembly").addEventListener("click", () => loadAssemblyDetail());
       if ($("assemblyEditShortcut")) $("assemblyEditShortcut").addEventListener("click", () => { assemblySection="configuration"; render(); });
+      if ($("assemblyWebHtmlExport")) $("assemblyWebHtmlExport").addEventListener("click", exportAssemblyWebHtml);
       document.querySelectorAll("[data-assembly-section]").forEach(button => button.addEventListener("click", () => { assemblySection=button.dataset.assemblySection; render(); }));
       if ($("saveAssemblyEdit")) $("saveAssemblyEdit").addEventListener("click", saveAssemblyEdit);
       if ($("addAssemblyPoint")) $("addAssemblyPoint").addEventListener("click", () => { assemblyDetail.points.push({ titulo:"", tipo_mayoria:"simple" }); render(); });
@@ -8353,6 +8354,30 @@ function homePage() {
       const saved = await saveAssemblyMinutes(true);
       if (!saved) return;
       window.location.href = "/api/assembly/minutes/export?id=" + encodeURIComponent(selectedAssemblyId);
+    }
+
+    async function exportAssemblyWebHtml() {
+      try {
+        const response = await fetch("/api/assembly/web-html/export?id=" + encodeURIComponent(selectedAssemblyId), { credentials:"same-origin" });
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "No se pudo generar el HTML web.");
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get("content-disposition") || "";
+        const match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        const filename = match ? decodeURIComponent(match[1]) : "html_proxy_asamblea.txt";
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        alert(error.message);
+      }
     }
 
     async function adminApi(action, data = {}) {
@@ -10977,6 +11002,17 @@ async function handle(req, res) {
     const target = path.join(reportsDir, report.filename);
     fs.writeFileSync(target, report.buffer);
     return sendFile(res, target, report.filename, false);
+  }
+  if (req.method === "GET" && url.pathname === "/api/assembly/web-html/export") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede generar el HTML web." });
+    const assemblyId = Number(url.searchParams.get("id") || 0);
+    const result = await runAssemblyCommand(session, "web_html", { id: assemblyId }, String(req.socket.remoteAddress || "web"));
+    const filename = safeUploadName(result.filename || `html_proxy_asamblea_${assemblyId}.txt`);
+    const target = path.join(reportsDir, filename);
+    fs.writeFileSync(target, String(result.html || ""), "utf8");
+    return sendFile(res, target, filename, false);
   }
   if (req.method === "POST" && url.pathname === "/api/assembly/action") {
     const session = readSession(req);

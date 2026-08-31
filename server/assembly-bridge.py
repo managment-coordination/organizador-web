@@ -2,6 +2,7 @@ import json
 import sqlite3
 import sys
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 
@@ -376,6 +377,268 @@ def save_points():
     return {"ok": True, "points": len(kept)}
 
 
+def slug_filename(value):
+    text = "".join(ch if ch.isalnum() else "_" for ch in str(value or "").strip())
+    text = "_".join(part for part in text.split("_") if part)
+    return (text or "asamblea")[:80]
+
+
+def build_web_proxy_html(assembly, points, census):
+    config = {
+        "assembly": {
+            "id": assembly.get("id_asamblea"),
+            "codigo": assembly.get("codigo") or "",
+            "nombre": assembly.get("nombre") or "",
+            "fecha": assembly.get("fecha") or "",
+            "convocatoria": assembly.get("convocatoria") or "",
+            "comunidad": assembly.get("comunidad") or "",
+            "email_recepcion": assembly.get("email_recepcion") or "",
+            "lugar": assembly.get("lugar_celebracion") or assembly.get("ubicacion") or "",
+        },
+        "points": [
+            {
+                "id": int(point["id_punto"]),
+                "orden": int(point["orden"]),
+                "titulo": str(point["titulo"] or ""),
+                "mayoria": str(point["tipo_mayoria"] or "simple"),
+            }
+            for point in points
+        ],
+        "properties": [
+            {
+                "id": str(row["propiedad_id"] or "").strip(),
+                "owner": str(row["propietario"] or "").strip(),
+                "coef": float(row["coeficiente"] or 0),
+                "moroso": bool(row["moroso"]),
+            }
+            for row in census
+        ],
+    }
+    config_json = json.dumps(config, ensure_ascii=False).replace("</", "<\\/")
+    title = escape(str(assembly.get("nombre") or "Proxy de asamblea"))
+    return """<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Proxy - __TITLE__</title>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <style>
+    :root{font-family:Arial,Helvetica,sans-serif;color:#172033;background:#f5f7fb}
+    *{box-sizing:border-box}
+    body{margin:0;padding:18px}
+    main{max-width:980px;margin:0 auto;background:white;border:1px solid #d8dee9;border-radius:12px;padding:18px;box-shadow:0 10px 30px rgba(15,23,42,.08)}
+    h1{margin:0 0 6px;font-size:24px}
+    h2{font-size:17px;margin:18px 0 8px}
+    label{display:block;font-weight:700;margin:10px 0 5px}
+    input,select,textarea,button{font:inherit}
+    input,select,textarea{width:100%;border:1px solid #cbd5e1;border-radius:8px;padding:10px;background:white}
+    textarea{min-height:86px}
+    button{border:0;border-radius:8px;padding:10px 13px;background:#0f766e;color:white;font-weight:700;cursor:pointer}
+    button.secondary{background:#e2e8f0;color:#172033}
+    button.danger{background:#b91c1c}
+    .muted{color:#64748b;font-size:13px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+    .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+    .propertySearch{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+    .propertyList,.selectedList{display:grid;gap:6px;margin-top:8px;max-height:260px;overflow:auto;border:1px solid #e2e8f0;border-radius:8px;padding:8px;background:#f8fafc}
+    .propertyRow,.selectedRow,.voteRow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;border:1px solid #e2e8f0;border-radius:8px;background:white;padding:8px}
+    .propertyRow strong,.selectedRow strong{display:block}
+    .voteRow{grid-template-columns:minmax(0,1fr) repeat(4,96px)}
+    .voteRow label{margin:0;font-weight:400;text-align:center}
+    .voteRow input{width:auto}
+    .notice{background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:10px;color:#7c2d12}
+    .ok{background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;padding:10px;color:#065f46}
+    @media(max-width:700px){body{padding:8px}main{padding:13px}.grid,.voteRow{grid-template-columns:1fr}.propertySearch{grid-template-columns:1fr}.voteRow label{text-align:left}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>Delegación de voto / Proxy</h1>
+  <div class="muted" id="assemblyInfo"></div>
+  <section>
+    <h2>1. Datos del propietario</h2>
+    <div class="grid">
+      <div><label>Nombre del propietario</label><input id="ownerName" placeholder="Escriba su nombre completo" /></div>
+      <div><label>Documento / identificación</label><input id="ownerDocument" placeholder="DNI, NIE, pasaporte..." /></div>
+    </div>
+    <label>Email o teléfono de contacto</label><input id="ownerContact" />
+  </section>
+  <section>
+    <h2>2. Propiedades representadas</h2>
+    <div class="propertySearch"><input id="propertyQuery" placeholder="Buscar vivienda, garaje, local..." /><button class="secondary" id="clearPropertySearch" type="button">Limpiar</button></div>
+    <div class="muted">Doble clic o botón Añadir para seleccionar. Puede seleccionar varias propiedades.</div>
+    <div class="propertyList" id="propertyList"></div>
+    <h2>Seleccionadas</h2>
+    <div class="selectedList" id="selectedList"></div>
+  </section>
+  <section>
+    <h2>3. Representante</h2>
+    <label>Nombre de la persona que representará el voto</label><input id="representative" placeholder="Nombre completo del representante" />
+  </section>
+  <section>
+    <h2>4. Instrucciones de voto</h2>
+    <div class="notice">Si deja un punto sin marcar, se registrará como delegación sin instrucción de voto para ese punto. No se convertirá automáticamente en abstención.</div>
+    <div id="voteList"></div>
+  </section>
+  <section>
+    <h2>5. Observaciones</h2>
+    <textarea id="notes" placeholder="Observaciones opcionales"></textarea>
+    <div class="toolbar"><button id="generateProxy" type="button">Descargar proxy PDF</button><button class="secondary" id="printProxy" type="button">Imprimir</button><span class="muted" id="message"></span></div>
+  </section>
+</main>
+<script type="application/json" id="proxy-config">__CONFIG_JSON__</script>
+<script>
+const config = JSON.parse(document.getElementById("proxy-config").textContent);
+const selected = new Map();
+const $ = id => document.getElementById(id);
+const norm = value => String(value || "").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").toUpperCase().replace(/[^A-Z0-9]+/g," ").trim();
+const compact = value => norm(value).replace(/\\s+/g,"");
+function voteValue(pointId){
+  const checked = document.querySelector('input[name="vote_' + pointId + '"]:checked');
+  return checked ? checked.value : "";
+}
+function renderAssembly(){
+  const a = config.assembly;
+  $("assemblyInfo").textContent = [a.comunidad, a.nombre, a.fecha, a.lugar].filter(Boolean).join(" | ");
+}
+function renderProperties(){
+  const q = norm($("propertyQuery").value);
+  const rows = config.properties.filter(item => {
+    if (!q) return true;
+    const hay = norm([item.id,item.owner].join(" "));
+    return hay.includes(q) || compact(hay).includes(compact(q));
+  }).slice(0,80);
+  $("propertyList").innerHTML = rows.map(item => '<div class="propertyRow" data-property="' + encodeURIComponent(item.id) + '"><div><strong>' + item.id + '</strong><span class="muted">Coef. ' + Number(item.coef || 0).toFixed(4) + (item.moroso ? ' | sin derecho a voto salvo regularización' : '') + '</span></div><button type="button">Añadir</button></div>').join("") || '<div class="muted">Sin coincidencias.</div>';
+  document.querySelectorAll("[data-property]").forEach(row => {
+    row.addEventListener("dblclick", () => addProperty(decodeURIComponent(row.dataset.property)));
+    row.querySelector("button").addEventListener("click", () => addProperty(decodeURIComponent(row.dataset.property)));
+  });
+}
+function renderSelected(){
+  const rows = [...selected.values()];
+  $("selectedList").innerHTML = rows.map(item => '<div class="selectedRow"><div><strong>' + item.id + '</strong><span class="muted">Coef. ' + Number(item.coef || 0).toFixed(4) + '</span></div><button class="danger" type="button" data-remove="' + encodeURIComponent(item.id) + '">Quitar</button></div>').join("") || '<div class="muted">No hay propiedades seleccionadas.</div>';
+  document.querySelectorAll("[data-remove]").forEach(button => button.addEventListener("click", () => { selected.delete(decodeURIComponent(button.dataset.remove)); renderSelected(); }));
+}
+function addProperty(id){
+  const item = config.properties.find(row => String(row.id) === String(id));
+  if (!item) return;
+  selected.set(String(item.id), item);
+  renderSelected();
+}
+function renderVotes(){
+  $("voteList").innerHTML = config.points.map(point => '<div class="voteRow"><div><strong>P' + point.orden + '. ' + point.titulo + '</strong><div class="muted">Mayoría: ' + point.mayoria + '</div></div>' +
+    '<label><input type="radio" name="vote_' + point.id + '" value="si"> A favor</label>' +
+    '<label><input type="radio" name="vote_' + point.id + '" value="no"> En contra</label>' +
+    '<label><input type="radio" name="vote_' + point.id + '" value="abs"> Abstención</label>' +
+    '<label><input type="radio" name="vote_' + point.id + '" value=""> Sin instrucción</label></div>').join("");
+}
+function proxyPayload(){
+  const votes = {};
+  config.points.forEach(point => { votes[String(point.orden)] = voteValue(point.id); });
+  return {
+    version: "organizador-web-proxy-v1",
+    assembly: config.assembly,
+    owner: $("ownerName").value.trim(),
+    document: $("ownerDocument").value.trim(),
+    contact: $("ownerContact").value.trim(),
+    representative: $("representative").value.trim(),
+    properties: [...selected.keys()],
+    votes,
+    notes: $("notes").value.trim(),
+    generated_at: new Date().toISOString()
+  };
+}
+function validate(payload){
+  const missing = [];
+  if (!payload.owner) missing.push("nombre del propietario");
+  if (!payload.representative) missing.push("representante");
+  if (!payload.properties.length) missing.push("al menos una propiedad");
+  if (missing.length) throw new Error("Falta: " + missing.join(", ") + ".");
+}
+function fileSafe(value){ return String(value || "proxy").normalize("NFD").replace(/[\\u0300-\\u036f]/g,"").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_|_$/g,"").slice(0,80) || "proxy"; }
+function generatePdf(){
+  const payload = proxyPayload();
+  validate(payload);
+  const dataLine = "proxyData:" + JSON.stringify(payload);
+  const fileName = fileSafe((config.assembly.codigo || config.assembly.nombre) + "_" + payload.owner) + ".pdf";
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    $("message").textContent = "No se pudo cargar el generador PDF. Use Imprimir.";
+    window.print();
+    return;
+  }
+  const doc = new window.jspdf.jsPDF({unit:"pt",format:"a4"});
+  const margin = 42;
+  let y = 42;
+  const write = (text, size=10, bold=false) => {
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    const lines = doc.splitTextToSize(String(text || ""), 510);
+    doc.text(lines, margin, y);
+    y += lines.length * (size + 4) + 5;
+  };
+  write("DELEGACION DE VOTO / PROXY", 15, true);
+  write([config.assembly.comunidad, config.assembly.nombre, config.assembly.fecha, config.assembly.lugar].filter(Boolean).join(" | "), 10);
+  write("Propietario: " + payload.owner, 11, true);
+  write("Documento: " + (payload.document || "No indicado") + " | Contacto: " + (payload.contact || "No indicado"));
+  write("Representante: " + payload.representative, 11, true);
+  write("Propiedades: " + payload.properties.join(", "));
+  write("Instrucciones de voto", 12, true);
+  config.points.forEach(point => {
+    const raw = payload.votes[String(point.orden)] || "";
+    const label = raw === "si" ? "A favor" : raw === "no" ? "En contra" : raw === "abs" ? "Abstencion" : "Sin instruccion";
+    write("P" + point.orden + ". " + point.titulo + " - " + label);
+  });
+  if (payload.notes) write("Observaciones: " + payload.notes);
+  write("Fecha de generacion: " + new Date().toLocaleString(), 9);
+  y = Math.min(y + 10, 760);
+  doc.setFontSize(4);
+  doc.setTextColor(245,245,245);
+  doc.text(dataLine, margin, y, {maxWidth:510});
+  doc.save(fileName);
+  $("message").textContent = "Proxy generado. Revise el PDF antes de enviarlo.";
+}
+$("propertyQuery").addEventListener("input", renderProperties);
+$("clearPropertySearch").addEventListener("click", () => { $("propertyQuery").value = ""; renderProperties(); });
+$("generateProxy").addEventListener("click", () => { try { generatePdf(); } catch(error) { $("message").textContent = error.message; } });
+$("printProxy").addEventListener("click", () => window.print());
+renderAssembly(); renderProperties(); renderSelected(); renderVotes();
+</script>
+</body>
+</html>""".replace("__TITLE__", title).replace("__CONFIG_JSON__", config_json)
+
+
+def web_html():
+    require_write()
+    assembly_id = int(DATA.get("id") or 0)
+    conn = connection()
+    assembly = require_visible(assembly_id, conn)
+    points = conn.execute(
+        "SELECT * FROM asamblea_puntos WHERE id_asamblea=? AND activo=1 ORDER BY orden,id_punto",
+        (assembly_id,),
+    ).fetchall()
+    census = conn.execute(
+        """SELECT propiedad_id, propietario, coeficiente, moroso
+           FROM asamblea_censo
+           WHERE id_asamblea=?
+           ORDER BY propiedad_id, propietario""",
+        (assembly_id,),
+    ).fetchall()
+    if not points:
+        conn.close()
+        raise ValueError("Configura primero los puntos del orden del dia.")
+    if not census:
+        conn.close()
+        raise ValueError("Carga primero el censo de la asamblea.")
+    html_text = build_web_proxy_html(assembly, points, census)
+    filename = f"html_proxy_{slug_filename(assembly.get('codigo') or assembly.get('nombre'))}.txt"
+    with conn:
+        update_log(conn, assembly_id, "HTML web", f"Generado HTML web de proxy con {len(census)} propiedades y {len(points)} puntos.")
+        audit(conn, "Generar HTML proxy web", "asamblea", assembly_id, filename)
+    conn.close()
+    return {"ok": True, "filename": filename, "html": html_text, "properties": len(census), "points": len(points)}
+
+
 def add_update():
     require_write()
     assembly_id = int(DATA.get("id") or 0)
@@ -677,6 +940,7 @@ ACTIONS = {
     "vote_set": lambda: set_vote(False), "vote_bulk": lambda: set_vote(True),
     "document_add": add_document, "document_info": document_info, "document_delete": delete_document,
     "minutes_get": get_minutes, "minutes_save": save_minutes,
+    "web_html": web_html,
 }
 
 
