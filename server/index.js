@@ -3104,7 +3104,10 @@ def extract_property_query(q):
     m = re.search(r"\\bCB\\s*\\d+(?:\\s*[-/]\\s*\\d+)?(?:\\s*(?:DERECHA|DCHA|DCH|IZQUIERDA|IZQ|ATICO|AT))?\\b", text, re.I)
     if m:
         return m.group(0).strip()
-    m = re.search(r"\\b((?:CB|17H|PLZ|P1F1|P1F2|PM|EG|ALB|FG|SRC|VILLA|LOCAL|L\\d+)[A-Z0-9\\s\\-\\/\\.]*?(?:DERECHA|DCHA|IZQUIERDA|IZQ|ATICO|AT|\\d)?)\\b", text, re.I)
+    m = re.search(r"\\b(?:ATERRAZADA|MANSION|UNIFAMILIAR)\\s+\\d+(?:\\s*[-/]\\s*\\d+)?\\b", text, re.I)
+    if m:
+        return m.group(0).strip()
+    m = re.search(r"\\b((?:CB|17H|PLZ|P1F1|P1F2|PM|EG|ALB|FG|SRC|VILLA|LOCAL|L\\d+|ATERRAZADA|MANSION|UNIFAMILIAR)[A-Z0-9\\s\\-\\/\\.]*(?:DERECHA|DCHA|IZQUIERDA|IZQ|ATICO|AT|\\d)?)\\b", text, re.I)
     if m:
         return m.group(1).strip()
     m = re.search(r"(?:propiedad|vivienda|garaje|local|villa)\\s+(?:de\\s+)?(.+)$", text, re.I)
@@ -3146,12 +3149,19 @@ def properties_for_owner(owner_id):
         ORDER BY p.codigo_propiedad
     """, (owner_id,))
 
-def debt_conditions(owner_id=None, year=None, property_id=None):
+def debt_conditions(owner=None, year=None, property_id=None):
     clauses = ["COALESCE(r.deuda,0) > 0"]
     params = []
-    if owner_id:
-        clauses.append("r.id_propietario = ?")
-        params.append(owner_id)
+    if owner:
+        owner_id = owner.get("id_propietario") if isinstance(owner, dict) else owner
+        owner_name = owner.get("nombre") if isinstance(owner, dict) else ""
+        owner_name_norm = norm(owner_name)
+        if owner_name_norm:
+            clauses.append("(r.id_propietario = ? AND (COALESCE(TRIM(r.propietario_texto),'') = '' OR NORMTXT(r.propietario_texto) = ?))")
+            params.extend([owner_id, owner_name_norm])
+        else:
+            clauses.append("r.id_propietario = ?")
+            params.append(owner_id)
     if year:
         clauses.append("COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) = ?")
         params.append(year)
@@ -3161,7 +3171,8 @@ def debt_conditions(owner_id=None, year=None, property_id=None):
     return " AND ".join(clauses), tuple(params)
 
 def debt_for_owner(owner_id, year=None, property_id=None):
-    where_sql, params = debt_conditions(owner_id, year, property_id)
+    owner = owner_id if isinstance(owner_id, dict) else {"id_propietario": owner_id, "nombre": ""}
+    where_sql, params = debt_conditions(owner, year, property_id)
     total = first("SELECT COALESCE(SUM(r.deuda),0) AS total FROM cf_recibos r WHERE " + where_sql, params)["total"]
     by_year = rows("""
         SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
@@ -3200,10 +3211,84 @@ def debt_for_owner(owner_id, year=None, property_id=None):
     """, params)
     return total, by_year, by_property, receipts
 
+def debt_for_property(property_id, year=None):
+    where_sql, params = debt_conditions(None, year, property_id)
+    total = first("SELECT COALESCE(SUM(r.deuda),0) AS total FROM cf_recibos r WHERE " + where_sql, params)["total"]
+    by_year = rows("""
+        SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
+               COALESCE(SUM(deuda),0) AS deuda,
+               COUNT(*) AS recibos
+        FROM cf_recibos r
+        WHERE """ + where_sql + """
+        GROUP BY COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER))
+        ORDER BY ejercicio
+    """, params)
+    by_debtor = rows("""
+        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario') AS propietario,
+               COALESCE(SUM(r.deuda),0) AS deuda,
+               COUNT(*) AS recibos
+        FROM cf_recibos r
+        LEFT JOIN cf_propietarios o ON o.id_propietario = r.id_propietario
+        WHERE """ + where_sql + """
+        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')),
+                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')
+        ORDER BY deuda DESC, propietario
+    """, params)
+    receipts = rows("""
+        SELECT COALESCE(r.referencia, '') AS referencia,
+               COALESCE(r.fecha_emision, '') AS fecha_emision,
+               COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) AS ejercicio,
+               COALESCE(r.propietario_texto, '') AS propietario,
+               COALESCE(r.tipo_recibo, '') AS tipo_recibo,
+               COALESCE(r.importe, 0) AS importe,
+               COALESCE(r.cobrado, 0) AS cobrado,
+               COALESCE(r.deuda, 0) AS deuda,
+               COALESCE(r.estado, '') AS estado
+        FROM cf_recibos r
+        WHERE """ + where_sql + """
+        ORDER BY r.fecha_emision, r.referencia
+        LIMIT 250
+    """, params)
+    return total, by_year, by_debtor, receipts
+
+def other_property_debt_for_owner(owner, year=None):
+    owner_norm = norm(owner.get("nombre") or "")
+    if not owner_norm:
+        return []
+    property_rows = properties_for_owner(owner["id_propietario"])
+    property_ids = [int(row["id_propiedad"]) for row in property_rows if row.get("id_propiedad")]
+    if not property_ids:
+        return []
+    qmarks = ",".join("?" for _ in property_ids)
+    clauses = [
+        "COALESCE(r.deuda,0) > 0",
+        f"r.id_propiedad IN ({qmarks})",
+        "COALESCE(TRIM(r.propietario_texto),'') <> ''",
+        "NORMTXT(r.propietario_texto) <> ?",
+    ]
+    params = property_ids + [owner_norm]
+    if year:
+        clauses.append("COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) = ?")
+        params.append(year)
+    where_sql = " AND ".join(clauses)
+    return rows("""
+        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario') AS propietario,
+               COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
+               COALESCE(SUM(r.deuda),0) AS deuda,
+               COUNT(*) AS recibos
+        FROM cf_recibos r
+        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
+        WHERE """ + where_sql + """
+        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario')),
+                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario'),
+                 COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad')
+        ORDER BY deuda DESC, propietario
+    """, tuple(params))
+
 def debtor_listing(year=None, minimum=0):
     where_sql, params = debt_conditions(None, year, None)
     listing = rows("""
-        SELECT COALESCE(o.nombre, r.propietario_texto, 'Sin propietario') AS propietario,
+        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario') AS propietario,
                COALESCE(o.codigo_netfincas, '') AS codigo,
                COUNT(DISTINCT COALESCE(CAST(r.id_propiedad AS TEXT), r.propiedad_texto, '')) AS propiedades,
                COUNT(*) AS recibos,
@@ -3211,8 +3296,8 @@ def debtor_listing(year=None, minimum=0):
         FROM cf_recibos r
         LEFT JOIN cf_propietarios o ON o.id_propietario = r.id_propietario
         WHERE """ + where_sql + """
-        GROUP BY COALESCE(CAST(r.id_propietario AS TEXT), r.propietario_texto, 'Sin propietario'),
-                 COALESCE(o.nombre, r.propietario_texto, 'Sin propietario'),
+        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')),
+                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario'),
                  COALESCE(o.codigo_netfincas, '')
         ORDER BY deuda DESC, propietario
     """, params)
@@ -3584,16 +3669,73 @@ def handle_debt_query():
     prop_query = extract_property_query(question)
     owners = []
     debt_property_id = None
+    debt_property = None
+    property_debt_mode = False
     if prop_query:
         props = find_properties(prop_query)
         if len(props) == 1:
+            debt_property = props[0]
             debt_property_id = props[0]["id_propiedad"]
-            owners = owner_for_property(props[0]["id_propiedad"])
+            if is_debt_question:
+                property_debt_mode = True
+            else:
+                owners = owner_for_property(props[0]["id_propiedad"])
         elif len(props) > 1 and "PROPIETARIO" in q_norm:
             answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:8]])
             return response(answer, 0.52, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:8]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto", query_domain="deuda")
     if not owners and owner_query and is_debt_question:
         owners = find_owners(owner_query)
+    if property_debt_mode and debt_property_id:
+        total, by_year, by_debtor, receipts = debt_for_property(debt_property_id, requested_year)
+        pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
+        period_text = f" en {requested_year}" if requested_year else ""
+        property_name = debt_property["codigo_propiedad"] if debt_property else "la propiedad indicada"
+        if total <= 0:
+            answer = f"{property_name} no tiene deuda pendiente registrada{period_text}."
+        else:
+            year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
+            debtor_text = "\\n".join([f"- {r['propietario']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_debtor[:8]])
+            answer = f"{property_name} tiene deuda pendiente total por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por titular/deudor del recibo:\\n{debtor_text}"
+        debt_tables = [
+            {
+                "title": "Desglose por ejercicio",
+                "columns": ["Ejercicio", "Deuda", "Recibos"],
+                "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
+            },
+            {
+                "title": "Desglose por titular/deudor",
+                "columns": ["Titular/deudor", "Deuda", "Recibos"],
+                "rows": [{"Titular/deudor": r["propietario"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_debtor],
+            },
+        ]
+        if is_list_request:
+            debt_tables.append({
+                "title": "Relacion de recibos pendientes",
+                "columns": ["Referencia", "Fecha", "Ejercicio", "Titular/deudor", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
+                "rows": [{
+                    "Referencia": r.get("referencia") or "",
+                    "Fecha": r.get("fecha_emision") or "",
+                    "Ejercicio": str(r.get("ejercicio") or ""),
+                    "Titular/deudor": r.get("propietario") or "",
+                    "Tipo": r.get("tipo_recibo") or "",
+                    "Importe": money(r.get("importe")),
+                    "Cobrado": money(r.get("cobrado")),
+                    "Pendiente": money(r.get("deuda")),
+                    "Estado": r.get("estado") or "",
+                } for r in receipts],
+            })
+        display = {
+            "title": property_name,
+            "subtitle": ("Listado detallado" if is_list_request else "Consulta de deuda de propiedad") + (f" | Ejercicio {requested_year}" if requested_year else ""),
+            "cards": [
+                {"label": "Deuda total propiedad", "value": money(total)},
+                {"label": "Recibos pendientes", "value": str(pending_receipts)},
+                {"label": "Titulares/deudores", "value": str(len(by_debtor))},
+            ],
+            "tables": debt_tables,
+            "note": "Consulta por propiedad: la deuda se muestra completa, separada por el titular/deudor que figura en cada recibo.",
+        }
+        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "deuda_propiedad", "id_propiedad": debt_property_id, "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "properties", "owners"), data_status="confirmado", query_domain="deuda")
     if global_list_pattern and not owners:
         listing = debtor_listing(requested_year, minimum_debt)
         total_listed = sum(float(item.get("deuda") or 0) for item in listing)
@@ -3626,7 +3768,9 @@ def handle_debt_query():
         return handle_global_debt_year(int(years[0]))
     if len(owners) == 1:
         owner = owners[0]
-        total, by_year, by_property, receipts = debt_for_owner(owner["id_propietario"], requested_year, debt_property_id)
+        total, by_year, by_property, receipts = debt_for_owner(owner, requested_year, debt_property_id)
+        other_debt = other_property_debt_for_owner(owner, requested_year)
+        other_total = sum(float(item.get("deuda") or 0) for item in other_debt)
         pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
         if total <= 0:
             filter_text = f" en {requested_year}" if requested_year else ""
@@ -3668,6 +3812,18 @@ def handle_debt_query():
                         "Estado": r.get("estado") or "",
                     } for r in receipts],
                 })
+            if other_total > 0:
+                debt_tables.append({
+                    "title": "Deuda vinculada a sus propiedades a nombre de otros titulares/deudores",
+                    "columns": ["Titular/deudor", "Propiedad", "Deuda", "Recibos"],
+                    "rows": [{
+                        "Titular/deudor": r.get("propietario") or "",
+                        "Propiedad": r.get("propiedad") or "",
+                        "Deuda": money(r.get("deuda")),
+                        "Recibos": str(r.get("recibos") or 0),
+                    } for r in other_debt],
+                })
+                answer += f"\\n\\nAviso: las propiedades vinculadas actualmente a {owner['nombre']} tienen ademas {money(other_total)} de deuda registrada a nombre de otros titulares/deudores del recibo. No la sumo como deuda personal de {owner['nombre']}."
             subtitle_parts = ["Listado detallado" if is_list_request else "Consulta de deuda"]
             if requested_year:
                 subtitle_parts.append(f"Ejercicio {requested_year}")
@@ -3683,9 +3839,9 @@ def handle_debt_query():
                     {"label": "Propiedades afectadas", "value": str(len(by_property))},
                 ],
                 "tables": debt_tables,
-                "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Datos obtenidos de los recibos actualmente importados."),
+                "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Consulta personal: solo se suma la deuda cuyo recibo figura a nombre del propietario consultado. La deuda antigua de otro titular se muestra aparte cuando afecta a una propiedad actualmente vinculada."),
             }
-        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado", query_domain="deuda")
+        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts, "deuda_propiedades_otros_titulares": other_total}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado", query_domain="deuda")
     if len(owners) > 1:
         answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
         return response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"], sources=source_refs("owners"), data_status="incompleto", query_domain="deuda")
@@ -3704,6 +3860,7 @@ QUERY_HANDLERS = {
 
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+conn.create_function("NORMTXT", 1, norm)
 q_norm = norm(question)
 
 try:

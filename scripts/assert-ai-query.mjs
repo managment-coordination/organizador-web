@@ -33,6 +33,28 @@ const cases = [
     minSources: 2,
   },
   {
+    question: "deuda de florea giuliana",
+    domain: "deuda",
+    status: "confirmado",
+    contains: "2.681,39 EUR",
+    minSources: 2,
+    expectedFacts: {
+      deuda: 2681.39,
+      deuda_propiedades_otros_titulares: 2948.85,
+    },
+    notContains: "tiene deuda pendiente por 5.630,24 EUR",
+  },
+  {
+    question: "deuda de ATERRAZADA 15 -6",
+    domain: "deuda",
+    status: "confirmado",
+    contains: "Desglose por titular/deudor",
+    minSources: 2,
+    expectedFacts: {
+      deuda: 5630.24,
+    },
+  },
+  {
     question: "quien es el propietario de CB 2 -1 DCH",
     domain: "propiedad",
     status: "confirmado",
@@ -139,6 +161,15 @@ for (const testCase of cases) {
   if (payload.query_domain !== testCase.domain) failures.push(`${testCase.question}: domain ${payload.query_domain}, esperado ${testCase.domain}`);
   if (payload.data_status !== testCase.status) failures.push(`${testCase.question}: status ${payload.data_status}, esperado ${testCase.status}`);
   if (!String(payload.answer || "").toLowerCase().includes(testCase.contains.toLowerCase())) failures.push(`${testCase.question}: no contiene ${testCase.contains}`);
+  if (testCase.notContains && String(payload.answer || "").toLowerCase().includes(testCase.notContains.toLowerCase())) failures.push(`${testCase.question}: contiene texto prohibido ${testCase.notContains}`);
+  if (testCase.expectedFacts) {
+    for (const [key, expectedValue] of Object.entries(testCase.expectedFacts)) {
+      const actualValue = Number(payload.facts?.[key]);
+      if (!Number.isFinite(actualValue) || Math.abs(actualValue - Number(expectedValue)) > 0.01) {
+        failures.push(`${testCase.question}: facts.${key}=${payload.facts?.[key]}, esperado ${expectedValue}`);
+      }
+    }
+  }
   if (!Array.isArray(payload.sources) || payload.sources.length < testCase.minSources) failures.push(`${testCase.question}: fuentes insuficientes`);
   if (mojibakePattern.test(JSON.stringify(payload))) failures.push(`${testCase.question}: contiene caracteres mojibake`);
   if (["deuda", "contabilidad", "presupuesto"].includes(testCase.domain)) {
