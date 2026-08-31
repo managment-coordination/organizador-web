@@ -9479,7 +9479,7 @@ function homePage() {
           "",
           $("agentEmailBody").value,
         ].filter((line, index) => index === 2 || safe(line));
-        copyTextToClipboard(lines.join("\n"), "agentEmailMessage");
+        copyTextToClipboard(lines.join("\\n"), "agentEmailMessage");
       });
     }
 
