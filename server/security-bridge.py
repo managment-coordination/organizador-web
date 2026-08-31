@@ -42,6 +42,10 @@ def normalize(value: object) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9]+", " ", text)).strip()
 
 
+def compact(value: object) -> str:
+    return re.sub(r"[^A-Z0-9]+", "", normalize(value))
+
+
 def dictionaries(rows) -> list[dict]:
     return [dict(row) for row in rows]
 
@@ -203,6 +207,11 @@ def require_uploader(conn: sqlite3.Connection) -> None:
 
 def expand_lookup_aliases(value: object) -> str:
     text = normalize(value)
+    text = re.sub(r"\bALBOAIRE\s*(\d+)\b", r"ALB \1", text)
+    text = re.sub(r"\bCONDOMINIO\s*B\s*(\d+)\b", r"CB \1", text)
+    text = re.sub(r"\bHOYO\s*17\s*(\d*)\b", lambda m: ("17H " + m.group(1)).strip(), text)
+    text = re.sub(r"\bEMERALD\s*GREEN\s*(\d*)\b", lambda m: ("EG " + m.group(1)).strip(), text)
+    text = re.sub(r"\bFAIRWAYS\s*GREEN\s*(\d*)\b", lambda m: ("FG " + m.group(1)).strip(), text)
     replacements = {
         "ALBOAIRE": "ALB",
         "ALBOAIRE 1": "ALB 1",
@@ -240,6 +249,8 @@ def expand_lookup_aliases(value: object) -> str:
     text = re.sub(r"\bPRIMERO\b|\b1O\b|\b1RO\b", "1", text)
     text = re.sub(r"\bSEGUNDO\b|\b2O\b|\b2DO\b", "2", text)
     text = re.sub(r"\bTERCERO\b|\b3O\b|\b3RO\b", "3", text)
+    text = re.sub(r"\b([A-Z]+)\s+(\d+)\s+(\d+)\s+([A-Z])\b", r"\1 \2 -\3 \4", text)
+    text = re.sub(r"\b(ALB|CB|EG|FG|SRC|PM|P1F1|P1F2|17H)\s*(\d+)([A-Z])\b", r"\1 \2 \3", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -259,6 +270,10 @@ def lookup_score(query: str, value: str) -> float:
     score = 0.0
     if q in v or v in q:
         score += 5.0
+    q_compact = compact(q)
+    v_compact = compact(v)
+    if q_compact and v_compact and (q_compact in v_compact or v_compact in q_compact):
+        score += 7.0
     score += sum(2.0 for token in q_tokens if token in v_tokens)
     score += sum(0.8 for token in q_tokens if len(token) >= 4 and token not in v_tokens and token in v)
     score += SequenceMatcher(None, q, v).ratio()
@@ -343,14 +358,20 @@ def owner_lookup() -> dict:
            WHERE COALESCE(activa,1)=1""",
     ).fetchall()
     property_candidates: list[tuple[float, sqlite3.Row]] = []
+    property_fallback: list[tuple[float, sqlite3.Row]] = []
     for prop in property_rows:
         hay = " ".join(str(prop[key] or "") for key in ("codigo_propiedad", "tipo_propiedad", "zona", "subzona", "grupo"))
         score = lookup_score(query, hay)
         if score >= 4.0:
             property_candidates.append((score, prop))
+        elif score > 0:
+            property_fallback.append((score, prop))
+    if not property_candidates:
+        property_candidates = sorted(property_fallback, key=lambda item: (-item[0], str(item[1]["codigo_propiedad"] or "")))[:8]
     property_candidates.sort(key=lambda item: (-item[0], str(item[1]["codigo_propiedad"] or "")))
     best_property_score = property_candidates[0][0] if property_candidates else 0.0
-    for score, prop in [item for item in property_candidates if item[0] >= max(4.0, best_property_score - 2.0)][:8]:
+    property_threshold = max(4.0, best_property_score - 2.0) if best_property_score >= 4.0 else max(0.1, best_property_score - 0.1)
+    for score, prop in [item for item in property_candidates if item[0] >= property_threshold][:8]:
         owners = conn.execute(
             """SELECT o.*
                FROM cf_propietario_propiedad pp
@@ -371,13 +392,19 @@ def owner_lookup() -> dict:
            WHERE COALESCE(activo,1)=1""",
     ).fetchall()
     owner_candidates: list[tuple[float, sqlite3.Row]] = []
+    owner_fallback: list[tuple[float, sqlite3.Row]] = []
     for owner in owner_rows:
         score = lookup_score(query, " ".join([str(owner["nombre"] or ""), str(owner["codigo_netfincas"] or ""), str(owner["direccion"] or "")]))
         if score >= 4.0:
             owner_candidates.append((score, owner))
+        elif score > 0:
+            owner_fallback.append((score, owner))
+    if not owner_candidates:
+        owner_candidates = sorted(owner_fallback, key=lambda item: (-item[0], str(item[1]["nombre"] or "")))[:8]
     owner_candidates.sort(key=lambda item: (-item[0], str(item[1]["nombre"] or "")))
     best_owner_score = owner_candidates[0][0] if owner_candidates else 0.0
-    for score, owner in [item for item in owner_candidates if item[0] >= max(4.0, best_owner_score - 2.0)][:8]:
+    owner_threshold = max(4.0, best_owner_score - 2.0) if best_owner_score >= 4.0 else max(0.1, best_owner_score - 0.1)
+    for score, owner in [item for item in owner_candidates if item[0] >= owner_threshold][:8]:
         owner_id = int(owner["id_propietario"])
         if owner_id not in matches or score > float(matches[owner_id].get("score") or 0):
             matches[owner_id] = build_owner_lookup_result(conn, owner, "propietario", score)

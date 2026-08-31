@@ -52,6 +52,15 @@ try {
 }
 
 try {
+  const compactLookup = runBridge("owner_lookup", { query: "alboaire1º a" });
+  if (!compactLookup.ok) failures.push("alboaire compacto: respuesta no ok");
+  if (!String(compactLookup.normalized_query || "").includes("ALB")) failures.push("alboaire compacto: no normaliza alias ALB");
+  if (!compactLookup.matches?.length) failures.push("alboaire compacto: no devuelve coincidencias");
+} catch (error) {
+  failures.push(`alboaire compacto: ${error.message}`);
+}
+
+try {
   runBridge("owner_lookup", { query: "CB 2 derecha" }, { id_usuario: 998, nombre: "Presidente", rol: "Presidente" });
   failures.push("presidente: deberia denegar permiso");
 } catch (error) {
@@ -63,4 +72,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 3 }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 4 }, null, 2));
