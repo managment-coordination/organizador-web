@@ -26,6 +26,10 @@ requireIncludes("function extractDebtEmailTarget", "falta extractor de destinata
 requireIncludes("function extractExecutiveSummaryTarget", "falta extractor de tarea/proyecto para resumen ejecutivo");
 requireIncludes("function prepareAgentExecutiveSummaryEmailDraft", "falta preparador de resumen ejecutivo por email");
 requireIncludes("buildExecutiveSummaryEmailBody", "falta constructor del cuerpo de resumen ejecutivo");
+requireIncludes("function normalizeEmailSummaryText", "falta limpieza profesional del texto de resumen");
+requireIncludes("function meaningfulHistoryRows", "falta limpieza/deduplicacion del historial");
+requireIncludes("function findLatestUsefulNextStep", "falta seleccion segura del proximo paso");
+requireIncludes("function buildExecutiveIntro", "falta introduccion ejecutiva del resumen");
 requireIncludes("function buildDebtEmailBody", "falta constructor del cuerpo del email");
 requireIncludes("async function queryOwnerEmailForDraft", "falta busqueda de email del propietario");
 requireIncludes("async function prepareAgentEmailDraft", "falta preparacion de borrador");
@@ -35,7 +39,9 @@ requireIncludes("outlook_ready: false", "el borrador no declara que Outlook aun 
 requireIncludes("listado de recibos pendientes de", "el borrador no reutiliza la consulta fiable de deuda");
 requireIncludes("Historial resumido:", "el resumen ejecutivo no incluye historico");
 requireIncludes("Resumen ejecutivo:", "el resumen ejecutivo no incluye bloque ejecutivo");
-requireIncludes("Situacion actual:", "el resumen ejecutivo no incluye situacion actual");
+requireIncludes("Puntos principales:", "el resumen ejecutivo no separa puntos principales");
+requireIncludes("Situación actual:", "el resumen ejecutivo no incluye situacion actual");
+requireIncludes("No consta ninguna actuacion pendiente", "el resumen ejecutivo no trata correctamente elementos finalizados");
 requireIncludes("No se ha enviado nada", "falta aviso de no envio");
 requireIncludes("renderAgentEmailDraft", "falta vista previa editable del email");
 requireIncludes("copyAgentEmailBody", "falta boton de copiar cuerpo");

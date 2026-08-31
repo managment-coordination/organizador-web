@@ -4134,54 +4134,148 @@ function formatHistoryDate(row) {
   return String(row?.fecha_hora || row?.fecha || "").slice(0, 10) || "Sin fecha";
 }
 
+function normalizeEmailSummaryText(value) {
+  return polishSentence(value)
+    .replace(/^[A-Za-z ]{2,60}\s+dice:\s*/i, "Se informa de que ")
+    .replace(/^Correo de\s+/i, "Se registra correo de fecha ")
+    .replace(/\bdecdimnos\b/gi, "se decide")
+    .replace(/\blagravilla\b/gi, "la gravilla")
+    .replace(/\bno s epone\b/gi, "no se coloca")
+    .replace(/\bno s e\b/gi, "no se ")
+    .replace(/\bd elos\b/gi, "de los")
+    .replace(/\bd elas\b/gi, "de las")
+    .replace(/\bcomprara\b/gi, "comprar")
+    .replace(/\bpropuetas\b/gi, "propuestas")
+    .replace(/\banti luz\b/gi, "antihierbas")
+    .replace(/\bde las chiquitas\b/gi, "plantas de menor porte")
+    .replace(/\bgrava no\s+(\d+)/gi, "grava numero $1")
+    .replace(/\bgravilla no\s+(\d+)/gi, "gravilla numero $1")
+    .replace(/(\d)\.\s+(\d{3}\b)/g, "$1.$2")
+    .replace(/(\d),\s+(\d{2})/g, "$1,$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function meaningfulHistoryRows(history) {
+  const seen = new Set();
+  return (history || [])
+    .filter((row) => historyComment(row) || historyNextStep(row))
+    .filter((row) => !/ficha incorporada mediante importacion historica/i.test(historyComment(row)))
+    .filter((row) => {
+      const key = normalizeText([formatHistoryDate(row), row.tipo_registro, historyComment(row), historyNextStep(row)].join(" ")).slice(0, 220);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function summarizeHistoryLine(row) {
-  const comment = summarizeOperationalText(historyComment(row), 1)[0] || polishSentence(historyComment(row)).slice(0, 240);
-  const next = historyNextStep(row);
-  const nextText = next ? ` Proximo paso indicado: ${polishSentence(next)}` : "";
-  return `- ${formatHistoryDate(row)} | ${row.tipo_registro || "Seguimiento"}: ${comment}${nextText}`.slice(0, 520);
+  const comment = normalizeEmailSummaryText(summarizeOperationalText(historyComment(row), 1)[0] || historyComment(row)).slice(0, 260);
+  return `- ${formatHistoryDate(row)} | ${row.tipo_registro || "Seguimiento"}: ${comment}`.slice(0, 360);
+}
+
+function findLatestUsefulNextStep(detail, type, currentState) {
+  if (/finaliz|terminad|archivad/i.test(normalizeText(currentState))) {
+    return `No consta ninguna actuacion pendiente; ${type === "task" ? "la tarea" : "el proyecto"} figura como ${currentState}.`;
+  }
+  const history = Array.isArray(detail.history) ? detail.history : [];
+  const seen = new Set();
+  for (const row of history) {
+    const next = normalizeEmailSummaryText(historyNextStep(row));
+    const key = normalizeText(next);
+    if (!next || seen.has(key)) continue;
+    seen.add(key);
+    if (/proximo paso/i.test(next) || next.length > 350) continue;
+    return next;
+  }
+  const itemStep = normalizeEmailSummaryText(itemNextStep(detail, type));
+  if (itemStep && itemStep.length <= 350 && !/proximo paso/i.test(itemStep)) return itemStep;
+  return "Pendiente de definir el siguiente paso operativo.";
+}
+
+function buildExecutiveBullets(detail, type, currentState) {
+  const history = meaningfulHistoryRows([...(detail.history || [])].reverse());
+  const combined = history.map((row) => historyComment(row)).join(" ");
+  const summary = summarizeOperationalText(combined, 8).map(normalizeEmailSummaryText);
+  const selected = [];
+  const push = (text) => {
+    const clean = normalizeEmailSummaryText(text);
+    const key = normalizeText(clean).slice(0, 120);
+    if (clean && !selected.some((item) => normalizeText(item).slice(0, 120) === key)) selected.push(clean);
+  };
+  const first = history.find((row) => historyComment(row));
+  if (first) push(summarizeOperationalText(historyComment(first), 1)[0] || historyComment(first));
+  for (const line of summary) {
+    if (selected.length >= 4) break;
+    if (/proximo paso|fecha objetivo/i.test(line)) continue;
+    push(line);
+  }
+  const latestNonFinal = [...history].reverse().find((row) => historyComment(row) && !/finalizad/i.test(historyComment(row)));
+  if (selected.length < 4 && latestNonFinal) push(summarizeOperationalText(historyComment(latestNonFinal), 1)[0] || historyComment(latestNonFinal));
+  if (/finaliz|terminad/i.test(normalizeText(currentState))) {
+    push(`${type === "task" ? "La tarea" : "El proyecto"} consta actualmente como ${currentState}.`);
+  }
+  return selected.slice(0, 4);
+}
+
+function buildExecutiveIntro(detail, type, currentState, nextStep) {
+  const typeLabel = type === "task" ? "La tarea" : "El proyecto";
+  const title = itemTitle(detail, type);
+  const state = currentState || "sin estado indicado";
+  const history = meaningfulHistoryRows([...(detail.history || [])].reverse());
+  const latestRelevant = [...history].reverse().find((row) => historyComment(row) && !/finalizad/i.test(historyComment(row)));
+  const latestText = latestRelevant ? normalizeEmailSummaryText(summarizeOperationalText(historyComment(latestRelevant), 1)[0] || historyComment(latestRelevant)) : "";
+  const latestBody = latestText
+    .replace(/^\s*se informa de que\s*/i, "")
+    .replace(/\.$/, "");
+  const finalText = /finaliz|terminad/i.test(normalizeText(state))
+    ? ` Actualmente figura como ${state}, por lo que no se recoge ninguna actuacion pendiente salvo revision posterior.`
+    : ` Actualmente figura como ${state}, con el siguiente paso pendiente: ${normalizeEmailSummaryText(nextStep)}`;
+  return `${typeLabel} "${title}" cuenta con ${history.length} seguimiento(s) registrados en la app.${latestBody ? ` La ultima actuacion relevante indica que ${latestBody}.` : ""}${finalText}`;
 }
 
 function buildExecutiveSummaryEmailBody(detail, type) {
   const item = detail.item || {};
   const history = Array.isArray(detail.history) ? detail.history : [];
-  const chronological = [...history].reverse();
   const latest = history[0] || {};
   const title = itemTitle(detail, type);
   const typeLabel = type === "task" ? "tarea" : "proyecto";
   const currentState = itemState(detail, type) || latest.estado_nuevo || "No indicado";
   const owner = itemOwner(detail, type) || latest.responsable_nuevo || "No indicado";
   const nextOwner = item.responsable_proximo_paso || latest.responsable_proximo_paso || owner;
-  const nextStep = itemNextStep(detail, type) || historyNextStep(latest) || "Pendiente de definir.";
-  const relevantHistory = chronological
-    .filter((row) => historyComment(row) || historyNextStep(row))
-    .slice(-10)
+  const nextStep = findLatestUsefulNextStep(detail, type, currentState);
+  const relevantHistory = meaningfulHistoryRows([...history].reverse())
+    .slice(-6)
     .map(summarizeHistoryLine);
-  const combined = chronological.map((row) => [historyComment(row), historyNextStep(row)].filter(Boolean).join(". ")).join(" ");
-  const executive = summarizeOperationalText(combined || nextStep || title, 4);
+  const executive = buildExecutiveBullets(detail, type, currentState);
+  const executiveIntro = buildExecutiveIntro(detail, type, currentState, nextStep);
   const community = item.comunidad || "";
   const attachments = Array.isArray(detail.attachments) ? detail.attachments.length : 0;
 
   return [
-    "Buenos dias,",
+    "Buenos días,",
     "",
-    `Te traslado un resumen ejecutivo ${typeLabel === "tarea" ? "de la tarea" : "del proyecto"} "${title}".`,
+    `En relación con ${typeLabel === "tarea" ? "la tarea" : "el proyecto"} "${title}", traslado un resumen ejecutivo de situación:`,
     "",
     "Resumen ejecutivo:",
+    executiveIntro,
+    "",
+    "Puntos principales:",
     executive.length ? executive.map((line) => `- ${line}`).join("\n") : "- No consta historico suficiente para elaborar un resumen amplio.",
     "",
-    "Situacion actual:",
+    "Situación actual:",
     `- Comunidad: ${community || "No indicada"}`,
     `- Estado: ${currentState}`,
     `- Responsable actual: ${owner}`,
-    `- Responsable del proximo paso: ${nextOwner || "No indicado"}`,
-    `- Proximo paso: ${polishSentence(nextStep)}`,
+    `- Responsable del próximo paso: ${nextOwner || "No indicado"}`,
+    `- Próximo paso: ${normalizeEmailSummaryText(nextStep)}`,
     "",
     "Historial resumido:",
     relevantHistory.length ? relevantHistory.join("\n") : "- No constan seguimientos registrados.",
     "",
     attachments ? `Anexos vinculados en la app: ${attachments}.` : "No constan anexos vinculados en la app.",
     "",
-    "Quedo pendiente de cualquier indicacion o comentario adicional.",
+    "Quedo pendiente de cualquier indicación o comentario adicional.",
     "",
     "Un saludo,",
   ].join("\n");
