@@ -258,12 +258,49 @@ def digits_only(value: object) -> str:
     return re.sub(r"\D+", "", str(value or ""))
 
 
+def meaningful_lookup_tokens(value: object) -> list[str]:
+    stop = {
+        "A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "POR", "PARA", "PROPIETARIO", "PROPIEDAD",
+        "CORREO", "EMAIL", "TELEFONO", "MOVIL", "VIVIENDA", "CASA", "NUMERO", "N",
+    }
+    return [token for token in expand_lookup_aliases(value).split() if token and token not in stop]
+
+
+def code_numeric_suffix(value: object) -> str:
+    match = re.search(r"(\d+)$", compact(value))
+    return str(int(match.group(1))) if match else ""
+
+
+def exact_property_score(query: str, prop: sqlite3.Row) -> float:
+    q = expand_lookup_aliases(query)
+    q_compact = compact(q)
+    code = str(prop["codigo_propiedad"] or "")
+    code_compact = compact(code)
+    if q_compact and q_compact == code_compact:
+        return 80.0
+    tokens = meaningful_lookup_tokens(query)
+    numeric_tokens = [str(int(token)) for token in tokens if token.isdigit()]
+    alpha_tokens = [token for token in tokens if not token.isdigit()]
+    suffix = code_numeric_suffix(code)
+    if not numeric_tokens or not suffix:
+        return 0.0
+    exact_number = numeric_tokens[-1] == suffix
+    if not exact_number:
+        return 0.0
+    if any(token in {"SRC", "VILLA", "VILLAS"} for token in alpha_tokens) or not alpha_tokens:
+        if code_compact.startswith("SRC"):
+            return 70.0
+    if code_compact.endswith(suffix):
+        return 30.0
+    return 0.0
+
+
 def lookup_score(query: str, value: str) -> float:
     q = expand_lookup_aliases(query)
     v = expand_lookup_aliases(value)
     if not q or not v:
         return 0.0
-    q_tokens = [token for token in q.split() if token not in {"A", "AL", "DE", "DEL", "EL", "LA", "LAS", "LOS", "POR", "PARA", "PROPIETARIO", "PROPIEDAD", "CORREO", "EMAIL", "TELEFONO", "MOVIL"}]
+    q_tokens = meaningful_lookup_tokens(query)
     v_tokens = set(v.split())
     if not q_tokens:
         return 0.0
@@ -361,7 +398,7 @@ def owner_lookup() -> dict:
     property_fallback: list[tuple[float, sqlite3.Row]] = []
     for prop in property_rows:
         hay = " ".join(str(prop[key] or "") for key in ("codigo_propiedad", "tipo_propiedad", "zona", "subzona", "grupo"))
-        score = lookup_score(query, hay)
+        score = max(exact_property_score(query, prop), lookup_score(query, hay))
         if score >= 4.0:
             property_candidates.append((score, prop))
         elif score > 0:

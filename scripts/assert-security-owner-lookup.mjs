@@ -61,6 +61,15 @@ try {
 }
 
 try {
+  const villaLookup = runBridge("owner_lookup", { query: "la 98" });
+  const firstProperty = villaLookup.matches?.[0]?.matched_property?.codigo_propiedad || villaLookup.matches?.[0]?.properties?.[0]?.codigo_propiedad || "";
+  if (!villaLookup.ok) failures.push("villa 98: respuesta no ok");
+  if (firstProperty !== "SRC98") failures.push(`villa 98: primera propiedad ${firstProperty}, esperado SRC98`);
+} catch (error) {
+  failures.push(`villa 98: ${error.message}`);
+}
+
+try {
   runBridge("owner_lookup", { query: "CB 2 derecha" }, { id_usuario: 998, nombre: "Presidente", rol: "Presidente" });
   failures.push("presidente: deberia denegar permiso");
 } catch (error) {
@@ -72,4 +81,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checks: 4 }, null, 2));
+console.log(JSON.stringify({ ok: true, checks: 5 }, null, 2));
