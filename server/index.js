@@ -6973,6 +6973,7 @@ function homePage() {
         '<div class="cardActions">' +
           '<button class="ghost" data-action="detail" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Abrir ficha</button>' +
           '<button class="green" data-action="record" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Seguimiento</button>' +
+          (canWrite() ? '<button data-action="attach" data-title="' + html(title) + '" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Adjuntar</button>' : '') +
           ((state.usuario || {}).rol !== "Presidente" ? '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' : '') +
         '</div>' +
         '</article>';
@@ -7247,6 +7248,65 @@ function homePage() {
       } finally {
         $("uploadAttachmentsButton").disabled = false;
       }
+    }
+
+    async function uploadEntityFiles(type, id, files, statusCallback) {
+      let uploaded = 0;
+      for (const file of files) {
+        if (statusCallback) statusCallback("Subiendo " + (uploaded + 1) + " de " + files.length + ": " + file.name);
+        const response = await fetch(
+          "/api/entity/attachment?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id),
+          {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "X-File-Name": encodeURIComponent(file.name), "Content-Type": file.type || "application/octet-stream" },
+            body: file
+          }
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "No se pudo subir " + file.name);
+        uploaded += 1;
+      }
+      return uploaded;
+    }
+
+    function quickAttachEntityFiles(type, id, title = "") {
+      if (!canWrite()) {
+        alert("Tu perfil no tiene permiso para adjuntar archivos.");
+        return;
+      }
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.style.display = "none";
+      input.addEventListener("change", async () => {
+        const files = [...(input.files || [])];
+        if (!files.length) {
+          input.remove();
+          return;
+        }
+        const names = files.slice(0, 12).map(file => "- " + file.name).join("\\n");
+        const extra = files.length > 12 ? "\\n- ... y " + (files.length - 12) + " archivo(s) mas" : "";
+        const target = safe(title) || (type === "project" ? "proyecto seleccionado" : "tarea seleccionada");
+        if (!confirm("Se adjuntaran " + files.length + " archivo(s) a:\\n\\n" + target + "\\n\\n" + names + extra + "\\n\\nConfirmas?")) {
+          input.remove();
+          return;
+        }
+        try {
+          await uploadEntityFiles(type, id, files);
+          await loadOverview();
+          if (selectedEntity && selectedEntity.type === type && String(selectedEntity.id) === String(id)) {
+            await openEntity(type, id, false);
+          }
+          alert(files.length + " archivo(s) adjuntado(s) correctamente.");
+        } catch (error) {
+          alert(error.message);
+        } finally {
+          input.remove();
+        }
+      });
+      document.body.appendChild(input);
+      input.click();
     }
 
     async function generateReport(type, id, targetWindow = null) {
@@ -7685,6 +7745,7 @@ function homePage() {
         '<div class="nextStep"><div class="line"><strong>Próximo paso:</strong> ' + html(row.detalle || "Sin definir") + '</div>' + (row.ultimo_comentario ? '<div class="line"><strong>Último comentario:</strong> ' + html(row.ultimo_comentario) + '</div>' : '') + '</div>' +
         '<div class="cardActions mapCardActions"><button class="ghost" data-daily-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button>' +
         (canWrite() ? '<button class="green" data-daily-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Seguimiento</button>' : '') +
+        (canWrite() ? '<button data-daily-action="attach" data-title="' + html(row.titulo) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Adjuntar</button>' : '') +
         ((state.usuario || {}).rol !== "Presidente" ? '<button data-daily-action="report" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Informe</button>' : '') + '</div>' +
       '</article>';
     }
@@ -8529,7 +8590,7 @@ function homePage() {
         '<div class="line"><strong>Desde:</strong> ' + html(row.fecha_creacion || "") + '</div>' +
         (row.fecha_objetivo ? '<div class="line"><strong>Fecha objetivo:</strong> ' + html(row.fecha_objetivo) + '</div>' : '') +
         '<div class="nextStep"><div class="line"><strong>Accion solicitada:</strong> ' + html(row.detalle || "Sin detalle") + '</div></div>' +
-        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Resolver / actualizar</button></div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Resolver / actualizar</button><button data-work-action="attach" data-title="' + html(row.elemento || row.titulo) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Adjuntar</button></div>' +
       '</article>';
     }
 
@@ -8562,7 +8623,7 @@ function homePage() {
         '<div class="line"><strong>Responsable:</strong> ' + html(row.responsable || "") + '</div>' +
         '<div class="nextStep"><div class="line"><strong>Proximo paso:</strong> ' + html(row.proximo_paso || "Sin definir") + '</div>' +
         (row.ultimo_comentario ? '<div class="line"><strong>Ultimo comentario:</strong> ' + html(row.ultimo_comentario) + '</div>' : '') + '</div>' +
-        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="review" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Revisar ahora</button></div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="review" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Revisar ahora</button><button data-work-action="attach" data-title="' + html(row.elemento) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Adjuntar</button></div>' +
       '</article>';
     }
 
@@ -10298,6 +10359,8 @@ function homePage() {
         if (action === "report") {
           const reportWindow = window.open("", "_blank");
           generateReport(dailyButton.dataset.type, dailyButton.dataset.id, reportWindow).catch(error => alert(error.message));
+        } else if (action === "attach") {
+          quickAttachEntityFiles(dailyButton.dataset.type, dailyButton.dataset.id, dailyButton.dataset.title || "");
         } else {
           openEntity(dailyButton.dataset.type, dailyButton.dataset.id, action === "record").catch(error => alert(error.message));
         }
@@ -10341,6 +10404,10 @@ function homePage() {
           markNotification(workflowButton.dataset.notificationId, false).then(() => openEntity(workflowButton.dataset.type, workflowButton.dataset.id, false)).catch(error => alert(error.message));
           return;
         }
+        if (action === "attach") {
+          quickAttachEntityFiles(workflowButton.dataset.type, workflowButton.dataset.id, workflowButton.dataset.title || "");
+          return;
+        }
         if (["open", "record", "review"].includes(action)) {
           openEntity(workflowButton.dataset.type, workflowButton.dataset.id, action !== "open").catch(error => alert(error.message));
           return;
@@ -10351,6 +10418,10 @@ function homePage() {
       if (button.dataset.action === "report") {
         const reportWindow = window.open("", "_blank");
         generateReport(button.dataset.type, button.dataset.id, reportWindow).catch(error => alert(error.message));
+        return;
+      }
+      if (button.dataset.action === "attach") {
+        quickAttachEntityFiles(button.dataset.type, button.dataset.id, button.dataset.title || "");
         return;
       }
       openEntity(button.dataset.type, button.dataset.id, button.dataset.action === "record").catch(error => alert(error.message));
