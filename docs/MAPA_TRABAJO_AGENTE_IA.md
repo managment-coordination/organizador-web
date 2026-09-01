@@ -670,11 +670,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-28 | Fase 5 - Agente completo | 74% tecnico / 60% funcional | Las consultas de deuda, contabilidad y presupuesto muestran aviso de vigencia con fecha maxima de datos importados desde Netfincas/banco y fuentes con cobertura | Mantener esta logica en futuros modulos economicos y conectores |
 | 2026-08-31 | Fase 5 - Agente completo | 80% tecnico / 66% funcional | Se activa email en modo propuesta con contrato `email_draft_v1`: prepara borrador editable de deuda/recibos, busca email del propietario, muestra vigencia y no envia ni crea borrador externo | Pasar a conciliacion bancaria revisable |
 | 2026-09-01 | Fase 5 - Comprension de reuniones largas | 84% tecnico / 70% funcional | Se anade deteccion de transcripcion larga, particion por asuntos operativos, reglas confirmadas por usuario, decision explicita, responsable Administracion por defecto y tarjetas con fragmento fuente | Probar desde web con reunion real y decidir si se vincula la transcripcion completa como documento/anexo comun |
+| 2026-09-01 | Fase 5 - IA externa transversal A-G | 94% tecnico / 76% funcional | Se crea cliente comun `callExternalAiJson`, router externo del agente, proteccion para no convertir consultas en acciones, analisis externo de reuniones largas, pulido externo de propuestas operativas, consultas y emails; `.env.example` documenta NVIDIA/OpenAI sin guardar claves | Activar API key real en servidor, probar reunion real con NVIDIA y ajustar prompts sobre casos de produccion |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-09-01.
-- Nucleo activo: Fase 5 - Agente completo / comprension profunda de reuniones largas.
+- Nucleo activo: Fase 5 - Agente completo / IA externa transversal.
 - Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
-- Avance actual: 84% tecnico / 70% funcional.
-- Pendiente inmediato: probar reunion real en web, revisar calidad de tarjetas y decidir vinculacion documental completa de la transcripcion.
+- Avance actual: 94% tecnico / 76% funcional.
+- Pendiente inmediato: configurar la API key real en el `.env` del servidor, validar respuestas con NVIDIA sobre reuniones reales y cerrar ajustes de prompt con ejemplos de produccion.

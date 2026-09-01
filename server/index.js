@@ -20,9 +20,9 @@ const host = process.env.HOST || "0.0.0.0";
 const appName = process.env.APP_NAME || "Organizador Web";
 const pythonBin = process.env.PYTHON_BIN || "python3";
 const aiProvider = (process.env.AI_PROVIDER || "local").toLowerCase();
-const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
+const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.ORGANIZADOR_NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
 const aiBaseUrl = process.env.AI_BASE_URL || (aiProvider === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://api.openai.com/v1");
-const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "meta/llama-3.1-70b-instruct" : "gpt-4.1-mini");
+const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "nvidia/llama-3.3-nemotron-super-49b-v1.5" : "gpt-4.1-mini");
 const dataDir = path.join(rootDir, "data");
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
@@ -2924,8 +2924,65 @@ function cleanAiJson(content) {
   return JSON.parse(text);
 }
 
+function aiExternalAvailable() {
+  return Boolean(aiApiKey && aiProvider !== "local");
+}
+
+function aiExternalLabel() {
+  return aiExternalAvailable() ? aiProvider : "local";
+}
+
+function aiChatCompletionsUrl() {
+  return `${aiBaseUrl.replace(/\/$/, "")}/chat/completions`;
+}
+
+async function callExternalAiJson({ system, user, purpose = "general", temperature = 0.1, maxTokens = 4096, timeoutMs = 150000 }) {
+  if (!aiExternalAvailable()) throw new Error("IA externa no configurada.");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(aiChatCompletionsUrl(), {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Authorization": `Bearer ${aiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: aiModel,
+        temperature,
+        max_tokens: maxTokens,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        response_format: { type: "json_object" },
+      }),
+    });
+  } catch (error) {
+    const reason = error?.name === "AbortError" ? `tiempo agotado en ${purpose}` : error.message;
+    throw new Error(`IA externa no disponible: ${reason}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    let detail = "";
+    try {
+      detail = (await response.text()).slice(0, 500);
+    } catch {}
+    throw new Error(`IA externa no disponible (${response.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const data = await response.json();
+  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
+  parsed.source = aiProvider;
+  parsed.ai_model = aiModel;
+  parsed.ai_purpose = purpose;
+  return parsed;
+}
+
 async function externalAiProposal(text, context) {
-      if (!aiApiKey || aiProvider === "local") return null;
+  if (!aiExternalAvailable()) return null;
   const catalog = {
     projects: (context.projects || []).slice(0, 80),
     tasks: (context.tasks || []).slice(0, 100),
@@ -2947,29 +3004,163 @@ async function externalAiProposal(text, context) {
     "Usa ids existentes solo si la coincidencia es clara.",
     "Formato: {action, confidence, answer, entity:{type,id,title}, candidates:[{type,id,title,score}], payload:{tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,responsable_proximo_paso,fecha_objetivo_proximo_paso,fecha_proxima_revision,proximo_paso,motivo_bloqueo,titulo,categoria,id_proyecto}}"
   ].join("\\n");
-  const response = await fetch(`${aiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${aiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: aiModel,
-      temperature: 0.1,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: `Catalogo visible:\n${JSON.stringify(catalog)}\n\nTexto recibido:\n${text}` },
-      ],
-      response_format: { type: "json_object" },
-    }),
+  return callExternalAiJson({
+    system,
+    purpose: "operational_proposal",
+    maxTokens: 5000,
+    user: `Catalogo visible:\n${JSON.stringify(catalog)}\n\nTexto recibido:\n${text}`,
   });
-  if (!response.ok) {
-    throw new Error(`IA externa no disponible (${response.status})`);
+}
+
+async function externalRefineOperationalProposal(proposal, sourceText, context = {}) {
+  if (!aiExternalAvailable() || !proposal?.payload || !AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action)) return proposal;
+  const safeProposal = {
+    action: proposal.action,
+    entity: proposal.entity || null,
+    current_snapshot: proposal.current_snapshot || {},
+    candidates: (proposal.candidates || []).slice(0, 6),
+    payload: proposal.payload || {},
+  };
+  const system = [
+    "Eres el redactor operativo experto de una aplicacion de gestion de comunidades.",
+    "Devuelve solo JSON valido.",
+    "No cambies la accion ni el destino seleccionado. No inventes datos, fechas, importes, acuerdos ni responsables.",
+    "Tu tarea es mejorar la calidad administrativa de comentario, proximo paso y titulo si procede.",
+    "El comentario debe ser formal, claro, ordenado y util para un expediente.",
+    "El proximo paso debe ser una accion concreta, sin repetir historico ni transcripcion.",
+    "Si el texto contiene una transcripcion o dictado informal, conviertelo en registro profesional.",
+    "Si hay dudas, mantenlas como riesgo o aclaracion dentro del comentario, no las conviertas en hechos.",
+    "Formato exacto: {payload:{titulo,categoria,tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,responsable_proximo_paso,fecha_objetivo_proximo_paso,fecha_proxima_revision,proximo_paso,motivo_bloqueo},notes:[string]}",
+  ].join("\n");
+  try {
+    const parsed = await callExternalAiJson({
+      system,
+      purpose: "operational_redaction",
+      maxTokens: 5000,
+      user: `Propuesta interna revisable:\n${JSON.stringify(safeProposal)}\n\nCatalogo resumido visible:\n${JSON.stringify({ projects: (context.projects || []).slice(0, 40), tasks: (context.tasks || []).slice(0, 50) })}\n\nTexto original:\n${String(sourceText || "").slice(0, 20000)}`,
+    });
+    const incoming = parsed.payload || {};
+    const allowed = new Set([
+      "titulo", "categoria", "tipo_registro", "comentario", "estado_nuevo", "prioridad_nueva",
+      "responsable_nuevo", "responsable_proximo_paso", "fecha_objetivo_proximo_paso",
+      "fecha_proxima_revision", "proximo_paso", "motivo_bloqueo",
+    ]);
+    const payload = { ...(proposal.payload || {}) };
+    for (const [key, value] of Object.entries(incoming)) {
+      if (!allowed.has(key)) continue;
+      const clean = String(value ?? "").trim();
+      if (clean) payload[key] = clean;
+    }
+    return {
+      ...proposal,
+      payload,
+      source: [proposal.source, parsed.source].filter(Boolean).join("+"),
+      ai_model: parsed.ai_model,
+      external_redaction: true,
+      external_notes: Array.isArray(parsed.notes) ? parsed.notes.slice(0, 5) : [],
+    };
+  } catch (error) {
+    return {
+      ...proposal,
+      external_warning: `${error.message}. Se mantiene redaccion local.`,
+    };
   }
-  const data = await response.json();
-  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
-  parsed.source = aiProvider;
-  return parsed;
+}
+
+async function externalMeetingAnalysis(text, context) {
+  if (!aiExternalAvailable()) return null;
+  const catalog = {
+    projects: (context.projects || []).slice(0, 120).map((item) => ({
+      type: "project", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, proximo_paso: item.proximo_paso || item.responsable_proximo_paso || "", comunidad: item.comunidad || "",
+    })),
+    tasks: (context.tasks || []).slice(0, 160).map((item) => ({
+      type: "task", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, proximo_paso: item.proximo_paso || "", comunidad: item.comunidad || "",
+    })),
+  };
+  const system = [
+    "Eres un analista operativo experto de reuniones de administracion de comunidades.",
+    "Devuelve solo JSON valido.",
+    "Analiza la reunion completa y separa asuntos reales. No mezcles varios asuntos en una sola propuesta.",
+    "Cada asunto debe ser una sola tarea/proyecto/seguimiento posible. Si corresponde a un elemento existente, indica su tipo, id y titulo.",
+    "No crees tareas por crear. Si el asunto amplia un proyecto/tarea existente, usa seguimiento.",
+    "Si no hay elemento claro pero el asunto es operativo, propon nuevo proyecto o nueva tarea solo si es defendible.",
+    "Si no esta claro, marca revisar_manual.",
+    "Las decisiones solo son decisiones si se expresan acuerdos claros; las opiniones o dudas son seguimiento.",
+    "Cuando no se deduzca responsable, usa Administracion.",
+    "Redacta como registro administrativo: categoria, estado sugerido, prioridad, responsables, comentario formal, puntos clave y proximo paso.",
+    "Formato exacto: {meeting_contract:'meeting_analysis_v1',items:[{action,confidence,entity:{type,id,title},candidates:[{type,id,title,score}],titulo,categoria,estado_sugerido,prioridad,responsable_actual,responsable_proximo_paso,responsable_externo,tipo_registro,comentario,puntos_clave:[string],proximo_paso,fecha_objetivo,pendiente_aclarar,justificacion}]}",
+  ].join("\n");
+  return callExternalAiJson({
+    system,
+    purpose: "meeting_analysis_v1",
+    maxTokens: 14000,
+    timeoutMs: 180000,
+    user: `Catalogo visible de tareas y proyectos:\n${JSON.stringify(catalog)}\n\nTranscripcion o resumen de reunion:\n${String(text || "").slice(0, 220000)}`,
+  });
+}
+
+function proposalFromMeetingItem(item, context, index) {
+  const rawAction = String(item?.action || "").trim();
+  const entityType = item?.entity?.type === "task" || item?.entity?.type === "project" ? item.entity.type : "";
+  const requestedAction = ["seguimiento_tarea", "seguimiento_proyecto", "crear_tarea", "crear_proyecto", "revisar_manual"].includes(rawAction)
+    ? rawAction
+    : entityType === "task"
+      ? "seguimiento_tarea"
+      : entityType === "project"
+        ? "seguimiento_proyecto"
+        : normalizeText(item?.titulo || item?.comentario || "").includes("proyecto")
+          ? "crear_proyecto"
+          : "crear_tarea";
+  let action = requestedAction;
+  const kind = action.includes("tarea") ? "task" : "project";
+  const candidates = Array.isArray(item?.candidates) ? item.candidates : [];
+  let entity = item?.entity && item.entity.id ? { type: entityType || kind, id: Number(item.entity.id), title: item.entity.title || "" } : null;
+  if (!entity && ["seguimiento_tarea", "seguimiento_proyecto"].includes(action)) {
+    const sourceRows = kind === "task" ? (context.tasks || []) : (context.projects || []);
+    const text = [item?.titulo, item?.comentario, item?.proximo_paso, item?.justificacion].filter(Boolean).join(" ");
+    const best = sourceRows
+      .map((row) => ({ type: kind, id: row.id, title: row.titulo, score: scoreTextMatch(text, row.titulo) }))
+      .sort((a, b) => b.score - a.score)[0];
+    if (best && best.score >= 2) entity = best;
+  }
+  if (["seguimiento_tarea", "seguimiento_proyecto"].includes(action) && !entity?.id) action = "revisar_manual";
+  const points = Array.isArray(item?.puntos_clave) ? item.puntos_clave.map((line) => String(line || "").trim()).filter(Boolean).slice(0, 6) : [];
+  const comment = [
+    String(item?.comentario || "").trim(),
+    points.length ? "Puntos clave:\n" + points.map((line) => `- ${line}`).join("\n") : "",
+    String(item?.responsable_externo || "").trim() ? `Responsable externo/proveedor mencionado: ${String(item.responsable_externo).trim()}` : "",
+    String(item?.justificacion || "").trim() ? `Criterio de interpretacion: ${String(item.justificacion).trim()}` : "",
+  ].filter(Boolean).join("\n\n");
+  const proposal = {
+    client_id: index + 1,
+    source: aiExternalLabel(),
+    confidence: Math.max(0.2, Math.min(0.98, Number(item?.confidence || 0.72))),
+    action,
+    answer: action === "revisar_manual"
+      ? "Asunto detectado por IA externa, pendiente de confirmar destino antes de guardar."
+      : "Asunto detectado por IA externa y preparado como propuesta revisable.",
+    entity,
+    candidates: entity ? [entity, ...candidates.filter((candidate) => Number(candidate.id) !== Number(entity.id)).slice(0, 5)] : candidates.slice(0, 6),
+    payload: {
+      titulo: String(item?.titulo || entity?.title || `Asunto de reunion ${index + 1}`).slice(0, 160),
+      categoria: String(item?.categoria || "Gestión").trim(),
+      tipo_registro: String(item?.tipo_registro || "").trim() || (normalizeText(item?.comentario || "").includes("decide") ? "Decisión" : "Seguimiento"),
+      comentario: comment || String(item?.titulo || "").trim(),
+      estado_nuevo: String(item?.estado_sugerido || (kind === "task" ? "Pendiente" : "En curso")).trim(),
+      prioridad_nueva: String(item?.prioridad || "Media").trim(),
+      responsable_nuevo: String(item?.responsable_actual || item?.responsable_proximo_paso || "Administracion").trim(),
+      responsable_proximo_paso: String(item?.responsable_proximo_paso || item?.responsable_actual || "Administracion").trim(),
+      fecha_objetivo_proximo_paso: normalizeImportDate(item?.fecha_objetivo || ""),
+      fecha_proxima_revision: normalizeImportDate(item?.fecha_objetivo || ""),
+      proximo_paso: String(item?.proximo_paso || "Revisar el asunto y confirmar la siguiente actuacion.").trim(),
+      motivo_bloqueo: normalizeText(item?.estado_sugerido || "").includes("bloque") ? String(item?.justificacion || "").trim() : "",
+    },
+    meeting_analysis: true,
+    external_meeting_item: true,
+    meeting_source_excerpt: String(item?.comentario || item?.titulo || "").slice(0, 1600),
+    questions: item?.pendiente_aclarar ? ["Confirmar destino y alcance antes de guardar."] : [],
+  };
+  return withAiProposalContract(polishAiProposal(proposal, comment || item?.titulo || ""));
 }
 
 function fallbackAssemblyMinutes(detail) {
@@ -2992,7 +3183,7 @@ function fallbackAssemblyMinutes(detail) {
 }
 
 async function externalAssemblyMinutes(detail, minutes) {
-  if (!aiApiKey || aiProvider === "local") return fallbackAssemblyMinutes(detail);
+  if (!aiExternalAvailable()) return fallbackAssemblyMinutes(detail);
   const item = detail.assembly || {};
   const points = (detail.points || []).map((point, index) => ({
     id_punto: Number(point.id_punto),
@@ -3017,30 +3208,13 @@ async function externalAssemblyMinutes(detail, minutes) {
     lugar: item.lugar_celebracion || item.ubicacion,
     puntos,
   };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 150000);
-  let response;
-  try {
-    response = await fetch(`${aiBaseUrl.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: { "Authorization": `Bearer ${aiApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: aiModel,
-        temperature: 0.1,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: `Datos generales y resultados bloqueados:\n${JSON.stringify(privateFreeContext)}\n\nTranscripcion para resumir:\n${String(minutes.transcripcion || "").slice(0, 400000)}` },
-        ],
-        response_format: { type: "json_object" },
-      }),
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-  if (!response.ok) throw new Error(`IA externa no disponible (${response.status}).`);
-  const data = await response.json();
-  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
+  const parsed = await callExternalAiJson({
+    system,
+    purpose: "assembly_minutes",
+    maxTokens: 12000,
+    timeoutMs: 150000,
+    user: `Datos generales y resultados bloqueados:\n${JSON.stringify(privateFreeContext)}\n\nTranscripcion para resumir:\n${String(minutes.transcripcion || "").slice(0, 400000)}`,
+  });
   const validIds = new Set(points.map((point) => Number(point.id_punto)));
   parsed.puntos = Array.isArray(parsed.puntos) ? parsed.puntos.filter((point) => validIds.has(Number(point.id_punto))).map((point) => ({
     id_punto: Number(point.id_punto),
@@ -4624,10 +4798,52 @@ finally:
   return runPythonJson(script);
 }
 
+async function externalPolishEmailDraft(result, sourceText) {
+  if (!aiExternalAvailable() || !result?.payload?.body) return result;
+  const system = [
+    "Eres un redactor profesional para administracion de comunidades de propietarios.",
+    "Devuelve solo JSON valido.",
+    "Reescribe el email para que sea claro, formal, conciso y util.",
+    "No inventes destinatarios, importes, recibos, fechas, estados, acuerdos ni anexos.",
+    "No elimines advertencias de vigencia de datos ni referencias a revision.",
+    "Si hay listado de recibos o tabla, mantenlo ordenado y legible.",
+    "No envies nada. Solo devuelve asunto y cuerpo.",
+    "Formato exacto: {subject,body,notes:[string]}",
+  ].join("\n");
+  try {
+    const parsed = await callExternalAiJson({
+      system,
+      purpose: "email_draft_redaction",
+      maxTokens: 7000,
+      user: `Borrador generado por datos internos:\n${JSON.stringify({
+        subject: result.payload.subject || "",
+        body: result.payload.body || "",
+        facts: result.facts || {},
+        display: result.display || {},
+        freshness: result.freshness || null,
+      })}\n\nPeticion original:\n${String(sourceText || "").slice(0, 12000)}`,
+    });
+    return {
+      ...result,
+      source: [result.source, parsed.source].filter(Boolean).join("+"),
+      ai_model: parsed.ai_model,
+      external_redaction: true,
+      payload: {
+        ...(result.payload || {}),
+        subject: String(parsed.subject || result.payload.subject || "").trim(),
+        body: String(parsed.body || result.payload.body || "").trim(),
+      },
+      external_notes: Array.isArray(parsed.notes) ? parsed.notes.slice(0, 5) : [],
+    };
+  } catch (error) {
+    return { ...result, warning: [result.warning, `${error.message}. Se mantiene borrador local.`].filter(Boolean).join(" ") };
+  }
+}
+
 async function prepareAgentEmailDraft(session, text) {
   const cleanText = String(text || "").trim();
   if (emailDraftLooksLikeExecutiveSummary(cleanText)) {
-    return prepareAgentExecutiveSummaryEmailDraft(session, cleanText);
+    return externalPolishEmailDraft(await prepareAgentExecutiveSummaryEmailDraft(session, cleanText), cleanText);
   }
   if (!emailDraftLooksLikeDebtNotice(cleanText)) {
     return {
@@ -4712,7 +4928,7 @@ async function prepareAgentEmailDraft(session, text) {
       ],
     },
   };
-  return result;
+  return externalPolishEmailDraft(result, cleanText);
 }
 
 function targetedRecordProposal(text, context, target) {
@@ -4769,7 +4985,8 @@ async function analyzeWithAi(session, text, target = null) {
   }
   const finalizeProposal = async (proposal) => {
     const polished = polishAiProposal(proposal, cleanText);
-    const improved = applyRedactionRulesToProposal(polished, redactionRules, cleanText);
+    const externallyRefined = await externalRefineOperationalProposal(polished, cleanText, context);
+    const improved = applyRedactionRulesToProposal(externallyRefined, redactionRules, cleanText);
     const ids = (improved.used_rules || []).map((rule) => Number(rule.id_regla)).filter(Boolean);
     if (ids.length) {
       try {
@@ -4791,6 +5008,48 @@ async function analyzeWithAi(session, text, target = null) {
     return finalizeProposal(external ? { ...fallback, ...external, fallbackSource: fallback.source } : fallback);
   } catch (error) {
     return finalizeProposal({ ...fallback, warning: `${error.message}. Se ha usado analisis local sin consumo externo.` });
+  }
+}
+
+async function externalPolishQueryAnswer(result, question) {
+  if (!aiExternalAvailable() || !result?.handled || !result?.answer) return result;
+  if (!["consulta", "fuera_de_alcance"].includes(String(result.action || "consulta"))) return result;
+  const system = [
+    "Eres el copiloto de consulta de una aplicacion de gestion de comunidades.",
+    "Devuelve solo JSON valido.",
+    "Reformula la respuesta para que sea clara, escaneable y profesional.",
+    "Usa exclusivamente los datos internos recibidos. No inventes importes, propietarios, emails, fechas, comunidades, recibos ni conclusiones.",
+    "Si hay muchas filas, resume el criterio y conserva que la tabla/listado completo esta en display.",
+    "Mantén avisos de vigencia de datos cuando existan.",
+    "Distingue dato confirmado, inferencia y pendiente de comprobar.",
+    "Formato exacto: {answer,summary,notes:[string]}",
+  ].join("\n");
+  try {
+    const parsed = await callExternalAiJson({
+      system,
+      purpose: "query_answer_redaction",
+      maxTokens: 5000,
+      timeoutMs: 90000,
+      user: `Pregunta:\n${question}\n\nRespuesta y datos internos:\n${JSON.stringify({
+        answer: result.answer,
+        query_domain: result.query_domain,
+        data_status: result.data_status,
+        facts: result.facts || {},
+        display: result.display || {},
+        freshness: result.freshness || null,
+        sources: result.sources || [],
+      }).slice(0, 70000)}`,
+    });
+    return {
+      ...result,
+      source: [result.source, parsed.source].filter(Boolean).join("+"),
+      ai_model: parsed.ai_model,
+      answer: String(parsed.answer || result.answer || "").trim(),
+      external_summary: String(parsed.summary || "").trim(),
+      external_notes: Array.isArray(parsed.notes) ? parsed.notes.slice(0, 5) : [],
+    };
+  } catch (error) {
+    return { ...result, warning: [result.warning, `${error.message}. Se mantiene respuesta local.`].filter(Boolean).join(" ") };
   }
 }
 
@@ -4838,6 +5097,7 @@ async function answerAiQuery(session, text) {
     data_status: result.data_status || ((result.questions || []).length ? "incompleto" : "inferido"),
     sources: Array.isArray(result.sources) ? result.sources : [],
   };
+  result = await externalPolishQueryAnswer(result, cleanText);
   result = withAiProposalContract(result);
   try {
     const saved = await runAiHistoryCommand(session, "save", { pregunta: cleanText, respuesta: result });
@@ -5056,6 +5316,47 @@ async function analyzeGuidedAutomationBatch(session, text) {
   const segments = splitGuidedAutomationText(text);
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
   const meetingMode = isLongMeetingTranscript(text);
+  if (meetingMode && aiExternalAvailable()) {
+    const context = await queryAiContext(session);
+    try {
+      const external = await externalMeetingAnalysis(text, context);
+      const items = Array.isArray(external?.items) ? external.items.slice(0, 30) : [];
+      if (items.length) {
+        const proposals = items.map((item, index) => {
+          const proposal = proposalFromMeetingItem(item, context, index);
+          return {
+            ...proposal,
+            batch_item: index + 1,
+            batch_contract: "guided_batch_item_v1",
+            source_text: [item.titulo, item.comentario, item.proximo_paso].filter(Boolean).join("\n\n"),
+            selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action) && !proposal.needs_entity_confirmation,
+          };
+        });
+        return {
+          ok: true,
+          source: external.source || aiProvider,
+          ai_model: external.ai_model || aiModel,
+          batch_contract: "guided_batch_v1",
+          batch_mode: "external_long_meeting",
+          meeting_contract: "meeting_analysis_v1",
+          meeting_rules: {
+            prefer_existing_followup: true,
+            uncertain_items: "no_importar_pendiente_aclarar",
+            president_decision_only_if_explicit: true,
+            default_unclear_responsible: "Administracion",
+            source_document_should_be_linked: true,
+          },
+          requires_confirmation: true,
+          writes_data: false,
+          total: proposals.length,
+          actionable: proposals.filter((proposal) => proposal.selected).length,
+          proposals,
+        };
+      }
+    } catch (error) {
+      // Si la IA externa falla, mantenemos el flujo local para no bloquear el trabajo diario.
+    }
+  }
   const proposals = [];
   for (let index = 0; index < segments.length; index += 1) {
     const sourceText = segments[index];
@@ -5626,6 +5927,71 @@ function detectAgentIntent(text) {
   };
 }
 
+function normalizeAgentIntentDecision(raw, fallback) {
+  const valid = new Set(["consulta", "accion", "lote", "informe", "email", "aclaracion"]);
+  const intent = valid.has(String(raw?.intent || "")) ? String(raw.intent) : fallback.intent;
+  const confidence = Math.max(0, Math.min(0.98, Number(raw?.confidence ?? fallback.confidence ?? 0.4)));
+  return {
+    intent,
+    confidence,
+    reason: String(raw?.reason || fallback.reason || "Clasificacion del agente.").slice(0, 1000),
+    questions: Array.isArray(raw?.questions) ? raw.questions.map((question) => String(question || "").trim()).filter(Boolean).slice(0, 6) : (fallback.questions || []),
+    source: raw?.source || aiExternalLabel(),
+    ai_model: raw?.ai_model || "",
+  };
+}
+
+async function externalAgentIntent(text, localDecision, tools) {
+  if (!aiExternalAvailable()) return null;
+  const system = [
+    "Eres el router central de un agente de gestion de comunidades.",
+    "Devuelve solo JSON valido.",
+    "Clasifica la intencion del usuario, no ejecutes nada.",
+    "Intenciones permitidas: consulta, accion, lote, informe, email, aclaracion.",
+    "consulta: preguntas sobre propietarios, deuda, recibos, presupuesto, tareas, proyectos, documentos, seguridad, asambleas o datos internos.",
+    "accion: crear/actualizar tarea/proyecto/incidencia o registrar seguimiento individual.",
+    "lote: reunion, transcripcion larga o texto con muchos asuntos para dividir en propuestas revisables.",
+    "informe: preparar o generar informe Word/acta/documento interno.",
+    "email: redactar un texto o borrador para copiar/enviar por correo.",
+    "aclaracion: cuando sea sensible, destructivo, externo o falten datos criticos.",
+    "Nunca clasifiques como accion una pregunta del tipo cuanto debe, quien es propietario, listado de deuda, balance o presupuesto.",
+    "Si el usuario pega una reunion larga con varios asuntos, usa lote.",
+    "Formato exacto: {intent,confidence,reason,questions:[string]}",
+  ].join("\n");
+  return callExternalAiJson({
+    system,
+    purpose: "agent_router",
+    maxTokens: 1200,
+    timeoutMs: 60000,
+    user: `Decision local inicial:\n${JSON.stringify(localDecision)}\n\nHerramientas disponibles:\n${JSON.stringify(tools)}\n\nMensaje del usuario:\n${String(text || "").slice(0, 30000)}`,
+  });
+}
+
+async function decideAgentIntent(text, tools) {
+  const local = detectAgentIntent(text);
+  if (!aiExternalAvailable()) return { ...local, source: "local" };
+  try {
+    const external = normalizeAgentIntentDecision(await externalAgentIntent(text, local, tools), local);
+    const localStrongQuery = local.intent === "consulta" && Number(local.confidence || 0) >= 0.72;
+    if (localStrongQuery && external.intent !== "consulta") {
+      return {
+        ...local,
+        source: "local_safety",
+        external_intent_ignored: external,
+        reason: `${local.reason} La IA externa proponia ${external.intent}, pero se mantiene consulta por seguridad.`,
+      };
+    }
+    if (external.confidence >= 0.58 || local.confidence < 0.6) return external;
+  } catch (error) {
+    return {
+      ...local,
+      source: "local",
+      external_router_warning: `${error.message}. Se usa router local.`,
+    };
+  }
+  return { ...local, source: "local" };
+}
+
 function agentNeedsPreviousContext(text) {
   const normalized = normalizeText(text);
   return /\b(eso|ese|esa|este|esta|estos|estas|lo anterior|anterior|continua|sigue|sigamos|tambien|ademas|añadele|anadele|sumale|actualizalo|modificalo|hazlo|preparalo|incluye esto|sobre lo mismo)\b/i.test(normalized);
@@ -5781,7 +6147,8 @@ async function answerAgentMessage(session, text) {
   }
   const contextual = buildAgentContextualText(cleanText, recentContext);
   const effectiveText = contextual.text || cleanText;
-  const decision = detectAgentIntent(effectiveText);
+  const availableTools = getAgentToolCatalog(session);
+  const decision = await decideAgentIntent(effectiveText, availableTools);
   const selectedTool = selectAgentTool(session, effectiveText, decision.intent);
   const base = {
     ok: true,
@@ -5790,11 +6157,15 @@ async function answerAgentMessage(session, text) {
     intent: decision.intent,
     confidence: decision.confidence,
     reason: decision.reason,
+    decision_source: decision.source || "local",
+    decision_model: decision.ai_model || "",
+    external_router_warning: decision.external_router_warning || "",
+    external_intent_ignored: decision.external_intent_ignored || null,
     requires_confirmation: ["accion", "lote", "informe", "email"].includes(decision.intent),
     writes_data: false,
     tool: selectedTool?.endpoint || "",
     selected_tool: selectedTool,
-    available_tools: getAgentToolCatalog(session),
+    available_tools: availableTools,
     conversation_context: {
       used: contextual.used,
       recent_count: recentContext.length,
@@ -12923,8 +13294,10 @@ async function handle(req, res) {
       readonly: false,
       actionsEnabled: true,
       aiEnabled: true,
-      aiProvider: aiApiKey && aiProvider !== "local" ? aiProvider : "local",
-      aiExternalConfigured: Boolean(aiApiKey && aiProvider !== "local"),
+      aiProvider: aiExternalLabel(),
+      aiExternalConfigured: aiExternalAvailable(),
+      aiModel: aiExternalAvailable() ? aiModel : "",
+      aiBaseUrl: aiExternalAvailable() ? aiBaseUrl.replace(/\/$/, "") : "",
       timestamp: new Date().toISOString()
     });
   }
