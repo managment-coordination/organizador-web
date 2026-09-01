@@ -29,7 +29,7 @@ requireIncludes(server, "ORGANIZADOR_NVIDIA_API_KEY", "falta compatibilidad con 
 
 requireIncludes(envExample, "AI_PROVIDER=nvidia", ".env.example no documenta proveedor NVIDIA");
 requireIncludes(envExample, "AI_BASE_URL=https://integrate.api.nvidia.com/v1", ".env.example no documenta base URL NVIDIA");
-requireIncludes(envExample, "AI_MODEL=nvidia/llama-3.3-nemotron-super-49b-v1.5", ".env.example no documenta modelo NVIDIA recomendado");
+requireIncludes(envExample, "AI_MODEL=nvidia/nemotron-3-super-120b-a12b", ".env.example no documenta modelo NVIDIA recomendado");
 requireIncludes(envExample, "AI_API_KEY=", ".env.example no documenta AI_API_KEY");
 
 if (failures.length) {

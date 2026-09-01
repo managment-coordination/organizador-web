@@ -22,7 +22,7 @@ const pythonBin = process.env.PYTHON_BIN || "python3";
 const aiProvider = (process.env.AI_PROVIDER || "local").toLowerCase();
 const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.ORGANIZADOR_NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
 const aiBaseUrl = process.env.AI_BASE_URL || (aiProvider === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://api.openai.com/v1");
-const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "nvidia/llama-3.3-nemotron-super-49b-v1.5" : "gpt-4.1-mini");
+const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "nvidia/nemotron-3-super-120b-a12b" : "gpt-4.1-mini");
 const dataDir = path.join(rootDir, "data");
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
