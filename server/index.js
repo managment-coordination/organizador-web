@@ -5120,7 +5120,7 @@ async function analyzeWithAi(session, text, target = null) {
   };
   const targeted = targetedRecordProposal(cleanText, context, target);
   if (targeted) return finalizeProposal(targeted);
-  const pastedOperational = looksLikePastedOperationalConversation(cleanText) || isLongMeetingTranscript(cleanText);
+  const pastedOperational = looksLikePastedOperationalConversation(cleanText) || isLongMeetingTranscript(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText);
   if (!pastedOperational) {
     const smart = await querySmartAssistant(session, cleanText);
     if (smart?.handled) return finalizeProposal(smart);
@@ -5256,6 +5256,19 @@ function isLongMeetingTranscript(text) {
   return value.length > 9000 || speakerMarks >= 5 || (lineCount > 90 && meetingScore >= 3);
 }
 
+function looksLikeMeetingOrMultiTopicText(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const normalized = normalizeText(value);
+  const meetingSignal = /\b(reunion|seguimiento|acta|presidente|elena|luis|varios asuntos|puntos tratados)\b/i.test(normalized);
+  const topicMarkers = (normalized.match(/\b(primero|segundo|tercero|cuarto|quinto|por otro lado|ademas|tambien|proximo paso|siguiente paso|se acuerda|queda pendiente)\b/g) || []).length;
+  const operationalCount = [
+    "proyecto", "tarea", "incidencia", "proveedor", "presupuesto", "seguridad", "mantenimiento",
+    "obra", "farola", "arqueta", "contenedor", "reciclaje", "panel", "revision", "valoracion",
+  ].reduce((total, token) => total + (normalized.includes(token) ? 1 : 0), 0);
+  return value.length > 650 && meetingSignal && topicMarkers >= 3 && operationalCount >= 3;
+}
+
 function looksLikePastedOperationalConversation(text) {
   const value = String(text || "").trim();
   if (!value) return false;
@@ -5276,7 +5289,7 @@ function shouldUseAgentPreviousContext(text) {
   const cleanText = String(text || "").trim();
   if (!cleanText) return false;
   if (cleanText.length > 700) return false;
-  if (isLongMeetingTranscript(cleanText) || looksLikePastedOperationalConversation(cleanText)) return false;
+  if (isLongMeetingTranscript(cleanText) || looksLikePastedOperationalConversation(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText)) return false;
   return /\b(eso|ese|esa|este|esta|estos|estas|lo anterior|anterior|continua|sigue|sigamos|tambien|ademas|añadele|anadele|sumale|actualizalo|modificalo|hazlo|preparalo|incluye esto|sobre lo mismo)\b/i.test(normalizeText(cleanText));
 }
 
@@ -5454,7 +5467,7 @@ function splitGuidedAutomationText(text) {
   }
   if (current.length) headed.push(current.join("\n").trim());
   if (headed.length > 1) return headed.slice(0, 20);
-  if (isLongMeetingTranscript(cleanText)) {
+  if (isLongMeetingTranscript(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText)) {
     const meetingSegments = splitLongMeetingText(cleanText);
     if (meetingSegments.length > 1) return meetingSegments;
   }
@@ -5481,9 +5494,10 @@ function splitGuidedAutomationText(text) {
 async function analyzeGuidedAutomationBatch(session, text) {
   const segments = splitGuidedAutomationText(text);
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
-  const meetingMode = isLongMeetingTranscript(text) || looksLikePastedOperationalConversation(text);
+  const meetingMode = isLongMeetingTranscript(text) || looksLikePastedOperationalConversation(text) || looksLikeMeetingOrMultiTopicText(text);
+  let context = null;
   if (meetingMode && aiExternalAvailable()) {
-    const context = await queryAiContext(session);
+    context = await queryAiContext(session);
     try {
       const external = await externalMeetingAnalysis(text, context);
       const items = Array.isArray(external?.items) ? external.items.slice(0, 30) : [];
@@ -5523,11 +5537,25 @@ async function analyzeGuidedAutomationBatch(session, text) {
       // Si la IA externa falla, mantenemos el flujo local para no bloquear el trabajo diario.
     }
   }
+  if (meetingMode && !context) context = await queryAiContext(session);
   const proposals = [];
   for (let index = 0; index < segments.length; index += 1) {
     const sourceText = segments[index];
     let proposal = await analyzeOperationalWithAi(session, sourceText);
-    if (meetingMode) proposal = normalizeMeetingProposal(proposal, sourceText);
+    if (meetingMode) {
+      proposal = normalizeMeetingProposal(proposal, sourceText);
+      proposal = completeMeetingProposal(proposal, {
+        titulo: proposal.payload?.titulo || `Asunto de reunion ${index + 1}`,
+        comentario: sourceText,
+        proximo_paso: proposal.payload?.proximo_paso || "",
+        responsable_proximo_paso: proposal.payload?.responsable_proximo_paso || "",
+        estado_sugerido: proposal.payload?.estado_nuevo || "",
+        prioridad: proposal.payload?.prioridad_nueva || "",
+        categoria: proposal.payload?.categoria || "",
+        tipo_registro: proposal.payload?.tipo_registro || "Seguimiento",
+        fragmento_origen: sourceText,
+      }, context || { projects: [], tasks: [] }, index);
+    }
     proposals.push({
       ...proposal,
       batch_item: index + 1,
@@ -6028,11 +6056,11 @@ function detectAgentIntent(text) {
   }
   const normalized = normalizeText(cleanText);
   const segments = splitGuidedAutomationText(cleanText);
-  if (looksLikePastedOperationalConversation(cleanText)) {
+  if (looksLikePastedOperationalConversation(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText)) {
     return {
       intent: "lote",
       confidence: 0.84,
-      reason: "El texto parece una llamada o conversacion operativa pegada y debe convertirse en propuesta revisable, sin arrastrar contexto anterior.",
+      reason: "El texto parece una reunion, llamada o resumen operativo con varios asuntos y debe convertirse en propuestas revisables, sin arrastrar contexto anterior.",
       questions: [],
     };
   }
@@ -6146,7 +6174,7 @@ async function decideAgentIntent(text, tools) {
   if (!aiExternalAvailable()) return { ...local, source: "local" };
   try {
     const external = normalizeAgentIntentDecision(await externalAgentIntent(text, local, tools), local);
-    const pastedOperational = looksLikePastedOperationalConversation(text) || isLongMeetingTranscript(text);
+    const pastedOperational = looksLikePastedOperationalConversation(text) || isLongMeetingTranscript(text) || looksLikeMeetingOrMultiTopicText(text);
     if (pastedOperational && !["lote", "accion"].includes(external.intent)) {
       return {
         ...local,
