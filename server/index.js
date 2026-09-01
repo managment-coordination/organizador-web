@@ -5004,8 +5004,11 @@ async function analyzeWithAi(session, text, target = null) {
   };
   const targeted = targetedRecordProposal(cleanText, context, target);
   if (targeted) return finalizeProposal(targeted);
-  const smart = await querySmartAssistant(session, cleanText);
-  if (smart?.handled) return finalizeProposal(smart);
+  const pastedOperational = looksLikePastedOperationalConversation(cleanText) || isLongMeetingTranscript(cleanText);
+  if (!pastedOperational) {
+    const smart = await querySmartAssistant(session, cleanText);
+    if (smart?.handled) return finalizeProposal(smart);
+  }
   const fallback = localAiProposal(cleanText, context);
   try {
     const external = await externalAiProposal(cleanText, context);
@@ -5151,7 +5154,7 @@ function looksLikePastedOperationalConversation(text) {
     "linea", "fallo", "reparacion", "mantenimiento",
   ].reduce((total, token) => total + (normalized.includes(normalizeText(token)) ? 1 : 0), 0);
   const hasDialogueFlow = /[¿?]\s*\w|(?:\b(?:si|vale|ya|claro|total|entonces)\b[.,]?){2,}/i.test(value);
-  return value.length > 900 && conversationalSignals >= 3 && operationalSignals >= 2 && hasDialogueFlow;
+  return value.length > 500 && conversationalSignals >= 2 && operationalSignals >= 2 && hasDialogueFlow;
 }
 
 function shouldUseAgentPreviousContext(text) {
