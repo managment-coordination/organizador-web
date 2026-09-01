@@ -5876,8 +5876,33 @@ else:
         WHERE tipo_entidad = 'proyecto' AND id_proyecto = ?
         ORDER BY fecha_adjuntado DESC, id_anexo DESC
     """, (entity_id,))]
+reports = []
+if role != "Presidente":
+    report_rows = [dict(r) for r in conn.execute("""
+        SELECT id_informe, fecha_generacion, tipo_informe, id_proyecto, archivo_word, observaciones, usuario
+        FROM informes
+        WHERE COALESCE(archivo_word,'') <> ''
+        ORDER BY fecha_generacion DESC, id_informe DESC
+        LIMIT 500
+    """)]
+    for report in report_rows:
+        metadata = {}
+        try:
+            metadata = json.loads(report.get("observaciones") or "{}")
+        except Exception:
+            metadata = {}
+        direct_project = entity_type == "project" and int(report.get("id_proyecto") or 0) == entity_id
+        metadata_match = (
+            str(metadata.get("tipo_entidad") or "") == ("tarea" if entity_type == "task" else "proyecto")
+            and int(metadata.get("id_entidad") or 0) == entity_id
+        )
+        if direct_project or metadata_match:
+            report["metadata"] = metadata
+            reports.append(report)
+        if len(reports) >= 12:
+            break
 conn.close()
-print(json.dumps({"item": dict(item), "history": history, "attachments": attachments}, ensure_ascii=False))
+print(json.dumps({"item": dict(item), "history": history, "attachments": attachments, "reports": reports}, ensure_ascii=False))
 `;
   const result = await runPythonJson(script);
   result.attachments = (result.attachments || []).map((row) => {
@@ -6587,15 +6612,29 @@ function homePage() {
     .detailGrid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:8px; }
     .detailBox { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:9px; font-size:13px; }
     .detailBox strong { display:block; margin-bottom:3px; }
+    .entityBrief { display:grid; gap:12px; border-left:6px solid var(--blue); }
+    .entityBriefTop { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; }
+    .entityBriefTop h2 { font-size:20px; }
+    .entityBriefNext { background:#f8fafc; border:1px solid #dbe3ee; border-radius:8px; padding:11px; display:grid; gap:7px; }
+    .entityBriefNext strong { display:block; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.02em; }
+    .entityBriefNext p { margin:0; line-height:1.45; white-space:pre-wrap; }
+    .entityBriefStats { display:grid; grid-template-columns:repeat(3,minmax(110px,1fr)); gap:8px; }
+    .entityBriefStat { border:1px solid #e2e8f0; border-radius:8px; padding:9px; background:white; }
+    .entityBriefStat span { display:block; color:var(--muted); font-size:12px; font-weight:700; }
+    .entityBriefStat strong { display:block; margin-top:3px; font-size:16px; overflow-wrap:anywhere; }
     textarea { width:100%; min-height:110px; resize:vertical; border:1px solid #cbd5e1; border-radius:6px; padding:10px 11px; font:14px Segoe UI, Arial, sans-serif; }
     .quickRecord { background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px; margin:10px 0 12px; }
     .quickRecord h3 { margin:0 0 6px; font-size:16px; }
     .quickRecord textarea { min-height:170px; background:white; }
     .formGrid { display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:9px; }
     .history { display:grid; gap:8px; }
-    .historyItem { border:1px solid #e2e8f0; border-left:5px solid #94a3b8; border-radius:8px; padding:10px; background:#fff; }
-    .historyItem h4 { margin:0 0 6px; font-size:14px; }
+    .historyItem { position:relative; border:1px solid #e2e8f0; border-left:5px solid #94a3b8; border-radius:8px; padding:10px; background:#fff; }
+    .historyItem h4 { margin:0 0 6px; font-size:14px; display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
     .historyItem p { margin:5px 0 0; white-space:pre-wrap; line-height:1.35; }
+    .historyItem.decision { border-left-color:#b45309; background:#fffbeb; }
+    .historyItem.risk { border-left-color:#b91c1c; background:#fff5f5; }
+    .historyComment { font-size:14px; }
+    .historyNext { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:8px; }
     .attachmentGrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:9px; }
     .attachmentCard { border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:white; display:grid; gap:8px; min-width:0; }
     .attachmentCard h4 { margin:0; font-size:14px; overflow-wrap:anywhere; }
@@ -6603,6 +6642,9 @@ function homePage() {
     .attachmentIcon { height:86px; display:grid; place-items:center; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; color:#475569; font-weight:800; font-size:13px; }
     .uploadBox { border:2px dashed #94a3b8; border-radius:8px; padding:12px; background:#f8fafc; display:grid; gap:9px; }
     .uploadBox input { width:100%; }
+    .entityReportList { display:grid; gap:8px; }
+    .entityReportItem { border:1px solid #e2e8f0; border-radius:8px; background:white; padding:10px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+    .entityReportItem h4 { margin:0 0 4px; font-size:14px; overflow-wrap:anywhere; }
     .reportMessage { min-height:20px; }
     .tabBadge { min-width:24px; text-align:center; border-radius:999px; padding:2px 7px; background:#dbeafe; color:#1e3a8a; font-size:12px; font-weight:800; }
     .tabBadge.alert { background:#fee2e2; color:#991b1b; }
@@ -7212,6 +7254,9 @@ function homePage() {
     .mapSectionHead h3 { font-size:16px; }
     .specialPanel, .assemblyPane { box-shadow:0 5px 16px rgba(25,26,25,.04); }
     .quickRecord { background:#edf3f5; border-color:#c6d8df; }
+    .entityBrief { background:var(--surface); border-color:var(--line); border-left-color:var(--blue); box-shadow:0 5px 16px rgba(25,26,25,.04); }
+    .entityBriefNext { background:#f4f5f4; border-color:#dedfdd; }
+    .entityBriefStat, .entityReportItem { background:var(--surface); border-color:var(--line); }
     .decisionBox { background:#f6f5f1; border-color:#ddd9cf; }
     .answerHero { border-color:#ccdce6; border-left-color:var(--blue); background:var(--surface); }
     .answerCard { background:var(--surface); border-color:var(--line); }
@@ -7288,6 +7333,9 @@ function homePage() {
       .workTodaySummary { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
       .workTodayPanel { padding:10px; }
       .workTodayPanel .contentHead { display:flex; align-items:flex-start; }
+      .entityBriefTop { grid-template-columns:1fr; }
+      .entityBriefStats { grid-template-columns:repeat(3,minmax(0,1fr)); }
+      .entityReportItem { grid-template-columns:1fr; }
       .count strong { font-size:21px; }
       .count span { font-size:11px; line-height:1.2; }
       .workbench { gap:9px; }
@@ -7555,12 +7603,14 @@ function homePage() {
           </div>
           <div class="modalActions">
             <button id="generateReportButton">Generar informe</button>
+            <button class="green" id="focusRecordButton">Actualizar</button>
             <button class="ghost" id="toggleEditEntity">Editar ficha</button>
             <button class="red" id="archiveEntityButton">Archivar</button>
             <button class="ghost" id="closeModal">Cerrar</button>
           </div>
         </div>
         <div class="modalBody">
+          <section class="entityBrief" id="entityBrief"></section>
           <section>
             <h2>Resumen</h2>
             <div class="detailGrid" id="detailGrid"></div>
@@ -7656,6 +7706,10 @@ function homePage() {
               </div>
             </div>
             <div class="attachmentGrid" id="attachmentsList"></div>
+          </section>
+          <section id="entityReportsLogSection">
+            <h2>Informes generados</h2>
+            <div class="entityReportList" id="entityReportsList"></div>
           </section>
           <section id="entityReportSection">
             <h2>Informe Word</h2>
@@ -8034,6 +8088,28 @@ function homePage() {
       return '<div class="detailBox"><strong>' + html(label) + '</strong>' + html(value || "Sin dato") + '</div>';
     }
 
+    function briefStat(label, value) {
+      return '<div class="entityBriefStat"><span>' + html(label) + '</span><strong>' + html(value || "0") + '</strong></div>';
+    }
+
+    function entityBriefHtml(item, type, history, attachments, reports, reportsAllowed) {
+      const stateText = itemState(item, type) || "Sin estado";
+      const title = itemTitle(item, type) || "Sin titulo";
+      const nextOwner = item.responsable_proximo_paso || itemOwner(item, type) || "Sin asignar";
+      const date = item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision || "";
+      const nextStep = item.proximo_paso || item.observaciones || "Sin proximo paso definido.";
+      const last = (history || [])[0] || {};
+      const lastComment = safe(last.comentario);
+      const reportCount = reportsAllowed ? String((reports || []).length) : "No visible";
+      return '<div class="entityBriefTop"><div><div class="meta"><span class="pill">' + html(type === "project" ? "Proyecto" : "Tarea") + '</span><span class="pill state-' + slug(stateText) + '">' + html(stateText) + '</span><span class="pill">' + html(item.prioridad || "Sin prioridad") + '</span><span class="pill">' + html(item.comunidad || "Sin comunidad") + '</span></div><h2>' + html(title) + '</h2></div><div class="entityBriefStats">' +
+          briefStat("Seguimientos", String((history || []).length)) +
+          briefStat("Anexos", String((attachments || []).length)) +
+          briefStat("Informes", reportCount) +
+        '</div></div>' +
+        '<div class="entityBriefNext"><strong>Proximo paso</strong><p>' + html(nextStep) + '</p><div class="meta"><span class="pill">Responsable: ' + html(nextOwner) + '</span><span class="pill">Fecha: ' + html(date || "Sin fecha") + '</span></div>' +
+        (lastComment ? '<div class="line"><strong>Ultimo comentario:</strong> ' + html(lastComment) + '</div>' : '') + '</div>';
+    }
+
     function entityId(item, type) {
       return type === "project" ? item.id_proyecto : item.id_tarea;
     }
@@ -8073,17 +8149,32 @@ function homePage() {
       $("historyList").innerHTML = history.length ? history.map(row => {
         const stateChange = [row.estado_anterior, row.estado_nuevo].filter(Boolean).join(" -> ");
         const ownerChange = [row.responsable_anterior, row.responsable_nuevo].filter(Boolean).join(" -> ");
-        return '<article class="historyItem">' +
-          '<h4>' + html(row.fecha_hora || "") + ' - ' + html(row.tipo_registro || "Seguimiento") + '</h4>' +
+        const nextOwner = row.responsable_proximo_paso ? '<span class="pill">Proximo: ' + html(row.responsable_proximo_paso) + '</span>' : '';
+        const nextDate = row.fecha_objetivo_proximo_paso ? '<span class="pill">Fecha: ' + html(row.fecha_objetivo_proximo_paso) + '</span>' : '';
+        const typeText = row.tipo_registro || "Seguimiento";
+        const itemClass = /decision|aprob|rechaz/i.test(typeText + " " + (row.comentario || "")) ? " decision" : (/bloque/i.test(String(row.estado_nuevo || "")) ? " risk" : "");
+        return '<article class="historyItem' + itemClass + '">' +
+          '<h4><span>' + html(typeText) + '</span><span class="muted">' + html(row.fecha_hora || "") + '</span></h4>' +
           '<div class="meta">' +
             (stateChange ? '<span class="pill">' + html(stateChange) + '</span>' : '') +
             (ownerChange ? '<span class="pill">' + html(ownerChange) + '</span>' : '') +
+            nextOwner +
+            nextDate +
             (row.usuario ? '<span class="pill">' + html(row.usuario) + '</span>' : '') +
           '</div>' +
-          '<p>' + html(row.comentario || "") + '</p>' +
-          (row.proximo_paso ? '<p><strong>Proximo paso:</strong> ' + html(row.proximo_paso) + '</p>' : '') +
+          '<p class="historyComment">' + html(row.comentario || "") + '</p>' +
+          (row.proximo_paso ? '<p class="historyNext"><strong>Proximo paso:</strong> ' + html(row.proximo_paso) + '</p>' : '') +
         '</article>';
       }).join("") : '<div class="empty">No hay historial.</div>';
+    }
+
+    function renderEntityReports(reports, reportsAllowed) {
+      $("entityReportsLogSection").classList.toggle("hidden", !reportsAllowed);
+      if (!reportsAllowed) return;
+      $("entityReportsList").innerHTML = reports.length ? reports.map(row => {
+        const url = "/api/report/download?id=" + encodeURIComponent(row.id_informe) + "&inline=1";
+        return '<article class="entityReportItem"><div><h4>' + html(row.archivo_word || "Informe") + '</h4><div class="meta"><span class="pill">' + html(row.tipo_informe || "Informe") + '</span><span class="pill">' + html(row.fecha_generacion || "") + '</span>' + (row.usuario ? '<span class="pill">' + html(row.usuario) + '</span>' : '') + '</div></div><a href="' + url + '" target="_blank" rel="noopener"><button class="ghost">Abrir</button></a></article>';
+      }).join("") : '<div class="empty">Todavia no se han generado informes de esta ficha.</div>';
     }
 
     function renderAttachments(attachments) {
@@ -8247,8 +8338,10 @@ function homePage() {
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
       const writable = canWrite();
       const reportsAllowed = (state.usuario || {}).rol !== "Presidente";
+      $("entityBrief").innerHTML = entityBriefHtml(item, type, detail.history || [], detail.attachments || [], detail.reports || [], reportsAllowed);
       $("generateReportButton").classList.toggle("hidden", !reportsAllowed);
       $("entityReportSection").classList.toggle("hidden", !reportsAllowed);
+      $("focusRecordButton").classList.toggle("hidden", !writable || (state.usuario || {}).rol === "Presidente");
       $("toggleEditEntity").classList.toggle("hidden", !writable);
       $("archiveEntityButton").classList.toggle("hidden", !writable);
       $("attachmentUploadBox").classList.toggle("hidden", !writable);
@@ -8284,8 +8377,14 @@ function homePage() {
       $("recordSection").classList.toggle("hidden", (state.usuario || {}).rol === "Presidente");
       renderHistory(detail.history || []);
       renderAttachments(detail.attachments || []);
+      renderEntityReports(detail.reports || [], reportsAllowed);
       $("entityModal").classList.remove("hidden");
-      if (focusRecord) setTimeout(() => $("quickRecordText").focus(), 50);
+      if (focusRecord) setTimeout(focusRecordSection, 50);
+    }
+
+    function focusRecordSection() {
+      $("recordSection").scrollIntoView({ behavior: "smooth", block: "start" });
+      $("quickRecordText").focus();
     }
 
     function fillRecordFromProposal(proposal) {
@@ -11575,6 +11674,7 @@ function homePage() {
     $("archiveEntityButton").addEventListener("click", archiveSelectedEntity);
     $("generateReportButton").addEventListener("click", generateSelectedReport);
     $("generateReportBottom").addEventListener("click", generateSelectedReport);
+    $("focusRecordButton").addEventListener("click", focusRecordSection);
     $("uploadAttachmentsButton").addEventListener("click", uploadSelectedAttachments);
     $("newProjectButton").addEventListener("click", () => openCreateModal("project").catch(error => alert(error.message)));
     $("newTaskButton").addEventListener("click", () => openCreateModal("task").catch(error => alert(error.message)));
