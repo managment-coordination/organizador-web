@@ -5137,7 +5137,33 @@ function isLongMeetingTranscript(text) {
   return value.length > 9000 || speakerMarks >= 5 || (lineCount > 90 && meetingScore >= 3);
 }
 
+function looksLikePastedOperationalConversation(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const normalized = normalizeText(value);
+  const conversationalSignals = [
+    "buenos dias", "pues mira", "te llamo", "me dijo", "me dice", "le dije", "vale", "venga",
+    "escuchame", "sabes lo que te digo", "me entiendes", "no pasa nada", "te cuento",
+  ].reduce((total, token) => total + (normalized.includes(normalizeText(token)) ? 1 : 0), 0);
+  const operationalSignals = [
+    "farola", "farolas", "fusible", "bloque optico", "obra", "arqueta", "led", "perfil",
+    "proveedor", "valoracion", "presupuesto", "mañana", "manana", "mirarlo", "organices",
+    "linea", "fallo", "reparacion", "mantenimiento",
+  ].reduce((total, token) => total + (normalized.includes(normalizeText(token)) ? 1 : 0), 0);
+  const hasDialogueFlow = /[¿?]\s*\w|(?:\b(?:si|vale|ya|claro|total|entonces)\b[.,]?){2,}/i.test(value);
+  return value.length > 900 && conversationalSignals >= 3 && operationalSignals >= 2 && hasDialogueFlow;
+}
+
+function shouldUseAgentPreviousContext(text) {
+  const cleanText = String(text || "").trim();
+  if (!cleanText) return false;
+  if (cleanText.length > 700) return false;
+  if (isLongMeetingTranscript(cleanText) || looksLikePastedOperationalConversation(cleanText)) return false;
+  return /\b(eso|ese|esa|este|esta|estos|estas|lo anterior|anterior|continua|sigue|sigamos|tambien|ademas|añadele|anadele|sumale|actualizalo|modificalo|hazlo|preparalo|incluye esto|sobre lo mismo)\b/i.test(normalizeText(cleanText));
+}
+
 const MEETING_TOPIC_RULES = [
+  { id: "iluminacion_rafadona", title: "Iluminacion Rafadona y farolas pendientes", keywords: ["rafadona", "farola", "farolas", "bloque optico", "fusible", "linea", "obra", "arqueta", "led", "perfil", "reductor", "potenciometro"] },
   { id: "reciclaje_contenedores", title: "Punto de reciclaje y contenedores", keywords: ["contenedor", "contenedores", "reciclaje", "basura", "grua", "camion", "muro", "puerta", "camara"] },
   { id: "rotura_agua_drenaje", title: "Rotura de agua y drenaje", keywords: ["rotura", "agua", "drenaje", "tanque", "contador", "llenado", "limpian con agua", "presion"] },
   { id: "pintura_isleta", title: "Pintura de isleta de entrada", keywords: ["pintura", "isleta", "arcen", "arcén", "spray", "vial", "entrada"] },
@@ -5314,6 +5340,21 @@ function splitGuidedAutomationText(text) {
     const meetingSegments = splitLongMeetingText(cleanText);
     if (meetingSegments.length > 1) return meetingSegments;
   }
+  if (looksLikePastedOperationalConversation(cleanText)) {
+    const meetingSegments = splitLongMeetingText([
+      "TIPO DE ORIGEN: Llamada o conversacion operativa",
+      "CRITERIO: Separar por asuntos si hay mas de uno. Preferir seguimiento sobre creacion. Si no hay destino claro, dejar pendiente de aclarar.",
+      "",
+      cleanText,
+    ].join("\n"));
+    if (meetingSegments.length > 1) return meetingSegments;
+    return [[
+      "TIPO DE ORIGEN: Llamada o conversacion operativa",
+      "CRITERIO: Preparar propuesta revisable. No usar contexto anterior salvo referencia explicita.",
+      "",
+      cleanText,
+    ].join("\n").slice(0, 8000)];
+  }
   const paragraphs = cleanText.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
   if (paragraphs.length > 1 && paragraphs.every((part) => part.length <= 1800)) return paragraphs.slice(0, 20);
   return [cleanText.slice(0, 8000)];
@@ -5322,7 +5363,7 @@ function splitGuidedAutomationText(text) {
 async function analyzeGuidedAutomationBatch(session, text) {
   const segments = splitGuidedAutomationText(text);
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
-  const meetingMode = isLongMeetingTranscript(text);
+  const meetingMode = isLongMeetingTranscript(text) || looksLikePastedOperationalConversation(text);
   if (meetingMode && aiExternalAvailable()) {
     const context = await queryAiContext(session);
     try {
@@ -5869,6 +5910,14 @@ function detectAgentIntent(text) {
   }
   const normalized = normalizeText(cleanText);
   const segments = splitGuidedAutomationText(cleanText);
+  if (looksLikePastedOperationalConversation(cleanText)) {
+    return {
+      intent: "lote",
+      confidence: 0.84,
+      reason: "El texto parece una llamada o conversacion operativa pegada y debe convertirse en propuesta revisable, sin arrastrar contexto anterior.",
+      questions: [],
+    };
+  }
   if (segments.length > 1) {
     return {
       intent: "lote",
@@ -5979,6 +6028,15 @@ async function decideAgentIntent(text, tools) {
   if (!aiExternalAvailable()) return { ...local, source: "local" };
   try {
     const external = normalizeAgentIntentDecision(await externalAgentIntent(text, local, tools), local);
+    const pastedOperational = looksLikePastedOperationalConversation(text) || isLongMeetingTranscript(text);
+    if (pastedOperational && !["lote", "accion"].includes(external.intent)) {
+      return {
+        ...local,
+        source: "local_transcript_safety",
+        external_intent_ignored: external,
+        reason: `${local.reason} La IA externa proponia ${external.intent}, pero se mantiene lote/accion porque el texto parece una transcripcion operativa pegada.`,
+      };
+    }
     const localStrongQuery = local.intent === "consulta" && Number(local.confidence || 0) >= 0.72;
     if (localStrongQuery && external.intent !== "consulta") {
       return {
@@ -6000,8 +6058,7 @@ async function decideAgentIntent(text, tools) {
 }
 
 function agentNeedsPreviousContext(text) {
-  const normalized = normalizeText(text);
-  return /\b(eso|ese|esa|este|esta|estos|estas|lo anterior|anterior|continua|sigue|sigamos|tambien|ademas|añadele|anadele|sumale|actualizalo|modificalo|hazlo|preparalo|incluye esto|sobre lo mismo)\b/i.test(normalized);
+  return shouldUseAgentPreviousContext(text);
 }
 
 function agentContextExcerpt(value, limit = 1200) {

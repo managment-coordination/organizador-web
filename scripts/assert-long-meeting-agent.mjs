@@ -4,9 +4,14 @@ const source = readFileSync(new URL("../server/index.js", import.meta.url), "utf
 
 const required = [
   "function isLongMeetingTranscript",
+  "function looksLikePastedOperationalConversation",
+  "function shouldUseAgentPreviousContext",
   "const MEETING_TOPIC_RULES",
   "function splitLongMeetingText",
   "function normalizeMeetingProposal",
+  "local_transcript_safety",
+  "sin arrastrar contexto anterior",
+  "Iluminacion Rafadona y farolas pendientes",
   "prefer_existing_followup",
   "uncertain_items: \"no_importar_pendiente_aclarar\"",
   "president_decision_only_if_explicit",
