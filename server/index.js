@@ -123,17 +123,24 @@ function sendError(res, error) {
   return sendJson(res, status, { ok: false, error: message });
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = 8 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let tooLarge = false;
     req.on("data", (chunk) => {
+      if (tooLarge) return;
       body += chunk;
-      if (body.length > 1000000) {
-        reject(new Error("Solicitud demasiado grande."));
-        req.destroy();
+      if (Buffer.byteLength(body, "utf8") > maxBytes) {
+        tooLarge = true;
+        body = "";
+        req.resume();
       }
     });
     req.on("end", () => {
+      if (tooLarge) {
+        reject(new Error(`Solicitud demasiado grande. Limite actual: ${Math.round(maxBytes / 1024 / 1024)} MB.`));
+        return;
+      }
       if (!body.trim()) {
         resolve({});
         return;
