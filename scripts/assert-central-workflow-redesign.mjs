@@ -16,6 +16,11 @@ const required = [
   '$("contentTitle").textContent = "Trabajo Hoy";',
   '$("workTab").classList.toggle("hidden", user.rol !== "Presidente");',
   '$("reviewTab").classList.add("hidden");',
+  '<details class="navGroup">',
+  '<summary>Herramientas</summary>',
+  'if (navGroup && target && navGroup.contains($(target))) navGroup.open = true;',
+  '$("newProjectButton").classList.toggle("hidden", currentView !== "projects");',
+  '$("newTaskButton").classList.toggle("hidden", currentView !== "tasks");',
   '<h3>Actualizar con IA</h3>',
   '$("quickRecordBox").classList.toggle("hidden", !canWrite());',
 ];

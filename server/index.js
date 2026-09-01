@@ -6536,6 +6536,12 @@ function homePage() {
     .tab { width:100%; display:flex; justify-content:space-between; align-items:center; text-align:left; background:var(--surface-soft); color:#1f2937; border:1px solid var(--line); }
     .tab.active { background:var(--blue); color:white; border-color:var(--blue); }
     .tab span:last-child { font-weight:800; }
+    .navGroup { border:1px solid var(--line); border-radius:8px; background:var(--surface-soft); padding:6px; }
+    .navGroup summary { cursor:pointer; font-weight:800; color:#1f2937; padding:8px 9px; list-style:none; }
+    .navGroup summary::-webkit-details-marker { display:none; }
+    .navGroup summary::after { content:"+"; float:right; font-weight:900; }
+    .navGroup[open] summary::after { content:"-"; }
+    .navGroupBody { display:grid; gap:7px; margin-top:5px; }
     .filters { display:grid; gap:9px; margin-top:12px; }
     input, select { border:1px solid #cbd5e1; border-radius:6px; padding:10px 11px; font:14px Segoe UI, Arial, sans-serif; width:100%; min-height:40px; background:white; color:var(--ink); }
     .toolbar { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
@@ -7076,6 +7082,12 @@ function homePage() {
     .tabBadge { background:rgba(48,95,127,.35); color:#dcebf5; }
     .tabBadge.alert { background:rgba(165,59,67,.35); color:#ffdfe1; }
     .navDivider { background:rgba(255,255,255,.13); margin:7px 2px; }
+    .navGroup {
+      border-color:rgba(255,255,255,.12);
+      background:rgba(255,255,255,.045);
+    }
+    .navGroup summary { color:rgba(255,255,255,.82); }
+    .navGroupBody .tab { background:transparent; }
     .filters { margin-top:16px; padding-top:12px; border-top:1px solid rgba(255,255,255,.13); gap:7px; }
     .sidebar label { color:rgba(255,255,255,.67); }
     .sidebar input, .sidebar select {
@@ -7480,13 +7492,18 @@ function homePage() {
             <div class="navDivider"></div>
             <button class="tab hidden" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
             <button class="tab hidden" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
-            <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
-            <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
-            <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
-            <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
-            <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
-            <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
-            <button class="tab hidden" id="adminTab" data-view="admin"><span>Administracion</span><span>Usuarios</span></button>
+            <details class="navGroup">
+              <summary>Herramientas</summary>
+              <div class="navGroupBody">
+                <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
+                <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
+                <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
+                <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
+                <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
+                <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
+                <button class="tab hidden" id="adminTab" data-view="admin"><span>Administracion</span><span>Usuarios</span></button>
+              </div>
+            </details>
           </div>
           <div class="filters" id="listFilters">
             <div>
@@ -8526,6 +8543,8 @@ function homePage() {
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
+      const navGroup = document.querySelector(".navGroup");
+      if (navGroup && target && navGroup.contains($(target))) navGroup.open = true;
       $("appView").dataset.view = view;
       syncMobileNavigation();
     }
@@ -8593,14 +8612,10 @@ function homePage() {
       ).join("") : '<div class="empty">No hay elementos críticos en este momento.</div>';
       return '<div class="homeHero"><div><h2>Buenos días, ' + html((state.usuario || {}).nombre || "") + '</h2><p>Resumen operativo actualizado para tus comunidades.</p></div><div class="homeActions">' + actions + '</div></div>' +
         '<div class="grid homeMetrics">' +
-          countCard("Elementos activos", metrics.activos || 0) +
+          countCard("Trabajo activo", metrics.activos || 0) +
+          countCard(president ? "Decisiones pendientes" : "Acciones para mi", president ? (state.workflow.president_requests || []).length : (state.workflow.actions || []).length) +
           countCard("Necesitan acción", ((daily.map || {}).counts || {})["Necesita acción"] || 0) +
-          countCard("Pendientes de terceros", ((daily.map || {}).counts || {})["Pendiente de terceros"] || 0) +
           countCard("Bloqueados / riesgo", ((daily.map || {}).counts || {})["Bloqueado / riesgo"] || 0) +
-          countCard("Urgentes", metrics.urgentes || 0) +
-          countCard("Sin revisar > 7 días", metrics.sin_revisar || 0) +
-          countCard("Documentos", (daily.documents || []).length) +
-          countCard(president ? "Decisiones pendientes" : "Notificaciones sin leer", president ? (state.workflow.president_requests || []).length : (state.workflow.unread_notifications || 0)) +
         '</div>' +
         '<section><div class="contentHead"><div><h2>Atención prioritaria</h2><p class="muted">Elementos que requieren actuación o presentan riesgo.</p></div></div><div class="attentionList">' + attentionRows + '</div></section>';
     }
@@ -10021,6 +10036,8 @@ function homePage() {
         : "Tareas visibles segun tus comunidades y permisos.";
       $("visibleCount").textContent = rows.length + " de " + activeRows().length + " visibles";
       $("viewActions").classList.toggle("hidden", !canWrite());
+      $("newProjectButton").classList.toggle("hidden", currentView !== "projects");
+      $("newTaskButton").classList.toggle("hidden", currentView !== "tasks");
       $("cards").innerHTML = rows.length ? page.rows.map(card).join("") + page.footer : '<div class="empty">No hay elementos con esos filtros.</div>';
     }
 
