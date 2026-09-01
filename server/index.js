@@ -6754,6 +6754,23 @@ function homePage() {
     .answerTable th, .answerTable td { border-bottom:1px solid #e2e8f0; padding:8px; text-align:left; vertical-align:top; }
     .answerTable th { background:#f8fafc; color:#334155; font-size:12px; }
     .answerNote { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:10px; color:#7c2d12; }
+    .copilotFab { position:fixed; right:18px; bottom:18px; z-index:26; border-radius:999px; padding:12px 16px; box-shadow:0 16px 36px rgba(15,23,42,.22); display:flex; gap:8px; align-items:center; }
+    .copilotFab.hidden { display:none; }
+    .copilotBackdrop { position:fixed; inset:0; background:rgba(15,23,42,.26); z-index:35; opacity:1; transition:opacity .16s ease; }
+    .copilotBackdrop.hidden { display:none; }
+    .copilotPanel { position:fixed; top:0; right:0; height:100vh; width:min(520px,100%); background:white; border-left:1px solid var(--line); z-index:36; box-shadow:-22px 0 52px rgba(15,23,42,.2); display:grid; grid-template-rows:auto 1fr; }
+    .copilotPanel.hidden { display:none; }
+    .copilotHead { padding:15px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
+    .copilotHead h2 { font-size:20px; }
+    .copilotBody { padding:14px; overflow:auto; display:grid; gap:12px; align-content:start; }
+    .copilotContext { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px; font-size:13px; color:#334155; white-space:pre-wrap; max-height:155px; overflow:auto; }
+    .copilotInput { min-height:150px; }
+    .copilotQuickActions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    .copilotQuickActions button { min-height:40px; padding:8px 9px; }
+    .copilotResult { display:grid; gap:10px; }
+    .copilotResult .answerHero h3 { font-size:18px; }
+    .copilotResultActions { display:flex; gap:8px; flex-wrap:wrap; }
+    .copilotResultActions button { flex:1 1 150px; }
     .navDivider { height:1px; background:#dbe3ee; margin:3px 0; grid-column:1 / -1; }
     .homeHero { border:1px solid #bfdbfe; border-left:6px solid var(--blue); background:#f8fbff; border-radius:8px; padding:16px; margin-bottom:12px; display:flex; justify-content:space-between; gap:16px; align-items:center; }
     .homeHero h2 { font-size:23px; }
@@ -7336,6 +7353,9 @@ function homePage() {
       .entityBriefTop { grid-template-columns:1fr; }
       .entityBriefStats { grid-template-columns:repeat(3,minmax(0,1fr)); }
       .entityReportItem { grid-template-columns:1fr; }
+      .copilotFab { right:12px; bottom:12px; padding:11px 13px; }
+      .copilotPanel { width:100%; }
+      .copilotQuickActions { grid-template-columns:1fr 1fr; }
       .count strong { font-size:21px; }
       .count span { font-size:11px; line-height:1.2; }
       .workbench { gap:9px; }
@@ -7603,6 +7623,7 @@ function homePage() {
           </div>
           <div class="modalActions">
             <button id="generateReportButton">Generar informe</button>
+            <button id="entityCopilotButton">Copiloto</button>
             <button class="green" id="focusRecordButton">Actualizar</button>
             <button class="ghost" id="toggleEditEntity">Editar ficha</button>
             <button class="red" id="archiveEntityButton">Archivar</button>
@@ -7722,6 +7743,36 @@ function homePage() {
         </div>
       </div>
     </div>
+    <button class="copilotFab hidden" id="copilotFab" type="button"><span>IA</span><strong>Copiloto</strong></button>
+    <div class="copilotBackdrop hidden" id="copilotBackdrop"></div>
+    <aside class="copilotPanel hidden" id="copilotPanel" aria-label="Copiloto IA contextual">
+      <div class="copilotHead">
+        <div>
+          <h2>Copiloto IA</h2>
+          <p class="muted">Trabaja con el contexto de la pantalla actual. Nada se guarda sin confirmacion.</p>
+        </div>
+        <button class="ghost" id="closeCopilot" type="button">Cerrar</button>
+      </div>
+      <div class="copilotBody">
+        <div>
+          <label>Contexto detectado</label>
+          <div class="copilotContext" id="copilotContextBox">Sin contexto cargado.</div>
+        </div>
+        <div class="copilotQuickActions">
+          <button class="ghost" data-copilot-preset="ask">Preguntar</button>
+          <button class="ghost" data-copilot-preset="update">Actualizar</button>
+          <button class="ghost" data-copilot-preset="summary">Resumen email</button>
+          <button class="ghost" data-copilot-preset="risks">Riesgos</button>
+        </div>
+        <textarea id="copilotText" class="copilotInput" placeholder="Ejemplo: resume esta ficha para enviar por email / que necesita accion aqui / registra que he hablado con el proveedor..."></textarea>
+        <div class="toolbar">
+          <button class="green" id="copilotSend">Enviar al copiloto</button>
+          <button class="ghost" id="copilotOpenCenter">Abrir Centro IA</button>
+          <span class="muted" id="copilotMessage"></span>
+        </div>
+        <div class="copilotResult" id="copilotResult"></div>
+      </div>
+    </aside>
     <div id="createModal" class="modalBackdrop hidden">
       <div class="modal">
         <div class="modalHead">
@@ -7945,6 +7996,8 @@ function homePage() {
       $("appView").classList.add("hidden");
       $("logoutTop").classList.add("hidden");
       $("changeCommunityTop").classList.add("hidden");
+      $("copilotFab").classList.add("hidden");
+      closeCopilot();
       $("communityScopeModal").classList.add("hidden");
       $("sessionStatus").textContent = "Sin sesion";
       $("loginMessage").textContent = message;
@@ -8342,6 +8395,7 @@ function homePage() {
       $("generateReportButton").classList.toggle("hidden", !reportsAllowed);
       $("entityReportSection").classList.toggle("hidden", !reportsAllowed);
       $("focusRecordButton").classList.toggle("hidden", !writable || (state.usuario || {}).rol === "Presidente");
+      $("entityCopilotButton").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol));
       $("toggleEditEntity").classList.toggle("hidden", !writable);
       $("archiveEntityButton").classList.toggle("hidden", !writable);
       $("attachmentUploadBox").classList.toggle("hidden", !writable);
@@ -8682,6 +8736,83 @@ function homePage() {
       document.body.classList.remove("mobile-drawer-open");
       $("mobileDrawer").setAttribute("aria-hidden", "true");
       $("mobileMenuToggle").setAttribute("aria-expanded", "false");
+    }
+
+    function screenContextForCopilot() {
+      const title = safe($("contentTitle")?.textContent);
+      const subtitle = safe($("contentSubtitle")?.textContent);
+      const visible = safe($("visibleCount")?.textContent);
+      const context = [
+        "Vista actual: " + (title || currentView),
+        subtitle ? "Descripcion: " + subtitle : "",
+        visible ? "Conteo visible: " + visible : "",
+      ];
+      if (!$("entityModal").classList.contains("hidden") && selectedEntity) {
+        context.push("Ficha abierta: " + (selectedEntity.type === "project" ? "Proyecto" : "Tarea"));
+        context.push("Titulo: " + itemTitle(selectedEntity.item, selectedEntity.type));
+        context.push("Estado: " + itemState(selectedEntity.item, selectedEntity.type));
+        context.push("Responsable actual: " + itemOwner(selectedEntity.item, selectedEntity.type));
+        context.push("Proximo responsable: " + safe(selectedEntity.item.responsable_proximo_paso || ""));
+        context.push("Proximo paso: " + safe(selectedEntity.item.proximo_paso || selectedEntity.item.observaciones || ""));
+        const briefText = safe($("entityBrief")?.innerText).slice(0, 1200);
+        if (briefText) context.push("Resumen visible de ficha: " + briefText);
+      } else if (currentView === "map") {
+        const map = (state.daily || {}).map || {};
+        context.push("Bloques de Trabajo Hoy: " + Object.entries(map.counts || {}).map(([key, value]) => key + " " + value).join(", "));
+      } else if (["tasks", "projects"].includes(currentView)) {
+        const rows = activeRows();
+        context.push("Listado: " + rows.length + " elemento(s) accesibles.");
+        context.push("Filtros: busqueda=" + safe($("search")?.value || "sin filtro") + ", estado=" + safe($("stateFilter")?.value || "todos") + ", comunidad=" + safe($("communityFilter")?.value || "todas"));
+        context.push("Primeros elementos visibles: " + rows.slice(0, 8).map(row => rowTitle(row)).filter(Boolean).join(" | "));
+      } else if (currentView === "security") {
+        const overview = securityData.overview || {};
+        context.push("Seguridad: pendientes=" + safe(overview.pending || 0) + ", incidencias=" + safe(overview.total || 0));
+      } else if (currentView === "assemblies") {
+        context.push(selectedAssemblyId ? "Asamblea abierta ID: " + selectedAssemblyId : "Listado de asambleas.");
+      }
+      return context.filter(Boolean).join("\\n");
+    }
+
+    function updateCopilotContext() {
+      const text = screenContextForCopilot();
+      $("copilotContextBox").textContent = text || "Sin contexto cargado.";
+      return text;
+    }
+
+    function openCopilot(preset = "") {
+      if (!["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol)) return;
+      updateCopilotContext();
+      $("copilotPanel").classList.remove("hidden");
+      $("copilotBackdrop").classList.remove("hidden");
+      applyCopilotPreset(preset);
+      setTimeout(() => $("copilotText").focus(), 30);
+    }
+
+    function closeCopilot() {
+      $("copilotPanel").classList.add("hidden");
+      $("copilotBackdrop").classList.add("hidden");
+    }
+
+    function applyCopilotPreset(preset) {
+      const prompts = {
+        ask: "Responde usando el contexto de esta pantalla: ",
+        update: "Prepara una actualizacion revisable para esta ficha con lo siguiente: ",
+        summary: "Prepara un resumen ejecutivo profesional para copiar en un email sobre esta ficha o pantalla.",
+        risks: "Analiza esta pantalla y dime que asuntos requieren atencion, riesgos o siguientes pasos.",
+      };
+      if (prompts[preset]) $("copilotText").value = prompts[preset];
+    }
+
+    function copilotContextualText() {
+      const userText = safe($("copilotText").value);
+      const context = updateCopilotContext();
+      return [
+        "Contexto de pantalla actual para el copiloto:",
+        context || "Sin contexto de pantalla.",
+        "",
+        "Instruccion del usuario:",
+        userText,
+      ].join("\\n");
     }
 
     function mobilePage(rows, key, pageSize = 8) {
@@ -9999,6 +10130,7 @@ function homePage() {
 
     function render() {
       const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin"].includes(currentView);
+      $("copilotFab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol));
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
@@ -10736,6 +10868,79 @@ function homePage() {
           const target = response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : response.intent === "email" ? $("agentEmailPreview") : $("aiOperationResult");
           if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
         });
+      }
+    }
+
+    function renderCopilotResponse(response) {
+      const result = response?.result || {};
+      const guidance = response?.guidance || {};
+      const answer = result.answer || response.message || "Respuesta preparada.";
+      const confidence = Math.round((response.confidence || result.confidence || 0) * 100);
+      const actionable = ["accion", "lote", "informe", "email"].includes(response.intent);
+      $("copilotResult").innerHTML =
+        '<div class="answerHero"><h3>' + html(agentIntentLabel(response.intent)) + '</h3><p>' + html(answer) + '</p></div>' +
+        '<div class="meta"><span class="pill">Confianza ' + html(confidence) + '%</span><span class="pill">' + html(actionable ? "Revisable" : "Solo lectura") + '</span>' + (result.data_status ? '<span class="pill">' + html(agentDataStatusLabel(result.data_status)) + '</span>' : '') + '</div>' +
+        (response.message && response.message !== answer ? '<div class="line">' + html(response.message) + '</div>' : '') +
+        (result.freshness?.summary ? '<div class="answerNote">' + html(result.freshness.summary) + '</div>' : '') +
+        renderAgentGuidance(guidance) +
+        '<div class="copilotResultActions">' +
+          '<button class="ghost" id="copyCopilotAnswer">Copiar respuesta</button>' +
+          (actionable ? '<button class="green" id="sendCopilotToCenter">Revisar en Centro IA</button>' : '<button class="ghost" id="sendCopilotToCenter">Abrir Centro IA</button>') +
+        '</div>';
+      $("copyCopilotAnswer").addEventListener("click", () => copyTextToClipboard(answer, "copilotMessage"));
+      $("sendCopilotToCenter").addEventListener("click", () => {
+        const original = safe($("copilotText").value);
+        closeCopilot();
+        switchView("ai");
+        setTimeout(() => openCopilotResultInCenter(response, original), 60);
+      });
+    }
+
+    function openCopilotResultInCenter(response, originalText) {
+      if ($("agentText")) $("agentText").value = originalText || "";
+      if (response?.intent === "accion") {
+        aiProposal = response.result;
+        if ($("aiText")) $("aiText").value = originalText || "";
+        if ($("aiMessage")) $("aiMessage").textContent = "Propuesta cargada desde Copiloto IA.";
+        renderAiProposal(aiProposal, "aiOperationResult");
+      } else if (response?.intent === "lote") {
+        aiBatch = response.result;
+        if ($("aiBatchText")) $("aiBatchText").value = originalText || "";
+        if ($("aiBatchMessage")) $("aiBatchMessage").textContent = "Lote cargado desde Copiloto IA.";
+        renderAiBatch();
+      } else if (response?.intent === "consulta") {
+        if ($("aiQueryText")) $("aiQueryText").value = originalText || "";
+        renderAiProposal(response.result || {}, "aiQueryResult");
+      } else if (response?.intent === "email") {
+        renderAgentEmailDraft(response.result || {}, "agentResult");
+      } else if (response?.intent === "informe") {
+        agentReportProposal = response.result;
+        renderAgentReportProposal(response.result || {}, "agentResult");
+      } else {
+        renderAgentDecision(response);
+      }
+      $("agentText")?.focus();
+    }
+
+    async function askCopilot() {
+      if (!safe($("copilotText").value)) {
+        $("copilotMessage").textContent = "Escribe primero que necesitas.";
+        return;
+      }
+      $("copilotSend").disabled = true;
+      $("copilotMessage").textContent = "Analizando con contexto...";
+      $("copilotResult").innerHTML = "";
+      try {
+        if (!options.responsables.length) await loadOptions();
+        const response = await api("/api/agent/message", { method: "POST", body: JSON.stringify({ text: copilotContextualText() }) });
+        $("copilotMessage").textContent = response.message || "Respuesta preparada.";
+        agentContextLoaded = false;
+        agentActionsLoaded = false;
+        renderCopilotResponse(response);
+      } catch (error) {
+        $("copilotMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      } finally {
+        $("copilotSend").disabled = false;
       }
     }
 
@@ -11675,7 +11880,23 @@ function homePage() {
     $("generateReportButton").addEventListener("click", generateSelectedReport);
     $("generateReportBottom").addEventListener("click", generateSelectedReport);
     $("focusRecordButton").addEventListener("click", focusRecordSection);
+    $("entityCopilotButton").addEventListener("click", () => openCopilot("ask"));
     $("uploadAttachmentsButton").addEventListener("click", uploadSelectedAttachments);
+    $("copilotFab").addEventListener("click", () => openCopilot());
+    $("closeCopilot").addEventListener("click", closeCopilot);
+    $("copilotBackdrop").addEventListener("click", closeCopilot);
+    $("copilotSend").addEventListener("click", askCopilot);
+    $("copilotText").addEventListener("keydown", event => {
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        askCopilot();
+      }
+    });
+    $("copilotOpenCenter").addEventListener("click", () => {
+      closeCopilot();
+      switchView("ai");
+    });
+    document.querySelectorAll("[data-copilot-preset]").forEach(button => button.addEventListener("click", () => applyCopilotPreset(button.dataset.copilotPreset)));
     $("newProjectButton").addEventListener("click", () => openCreateModal("project").catch(error => alert(error.message)));
     $("newTaskButton").addEventListener("click", () => openCreateModal("task").catch(error => alert(error.message)));
     $("closeCreateModal").addEventListener("click", closeCreateModal);
