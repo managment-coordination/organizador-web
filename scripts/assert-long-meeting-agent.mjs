@@ -23,6 +23,15 @@ const required = [
   "Fragmento fuente",
   "Si no hay destino claro, usa revisar_manual",
   "Si no se deduce responsable, usa Administracion",
+  "function completeMeetingProposal",
+  "function meetingItemText",
+  "function firstMeetingString",
+  "meeting_required_fields_v1",
+  "Campos obligatorios en cada item",
+  "comentario debe tener minimo 2 frases utiles",
+  "responsable_proximo_paso nunca puede estar vacio",
+  "fragmento_origen",
+  "source_text: meetingItemText(item)",
 ];
 
 const missing = required.filter((text) => !source.includes(text));

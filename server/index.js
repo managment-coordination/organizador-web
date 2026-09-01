@@ -3099,7 +3099,12 @@ async function externalMeetingAnalysis(text, context) {
     "Las decisiones solo son decisiones si se expresan acuerdos claros; las opiniones o dudas son seguimiento.",
     "Cuando no se deduzca responsable, usa Administracion.",
     "Redacta como registro administrativo: categoria, estado sugerido, prioridad, responsables, comentario formal, puntos clave y proximo paso.",
-    "Formato exacto: {meeting_contract:'meeting_analysis_v1',items:[{action,confidence,entity:{type,id,title},candidates:[{type,id,title,score}],titulo,categoria,estado_sugerido,prioridad,responsable_actual,responsable_proximo_paso,responsable_externo,tipo_registro,comentario,puntos_clave:[string],proximo_paso,fecha_objetivo,pendiente_aclarar,justificacion}]}",
+    "Campos obligatorios en cada item: titulo, categoria, estado_sugerido, prioridad, responsable_actual, responsable_proximo_paso, tipo_registro, comentario, proximo_paso y justificacion.",
+    "comentario debe tener minimo 2 frases utiles y no puede estar vacio.",
+    "proximo_paso debe ser una accion concreta y no puede estar vacio.",
+    "responsable_proximo_paso nunca puede estar vacio; si dudas usa Administracion.",
+    "Incluye fragmento_origen con el fragmento resumido de la reunion usado para justificar el item.",
+    "Formato exacto: {meeting_contract:'meeting_analysis_v1',items:[{action,confidence,entity:{type,id,title},candidates:[{type,id,title,score}],titulo,categoria,estado_sugerido,prioridad,responsable_actual,responsable_proximo_paso,responsable_externo,tipo_registro,comentario,puntos_clave:[string],proximo_paso,fecha_objetivo,pendiente_aclarar,justificacion,fragmento_origen}]}",
   ].join("\n");
   return callExternalAiJson({
     system,
@@ -3110,25 +3115,132 @@ async function externalMeetingAnalysis(text, context) {
   });
 }
 
+function meetingItemText(item) {
+  const payload = item?.payload || {};
+  const points = Array.isArray(item?.puntos_clave) ? item.puntos_clave.join("\n") : "";
+  return cleanImportText([
+    item?.fragmento_origen,
+    item?.texto_origen,
+    item?.source_text,
+    item?.titulo,
+    item?.title,
+    item?.asunto,
+    item?.comentario,
+    item?.descripcion,
+    item?.resumen,
+    item?.actualizacion,
+    points,
+    item?.proximo_paso,
+    item?.siguiente_paso,
+    item?.next_step,
+    item?.justificacion,
+    payload?.titulo,
+    payload?.comentario,
+    payload?.proximo_paso,
+  ].filter(Boolean).join("\n\n"));
+}
+
+function firstMeetingString(item, keys, fallback = "") {
+  const payload = item?.payload || {};
+  for (const key of keys) {
+    const value = item?.[key] ?? payload?.[key];
+    const clean = String(value ?? "").trim();
+    if (clean) return clean;
+  }
+  return fallback;
+}
+
+function normalizeMeetingAction(item, entityType, titleText) {
+  const rawAction = firstMeetingString(item, ["action", "accion", "tipo_accion"]).toLowerCase();
+  const normalized = normalizeText(rawAction);
+  if (["seguimiento_tarea", "seguimiento_proyecto", "crear_tarea", "crear_proyecto", "revisar_manual"].includes(rawAction)) return rawAction;
+  if (normalized.includes("seguimiento") && normalized.includes("tarea")) return "seguimiento_tarea";
+  if (normalized.includes("seguimiento") && normalized.includes("proyecto")) return "seguimiento_proyecto";
+  if (normalized.includes("crear") && normalized.includes("tarea")) return "crear_tarea";
+  if (normalized.includes("crear") && normalized.includes("proyecto")) return "crear_proyecto";
+  if (normalized.includes("manual") || normalized.includes("aclar")) return "revisar_manual";
+  if (entityType === "task") return "seguimiento_tarea";
+  if (entityType === "project") return "seguimiento_proyecto";
+  return normalizeText(titleText).includes("proyecto") ? "crear_proyecto" : "crear_tarea";
+}
+
+function normalizeMeetingState(value, kind, sourceText) {
+  const text = String(value || "").trim();
+  const allowed = kind === "task"
+    ? ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueada", "Terminada", "Archivada"]
+    : ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueado", "Finalizado", "Archivado"];
+  const found = allowed.find((state) => normalizeText(state) === normalizeText(text));
+  if (found) return found;
+  return detectState([text, sourceText].filter(Boolean).join(" "), kind === "task" ? "Pendiente" : "En curso");
+}
+
+function normalizeMeetingPriority(value, sourceText) {
+  const text = String(value || "").trim();
+  const found = ["Urgente", "Alta", "Media", "Baja"].find((priority) => normalizeText(priority) === normalizeText(text));
+  return found || detectPriority([text, sourceText].filter(Boolean).join(" "), "Media");
+}
+
+function completeMeetingProposal(proposal, item, context, index) {
+  if (!proposal?.payload) return proposal;
+  const payload = { ...proposal.payload };
+  const sourceText = meetingItemText(item) || payload.comentario || payload.proximo_paso || payload.titulo || "";
+  const kind = proposal.action.includes("tarea") ? "task" : "project";
+  const entityTitle = proposal.entity?.title || "";
+  const title = firstMeetingString(item, ["titulo", "title", "asunto", "nombre"], payload.titulo || entityTitle || extractIssueTitle(sourceText) || `Asunto de reunion ${index + 1}`);
+  payload.titulo = polishTitle(title || entityTitle || `Asunto de reunion ${index + 1}`).slice(0, 160);
+  payload.categoria = firstMeetingString(item, ["categoria", "categoría", "category"], payload.categoria || (normalizeText(sourceText).includes("presupuesto") ? "Presupuesto" : "Gestión"));
+  payload.tipo_registro = firstMeetingString(item, ["tipo_registro", "tipo", "record_type"], payload.tipo_registro || "Seguimiento");
+  payload.estado_nuevo = normalizeMeetingState(firstMeetingString(item, ["estado_sugerido", "estado", "state"], payload.estado_nuevo), kind, sourceText);
+  payload.prioridad_nueva = normalizeMeetingPriority(firstMeetingString(item, ["prioridad", "prioridad_sugerida", "priority"], payload.prioridad_nueva), sourceText);
+  const detectedOwner = detectResponsible(sourceText, "");
+  const nextOwner = firstMeetingString(item, ["responsable_proximo_paso", "proximo_responsable", "responsable_siguiente", "responsable", "owner_next"], payload.responsable_proximo_paso || detectedOwner || "Administracion");
+  const currentOwner = firstMeetingString(item, ["responsable_actual", "responsable", "owner"], payload.responsable_nuevo || nextOwner || "Administracion");
+  payload.responsable_nuevo = currentOwner || "Administracion";
+  payload.responsable_proximo_paso = nextOwner || currentOwner || "Administracion";
+  const explicitComment = firstMeetingString(item, ["comentario", "descripcion", "resumen", "actualizacion"], payload.comentario);
+  const points = Array.isArray(item?.puntos_clave) ? item.puntos_clave.map((line) => String(line || "").trim()).filter(Boolean) : [];
+  if (!explicitComment || explicitComment.length < 45 || shouldPolishProposalText(explicitComment, sourceText)) {
+    payload.comentario = buildFormalComment(sourceText || explicitComment || payload.titulo, { title: payload.titulo }).slice(0, 8000);
+  } else {
+    payload.comentario = professionalizeText("comentario", explicitComment, sourceText, { item: { title: payload.titulo } }).slice(0, 8000);
+  }
+  if (points.length && !normalizeText(payload.comentario).includes("puntos clave")) {
+    payload.comentario = [payload.comentario, "Puntos clave:\n" + points.slice(0, 6).map((line) => `- ${polishSentence(line)}`).join("\n")].filter(Boolean).join("\n\n");
+  }
+  const next = firstMeetingString(item, ["proximo_paso", "siguiente_paso", "next_step"], payload.proximo_paso);
+  payload.proximo_paso = professionalNextStep(next || sourceText, "Revisar el asunto, confirmar el alcance y asignar la siguiente actuacion.").slice(0, 2000);
+  payload.fecha_objetivo_proximo_paso = normalizeImportDate(firstMeetingString(item, ["fecha_objetivo", "fecha", "plazo"], payload.fecha_objetivo_proximo_paso));
+  payload.fecha_proxima_revision = payload.fecha_objetivo_proximo_paso || normalizeImportDate(payload.fecha_proxima_revision || "");
+  if (normalizeText(payload.estado_nuevo).includes("bloque")) {
+    payload.motivo_bloqueo = firstMeetingString(item, ["motivo_bloqueo", "riesgo", "justificacion"], payload.motivo_bloqueo || "Pendiente de desbloqueo o aclaracion.");
+  }
+  const answer = proposal.action === "revisar_manual"
+    ? "Asunto detectado, pero necesita confirmar destino antes de guardar. Los campos se han rellenado para que puedas revisarlo sin partir de cero."
+    : "Asunto detectado y preparado con campos completos para revision.";
+  return withAiProposalContract({
+    ...proposal,
+    payload,
+    answer,
+    meeting_source_excerpt: (sourceText || payload.comentario || payload.titulo).slice(0, 1600),
+    completion_guard: "meeting_required_fields_v1",
+    questions: [
+      ...(proposal.questions || []),
+      ...(proposal.action === "revisar_manual" ? ["Selecciona si debe guardarse como seguimiento, tarea nueva o proyecto nuevo."] : []),
+    ],
+  });
+}
+
 function proposalFromMeetingItem(item, context, index) {
-  const rawAction = String(item?.action || "").trim();
+  const itemText = meetingItemText(item);
   const entityType = item?.entity?.type === "task" || item?.entity?.type === "project" ? item.entity.type : "";
-  const requestedAction = ["seguimiento_tarea", "seguimiento_proyecto", "crear_tarea", "crear_proyecto", "revisar_manual"].includes(rawAction)
-    ? rawAction
-    : entityType === "task"
-      ? "seguimiento_tarea"
-      : entityType === "project"
-        ? "seguimiento_proyecto"
-        : normalizeText(item?.titulo || item?.comentario || "").includes("proyecto")
-          ? "crear_proyecto"
-          : "crear_tarea";
+  const requestedAction = normalizeMeetingAction(item, entityType, firstMeetingString(item, ["titulo", "title", "asunto"], itemText));
   let action = requestedAction;
   const kind = action.includes("tarea") ? "task" : "project";
   const candidates = Array.isArray(item?.candidates) ? item.candidates : [];
   let entity = item?.entity && item.entity.id ? { type: entityType || kind, id: Number(item.entity.id), title: item.entity.title || "" } : null;
   if (!entity && ["seguimiento_tarea", "seguimiento_proyecto"].includes(action)) {
     const sourceRows = kind === "task" ? (context.tasks || []) : (context.projects || []);
-    const text = [item?.titulo, item?.comentario, item?.proximo_paso, item?.justificacion].filter(Boolean).join(" ");
+    const text = itemText || [item?.titulo, item?.comentario, item?.proximo_paso, item?.justificacion].filter(Boolean).join(" ");
     const best = sourceRows
       .map((row) => ({ type: kind, id: row.id, title: row.titulo, score: scoreTextMatch(text, row.titulo) }))
       .sort((a, b) => b.score - a.score)[0];
@@ -3171,7 +3283,7 @@ function proposalFromMeetingItem(item, context, index) {
     meeting_source_excerpt: String(item?.comentario || item?.titulo || "").slice(0, 1600),
     questions: item?.pendiente_aclarar ? ["Confirmar destino y alcance antes de guardar."] : [],
   };
-  return withAiProposalContract(polishAiProposal(proposal, comment || item?.titulo || ""));
+  return completeMeetingProposal(withAiProposalContract(polishAiProposal(proposal, comment || itemText || item?.titulo || "")), item, context, index);
 }
 
 function fallbackAssemblyMinutes(detail) {
@@ -5382,7 +5494,7 @@ async function analyzeGuidedAutomationBatch(session, text) {
             ...proposal,
             batch_item: index + 1,
             batch_contract: "guided_batch_item_v1",
-            source_text: [item.titulo, item.comentario, item.proximo_paso].filter(Boolean).join("\n\n"),
+            source_text: meetingItemText(item) || [item.titulo, item.comentario, item.proximo_paso].filter(Boolean).join("\n\n"),
             selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action) && !proposal.needs_entity_confirmation,
           };
         });
