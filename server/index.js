@@ -11273,7 +11273,7 @@ function homePage() {
       recognition.interimResults = false;
       recognition.onresult = event => {
         const spoken = Array.from(event.results || []).map(result => result[0]?.transcript || "").join(" ").trim();
-        if (spoken) $("aiUnifiedText").value = [safe($("aiUnifiedText").value), spoken].filter(Boolean).join("\n");
+        if (spoken) $("aiUnifiedText").value = [safe($("aiUnifiedText").value), spoken].filter(Boolean).join("\\n");
       };
       recognition.onerror = () => { $("aiUnifiedMessage").textContent = "No se pudo completar el dictado."; };
       recognition.onend = () => { $("aiUnifiedMessage").textContent = "Dictado finalizado."; };
