@@ -24,11 +24,11 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 5 - Agente completo / comprension profunda de reuniones largas |
-| Estado tecnico | 84% |
-| Estado funcional | 70% |
+| Nucleo activo | Fase 5 - Centro IA unificado y agente transversal |
+| Estado tecnico | 92% |
+| Estado funcional | 78% |
 | Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
-| Accion permitida ahora | Usar el agente-router con respuestas guiadas, contexto reciente, catalogo de herramientas, preparacion de informes Word y avisos de vigencia economica |
+| Accion permitida ahora | Usar una unica entrada de Centro IA para consultas, acciones, lotes/reuniones, emails, informes y adjuntos con confirmacion |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
 | Bloqueo actual | Ninguno |
 | Riesgo principal | Intentar acciones complejas sin dividirlas en herramientas internas auditables |
@@ -193,12 +193,15 @@ Criterio de cierre:
 - cada rol ve solo lo que debe ver;
 - movil permite trabajar, no solo consultar.
 
-### 3. Centro IA separado por finalidad
+### 3. Centro IA unificado
 
-Objetivo: separar claramente consulta, entrada operativa y agente de acciones.
+Objetivo: que el usuario tenga una sola entrada principal para escribir, dictar o adjuntar documentos, y que la app decida si corresponde consulta, entrada operativa, lote/reunion, email, informe o accion revisable.
 
 Subpuntos:
 
+- caja unica de consulta/accion;
+- adjuntos PDF, DOC, DOCX, TXT, MD y CSV con extraccion de texto;
+- contexto transversal de la pantalla visible;
 - IA de consulta: responde preguntas sobre datos internos;
 - IA de entrada inteligente: transforma texto, llamada o reunion en propuestas;
 - IA de acciones: prepara operaciones editables antes de guardar;
@@ -206,7 +209,7 @@ Subpuntos:
 - respuestas legibles con tablas, bloques y fuentes internas;
 - control de dudas: si falta informacion, pregunta antes de actuar.
 
-Estado estimado: 30%.
+Estado estimado: 78%.
 
 Pendiente:
 
@@ -215,12 +218,14 @@ Pendiente:
 - mostrar evidencia de datos usados;
 - evitar que una consulta se interprete como tarea/proyecto;
 - crear memoria de conversacion y preferencias.
+- anadir extraccion especifica de Excel si el uso real lo exige.
 
 Criterio de cierre:
 
 - el usuario puede preguntar por propietarios, deuda, tareas, proyectos, asambleas y contabilidad;
 - la app responde con datos estructurados y no propone una accion si solo era consulta;
 - cada respuesta importante muestra base de datos/fuente interna.
+- una accion, lote, informe o email aparece como propuesta editable antes de guardar o copiar.
 
 ### 4. Motor de acciones controladas
 
@@ -672,11 +677,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-09-01 | Fase 5 - Comprension de reuniones largas | 84% tecnico / 70% funcional | Se anade deteccion de transcripcion larga, particion por asuntos operativos, reglas confirmadas por usuario, decision explicita, responsable Administracion por defecto y tarjetas con fragmento fuente | Probar desde web con reunion real y decidir si se vincula la transcripcion completa como documento/anexo comun |
 | 2026-09-01 | Fase 5 - IA externa transversal A-G | 94% tecnico / 76% funcional | Se crea cliente comun `callExternalAiJson`, router externo del agente, proteccion para no convertir consultas en acciones, analisis externo de reuniones largas, pulido externo de propuestas operativas, consultas y emails; `.env.example` documenta NVIDIA/OpenAI sin guardar claves | Activar API key real en servidor, probar reunion real con NVIDIA y ajustar prompts sobre casos de produccion |
 | 2026-09-01 | Fase 5 - Activacion NVIDIA | 96% tecnico / 78% funcional | API key configurada solo en servidor. El modelo anterior respondio 410 por fin de vida el 2026-08-26; se cambia a `nvidia/nemotron-3-super-120b-a12b` y la prueba directa devuelve 200 OK | Probar desde la interfaz web casos reales: consulta de deuda, email profesional y reunion larga |
+| 2026-09-01 | Fase 5 - Centro IA unificado fases 1-4 | 98% tecnico / 82% funcional | Se crea caja unica de Centro IA con adjuntos, dictado, contexto transversal de pantalla, endpoint `/api/ai/center`, contrato `ai_center_v1` y propuestas editables en el mismo resultado | Probar con documentos reales variados y valorar extraccion especifica de Excel si se usa habitualmente |
 
 ## Ultima actualizacion
 
 - Fecha: 2026-09-01.
-- Nucleo activo: Fase 5 - Agente completo / IA externa transversal.
+- Nucleo activo: Fase 5 - Centro IA unificado y agente transversal.
 - Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
-- Avance actual: 96% tecnico / 78% funcional.
-- Pendiente inmediato: validar desde la interfaz web tres casos reales con NVIDIA activo: consulta de deuda/listado, email profesional y reunion larga con varias propuestas.
+- Avance actual: 98% tecnico / 82% funcional.
+- Pendiente inmediato: validar desde la interfaz web la caja unica con consulta, llamada/reunion, email/informe y adjuntos PDF/DOCX/TXT.

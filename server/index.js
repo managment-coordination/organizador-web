@@ -2589,7 +2589,11 @@ async function extractImportDocument(fileName, bytes) {
     const result = await mammoth.extractRawText({ buffer: bytes });
     return { name, text: cleanImportText(result.value), format: "docx", warnings: (result.messages || []).map(message => message.message).filter(Boolean) };
   }
-  throw new Error("Formato no compatible. Usa DOCX, TXT o MD.");
+  if ([".pdf", ".doc", ".csv", ".log"].includes(extension)) {
+    const result = await extractSecurityDocument(name, bytes);
+    return { name, text: cleanImportText(result.text), format: result.extension.replace(/^\./, ""), warnings: [] };
+  }
+  throw new Error("Formato no compatible. Usa PDF, DOC, DOCX, TXT, MD o CSV.");
 }
 
 const IMPORT_FIELD_LABELS = new Map([
@@ -6367,6 +6371,83 @@ async function answerAgentMessage(session, text) {
   });
 }
 
+function normalizeAiCenterAttachments(input) {
+  const rows = Array.isArray(input) ? input : [];
+  return rows.slice(0, 8).map((row) => {
+    const name = safeUploadName(row?.name || row?.nombre || "adjunto");
+    const format = String(row?.format || row?.type || "").slice(0, 40);
+    const text = cleanImportText(String(row?.text || "").slice(0, 45000));
+    const note = String(row?.note || row?.warning || "").slice(0, 600);
+    return {
+      name,
+      format,
+      text,
+      note,
+      extracted: Boolean(text),
+      text_length: text.length,
+    };
+  });
+}
+
+function buildAiCenterText(text, attachments, context) {
+  const cleanText = cleanImportText(String(text || ""));
+  const contextLines = [];
+  if (context?.view) contextLines.push(`Vista actual: ${context.view}`);
+  if (context?.selected_entity?.type || context?.selected_entity?.id) {
+    contextLines.push(`Elemento seleccionado: ${context.selected_entity.type || ""} ${context.selected_entity.id || ""} ${context.selected_entity.title || ""}`.trim());
+  }
+  if (context?.community) contextLines.push(`Comunidad filtrada: ${context.community}`);
+  if (context?.screen_context) contextLines.push(`Contexto visible: ${String(context.screen_context).slice(0, 3000)}`);
+  let remaining = 90000;
+  const attachmentText = attachments.map((attachment, index) => {
+    const header = [
+      `ADJUNTO ${index + 1}: ${attachment.name}`,
+      attachment.format ? `Formato: ${attachment.format}` : "",
+      attachment.note ? `Nota de extraccion: ${attachment.note}` : "",
+    ].filter(Boolean).join("\n");
+    const body = attachment.text ? attachment.text.slice(0, remaining) : "No se ha podido extraer texto automaticamente; usar solo como referencia del nombre del archivo.";
+    remaining = Math.max(0, remaining - body.length);
+    return `${header}\nCONTENIDO EXTRAIDO:\n${body}`;
+  }).join("\n\n---\n\n");
+  return [
+    "CENTRO IA UNIFICADO",
+    "Objetivo: decide si el usuario esta haciendo una consulta, una actualizacion, una creacion, un informe, un email o un lote/reunion. Nada operativo se guarda sin propuesta editable y confirmacion.",
+    "",
+    "CONTEXTO DE PANTALLA",
+    contextLines.length ? contextLines.join("\n") : "Sin contexto de pantalla adicional.",
+    "",
+    "INSTRUCCION O TEXTO DEL USUARIO",
+    cleanText || "(Sin texto directo. Analiza los adjuntos si existen.)",
+    attachments.length ? "\nDOCUMENTOS ADJUNTOS\n" + attachmentText : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function answerAiCenterMessage(session, body) {
+  const attachments = normalizeAiCenterAttachments(body?.attachments || []);
+  const directText = String(body?.text || "").trim();
+  if (!directText && !attachments.some((attachment) => attachment.text || attachment.note)) {
+    throw new Error("Escribe, dicta o adjunta al menos un documento para analizar.");
+  }
+  const combinedText = buildAiCenterText(directText, attachments, body?.context || {});
+  const response = await answerAgentMessage(session, combinedText);
+  return {
+    ...response,
+    center_contract: "ai_center_v1",
+    input_summary: {
+      text_length: directText.length,
+      attachments_count: attachments.length,
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        format: attachment.format,
+        extracted: attachment.extracted,
+        text_length: attachment.text_length,
+        note: attachment.note,
+      })),
+      context_used: Boolean(body?.context && Object.keys(body.context || {}).length),
+    },
+  };
+}
+
 function queryActionOptions(session) {
   const script = `
 import json
@@ -7292,6 +7373,18 @@ function homePage() {
     .aiHub { display:grid; gap:16px; grid-column:1 / -1; }
     .aiQueryLayout { display:grid; grid-template-columns:minmax(0,1.45fr) minmax(280px,.65fr); gap:14px; align-items:start; }
     .aiBox { display:grid; gap:12px; border:1px solid var(--line); border-radius:8px; padding:16px; background:var(--surface); }
+    .aiCenterBox { border-left:6px solid #0f766e; background:linear-gradient(180deg,#f7fffd 0%,#fff 68%); }
+    .aiCenterInput { min-height:220px; font-size:15px; line-height:1.45; }
+    .aiCenterDrop { border:1px dashed #94a3b8; border-radius:8px; padding:13px; background:#f8fafc; display:grid; gap:8px; }
+    .aiCenterDrop.dragging { border-color:#0f766e; background:#ecfdf5; }
+    .aiCenterFiles { display:grid; gap:8px; }
+    .aiCenterFile { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border:1px solid #e2e8f0; background:white; border-radius:8px; padding:9px 10px; }
+    .aiCenterFile strong { overflow-wrap:anywhere; }
+    .aiCenterFile small { display:block; color:var(--muted); margin-top:2px; }
+    .aiCenterFile button { min-height:32px; padding:6px 9px; }
+    .aiAdvancedTools { border:1px solid var(--line); border-radius:8px; background:#fff; padding:12px; }
+    .aiAdvancedTools > summary { cursor:pointer; font-weight:800; color:#334155; }
+    .aiAdvancedTools[open] { display:grid; gap:14px; }
     .aiAgentBox { border-left:6px solid #7c3aed; background:#fbfaff; }
     .aiQueryBox { border-left:6px solid var(--blue); }
     .aiOperationBox { border-left:6px solid var(--green); }
@@ -8505,6 +8598,7 @@ function homePage() {
     let aiRules = [];
     let aiRulesLoaded = false;
     let aiBatch = null;
+    let aiUnifiedAttachments = [];
     let agentTools = [];
     let agentToolsLoaded = false;
     let agentContext = [];
@@ -10969,6 +11063,23 @@ function homePage() {
 
     function aiPanelHtml() {
       return '<div class="aiHub">' +
+        '<section class="aiBox aiCenterBox">' +
+          '<div class="aiSectionHead"><div><h2>Centro IA</h2><p>Una sola entrada para consultar, actualizar, crear, preparar emails/informes o analizar reuniones y documentos. Nada operativo se guarda sin confirmacion editable.</p></div><span class="pill">Unificado</span></div>' +
+          '<textarea id="aiUnifiedText" class="aiInput aiCenterInput" placeholder="Escribe, dicta o pega aqui cualquier cosa: una consulta, una llamada, una reunion, un correo, una actualizacion, una peticion de informe o un texto con varios asuntos..."></textarea>' +
+          '<div id="aiCenterDrop" class="aiCenterDrop">' +
+            '<div><strong>Adjuntos para analizar</strong><div class="muted">PDF, DOC, DOCX, TXT, MD o CSV. Tambien puedes arrastrarlos aqui.</div></div>' +
+            '<input id="aiUnifiedFiles" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.csv,.log" />' +
+            '<div id="aiUnifiedAttachments" class="aiCenterFiles"></div>' +
+          '</div>' +
+          '<div class="toolbar">' +
+            '<button class="green" id="aiUnifiedSend">Enviar al Centro IA</button>' +
+            '<button class="ghost" id="aiUnifiedClear">Limpiar</button>' +
+            '<button class="ghost" id="aiUnifiedVoice">Dictar</button>' +
+            '<span class="muted" id="aiUnifiedMessage"></span>' +
+          '</div>' +
+          '<div id="aiUnifiedResult"></div>' +
+        '</section>' +
+        '<details class="aiAdvancedTools"><summary>Herramientas avanzadas y bandejas internas</summary>' +
         '<section class="aiBox aiAgentBox">' +
           '<div class="aiSectionHead"><div><h2>Agente IA</h2><p>Escribe de forma natural. La app decide si debe consultar, preparar una accion individual o dividirlo en un lote revisable.</p></div><span class="pill">Router seguro</span></div>' +
           '<textarea id="agentText" class="aiInput aiAgentInput" placeholder="Ejemplos: ¿Cuanto debe PROMAGA? / Actualiza el proyecto de arquetas... / Pega varios asuntos separados por ---"></textarea>' +
@@ -11029,10 +11140,178 @@ function homePage() {
           '<div class="toolbar"><button class="ghost" id="aiRulesRefresh">Actualizar memoria</button><span class="muted" id="aiRulesMessage"></span></div>' +
           '<div id="aiRulesList" class="aiRulesList"><div class="aiHistoryEmpty">Cargando memoria...</div></div>' +
         '</section>' +
+        '</details>' +
       '</div>';
     }
 
+    function renderAiUnifiedAttachments() {
+      const container = $("aiUnifiedAttachments");
+      if (!container) return;
+      if (!aiUnifiedAttachments.length) {
+        container.innerHTML = '<div class="muted">No hay adjuntos cargados.</div>';
+        return;
+      }
+      container.innerHTML = aiUnifiedAttachments.map((file, index) =>
+        '<div class="aiCenterFile">' +
+          '<div><strong>' + html(file.name) + '</strong><small>' + html(file.extracted ? ("Texto extraido: " + file.text_length + " caracteres") : (file.note || "Adjunto sin texto extraido")) + '</small></div>' +
+          '<button class="ghost" type="button" data-ai-unified-remove="' + index + '">Quitar</button>' +
+        '</div>'
+      ).join("");
+      container.querySelectorAll("[data-ai-unified-remove]").forEach(button => button.addEventListener("click", () => {
+        aiUnifiedAttachments.splice(Number(button.dataset.aiUnifiedRemove), 1);
+        renderAiUnifiedAttachments();
+      }));
+    }
+
+    async function addAiUnifiedFiles(files) {
+      const selected = [...(files || [])].slice(0, 8 - aiUnifiedAttachments.length);
+      if (!selected.length) return;
+      $("aiUnifiedMessage").textContent = "Leyendo adjuntos...";
+      for (const file of selected) {
+        try {
+          const response = await fetch("/api/import/extract", {
+            method: "POST",
+            body: file,
+            credentials: "same-origin",
+            headers: { "x-file-name": encodeURIComponent(file.name), "content-type": file.type || "application/octet-stream" },
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "No se pudo extraer el documento.");
+          aiUnifiedAttachments.push({
+            name: data.name || file.name,
+            format: data.format || "",
+            text: data.text || "",
+            note: (data.warnings || []).join(" | "),
+            extracted: Boolean(data.text),
+            text_length: String(data.text || "").length,
+          });
+        } catch (error) {
+          aiUnifiedAttachments.push({
+            name: file.name,
+            format: (file.name.split(".").pop() || "").toLowerCase(),
+            text: "",
+            note: error.message,
+            extracted: false,
+            text_length: 0,
+          });
+        }
+      }
+      renderAiUnifiedAttachments();
+      $("aiUnifiedMessage").textContent = "Adjuntos preparados. Revisa y envia al Centro IA.";
+      if ($("aiUnifiedFiles")) $("aiUnifiedFiles").value = "";
+    }
+
+    function aiUnifiedContextPayload() {
+      const context = updateCopilotContext();
+      return {
+        view: currentView,
+        community: selectedEntity?.item?.comunidad || reviewCommunity || (state.usuario?.alcance_comunidades || ""),
+        selected_entity: selectedEntity ? {
+          type: selectedEntity.type || "",
+          id: selectedEntity.id || "",
+          title: itemTitle(selectedEntity.item || {}, selectedEntity.type || "") || "",
+        } : null,
+        screen_context: context || "",
+      };
+    }
+
+    async function askUnifiedAi() {
+      const text = $("aiUnifiedText").value;
+      if (!safe(text) && !aiUnifiedAttachments.length) {
+        $("aiUnifiedMessage").textContent = "Escribe, dicta o adjunta algo primero.";
+        return;
+      }
+      $("aiUnifiedSend").disabled = true;
+      $("aiUnifiedMessage").textContent = "Analizando con el Centro IA...";
+      $("aiUnifiedResult").innerHTML = "";
+      try {
+        if (!options.responsables.length) await loadOptions();
+        const response = await api("/api/ai/center", {
+          method: "POST",
+          body: JSON.stringify({ text, attachments: aiUnifiedAttachments, context: aiUnifiedContextPayload() }),
+        });
+        $("aiUnifiedMessage").textContent = response.message || "Respuesta preparada.";
+        if (Array.isArray(response.available_tools)) {
+          agentTools = response.available_tools;
+          agentToolsLoaded = true;
+          renderAgentTools();
+        }
+        if (response.intent === "accion") {
+          aiProposal = response.result;
+          if ($("aiText")) $("aiText").value = text;
+          if ($("aiMessage")) $("aiMessage").textContent = "Propuesta generada desde Centro IA.";
+        } else if (response.intent === "lote") {
+          aiBatch = response.result;
+          if ($("aiBatchText")) $("aiBatchText").value = text;
+          if ($("aiBatchMessage")) $("aiBatchMessage").textContent = "Lote generado desde Centro IA.";
+        } else if (response.intent === "informe") {
+          agentReportProposal = response.result;
+        } else if (response.intent === "consulta" && response.result?.history_id) {
+          aiHistoryLoaded = false;
+          await loadAiHistory(true, response.result.history_id || 0);
+        }
+        agentContextLoaded = false;
+        agentActionsLoaded = false;
+        await loadAgentContext(true);
+        await loadAgentActions(true);
+        renderAgentDecision(response, "aiUnifiedResult");
+      } catch (error) {
+        $("aiUnifiedMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      } finally {
+        $("aiUnifiedSend").disabled = false;
+      }
+    }
+
+    function startAiUnifiedDictation() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        $("aiUnifiedMessage").textContent = "Este navegador no permite dictado directo. Puedes usar el dictado del teclado del movil o Windows.";
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = "es-ES";
+      recognition.interimResults = false;
+      recognition.onresult = event => {
+        const spoken = Array.from(event.results || []).map(result => result[0]?.transcript || "").join(" ").trim();
+        if (spoken) $("aiUnifiedText").value = [safe($("aiUnifiedText").value), spoken].filter(Boolean).join("\n");
+      };
+      recognition.onerror = () => { $("aiUnifiedMessage").textContent = "No se pudo completar el dictado."; };
+      recognition.onend = () => { $("aiUnifiedMessage").textContent = "Dictado finalizado."; };
+      $("aiUnifiedMessage").textContent = "Escuchando...";
+      recognition.start();
+    }
+
     function bindAiPanel() {
+      $("aiUnifiedSend")?.addEventListener("click", askUnifiedAi);
+      $("aiUnifiedText")?.addEventListener("keydown", event => {
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault();
+          askUnifiedAi();
+        }
+      });
+      $("aiUnifiedClear")?.addEventListener("click", () => {
+        $("aiUnifiedText").value = "";
+        $("aiUnifiedResult").innerHTML = "";
+        $("aiUnifiedMessage").textContent = "";
+        aiUnifiedAttachments = [];
+        renderAiUnifiedAttachments();
+        $("aiUnifiedText").focus();
+      });
+      $("aiUnifiedFiles")?.addEventListener("change", event => addAiUnifiedFiles(event.target.files));
+      $("aiUnifiedVoice")?.addEventListener("click", startAiUnifiedDictation);
+      const drop = $("aiCenterDrop");
+      if (drop) {
+        ["dragenter", "dragover"].forEach(type => drop.addEventListener(type, event => {
+          event.preventDefault();
+          drop.classList.add("dragging");
+        }));
+        ["dragleave", "drop"].forEach(type => drop.addEventListener(type, event => {
+          event.preventDefault();
+          drop.classList.remove("dragging");
+        }));
+        drop.addEventListener("drop", event => addAiUnifiedFiles(event.dataTransfer?.files || []));
+      }
+      renderAiUnifiedAttachments();
       $("agentSend").addEventListener("click", askAgent);
       $("agentText").addEventListener("keydown", event => {
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -11519,10 +11798,11 @@ function homePage() {
       }
     }
 
-    function renderAgentDecision(response) {
-      const container = $("agentResult");
+    function renderAgentDecision(response, resultId = "agentResult") {
+      const container = $(resultId);
       if (!container) return;
       const confidence = Math.round((response.confidence || 0) * 100);
+      const embedPrepared = resultId === "aiUnifiedResult" && ["accion", "lote"].includes(response.intent);
       const targetLabel = response.intent === "accion"
         ? "Ver propuesta en Entrada inteligente"
         : response.intent === "lote"
@@ -11546,6 +11826,7 @@ function homePage() {
         (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
         (response.intent === "informe" ? '<div id="agentReportPreview"></div>' : '') +
         (response.intent === "email" ? '<div id="agentEmailPreview"></div>' : '') +
+        (embedPrepared ? '<div id="aiUnifiedPrepared"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
       '</div>';
       if (response.intent === "consulta" && response.result) {
@@ -11558,9 +11839,17 @@ function homePage() {
       if (response.intent === "email" && response.result) {
         renderAgentEmailDraft(response.result, "agentEmailPreview");
       }
+      if (embedPrepared && response.intent === "accion" && response.result) {
+        aiProposal = response.result;
+        renderAiProposal(aiProposal, "aiUnifiedPrepared");
+      }
+      if (embedPrepared && response.intent === "lote" && response.result) {
+        aiBatch = response.result;
+        renderAiBatch("aiUnifiedPrepared");
+      }
       if ($("agentOpenPrepared")) {
         $("agentOpenPrepared").addEventListener("click", () => {
-          const target = response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : response.intent === "email" ? $("agentEmailPreview") : $("aiOperationResult");
+          const target = embedPrepared ? $("aiUnifiedPrepared") : response.intent === "lote" ? $("aiBatchResult") : response.intent === "informe" ? $("agentReportPreview") : response.intent === "email" ? $("agentEmailPreview") : $("aiOperationResult");
           if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
         });
       }
@@ -12154,8 +12443,8 @@ function homePage() {
       '</article>';
     }
 
-    function renderAiBatch() {
-      const container = $("aiBatchResult");
+    function renderAiBatch(resultId = "aiBatchResult") {
+      const container = $(resultId);
       if (!container || !aiBatch) return;
       const proposals = aiBatch.proposals || [];
       const meetingNote = aiBatch.batch_mode === "long_meeting_transcript"
@@ -13213,6 +13502,14 @@ async function handle(req, res) {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await answerAgentMessage(session, body.text || ""));
+  }
+  if (req.method === "POST" && url.pathname === "/api/ai/center") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (!["Superusuario", "Administrador", "Usuario"].includes(session.rol)) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede usar el Centro IA." });
+    if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
+    const body = await readBody(req, 12 * 1024 * 1024);
+    return sendJson(res, 200, await answerAiCenterMessage(session, body));
   }
   if (req.method === "GET" && url.pathname === "/api/agent/tools") {
     const session = readSession(req);
