@@ -6725,6 +6725,34 @@ function homePage() {
     .mapCard.selected { border-color:#2563eb; box-shadow:0 0 0 2px #bfdbfe; }
     .mapCardActions { display:none; padding-top:8px; border-top:1px solid #e2e8f0; }
     .mapCard.selected .mapCardActions { display:flex; }
+    .workTodayShell { display:grid; gap:14px; }
+    .workTodayHero {
+      border:1px solid #cbd5e1;
+      border-left:6px solid var(--green);
+      background:white;
+      border-radius:8px;
+      padding:15px;
+      display:flex;
+      justify-content:space-between;
+      gap:14px;
+      align-items:center;
+    }
+    .workTodayHero h2 { margin:0; font-size:22px; }
+    .workTodayHero p { margin:5px 0 0; color:var(--muted); }
+    .workTodaySummary { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:10px; }
+    .workTodayGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; align-items:start; }
+    .workTodayPanel {
+      border:1px solid var(--line);
+      border-radius:8px;
+      background:white;
+      padding:12px;
+      min-width:0;
+      display:grid;
+      gap:10px;
+    }
+    .workTodayPanel .contentHead { margin-bottom:0; }
+    .workTodayPanel h2 { margin:0; font-size:17px; }
+    .workTodayList { display:grid; gap:9px; }
     .searchControls { display:grid; grid-template-columns:minmax(260px,1fr) 190px 230px auto; gap:9px; align-items:end; margin-bottom:12px; }
     .resultList { display:grid; gap:9px; }
     .resultCard { min-height:0; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; }
@@ -7154,6 +7182,14 @@ function homePage() {
       box-shadow:0 8px 24px rgba(25,26,25,.055);
     }
     .homeHero h2 { font-size:22px; }
+    .workTodayHero {
+      min-height:96px;
+      border-color:var(--line);
+      border-left-color:var(--green);
+      background:var(--surface);
+      box-shadow:0 8px 24px rgba(25,26,25,.055);
+    }
+    .workTodayPanel,
     .mapSection, .assemblyPane, .answerTableWrap, .proposal, .reportRow, .documentCard, .importProposal, .voteGroup {
       border-color:var(--line);
       background:var(--surface);
@@ -7207,6 +7243,8 @@ function homePage() {
       .filters { grid-template-columns:repeat(4,minmax(0,1fr)); }
       .sidebar .toolbar { justify-content:flex-end; }
       .sidebar .toolbar button { flex:0 1 150px; }
+      .workTodayHero { align-items:flex-start; }
+      .workTodayGrid { grid-template-columns:1fr; }
       .aiQueryLayout { grid-template-columns:1fr; }
       .aiHistoryList { max-height:300px; }
     }
@@ -7233,6 +7271,11 @@ function homePage() {
       #appView:not([data-view="home"]) > .counts { display:none; }
       .counts { gap:7px; margin-bottom:9px; grid-template-columns:repeat(3,minmax(0,1fr)); }
       .count { min-height:72px; padding:10px 11px; }
+      .workTodayHero { display:grid; gap:11px; padding:12px; }
+      .workTodayHero h2 { font-size:20px; }
+      .workTodaySummary { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+      .workTodayPanel { padding:10px; }
+      .workTodayPanel .contentHead { display:flex; align-items:flex-start; }
       .count strong { font-size:21px; }
       .count span { font-size:11px; line-height:1.2; }
       .workbench { gap:9px; }
@@ -7429,15 +7472,14 @@ function homePage() {
           </div>
           <div class="tabs">
             <button class="tab active" id="homeTab" data-view="home"><span>Inicio</span><span>Resumen</span></button>
+            <button class="tab" id="mapTab" data-view="map"><span>Trabajo Hoy</span><span id="mapTabCount">0</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
             <button class="tab" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
             <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
             <button class="tab hidden" id="securityTab" data-view="security"><span>Seguridad</span><span class="tabBadge" id="securityTabCount">0</span></button>
             <div class="navDivider"></div>
-            <button class="tab" id="mapTab" data-view="map"><span>Mapa de trabajo</span><span id="mapTabCount">0</span></button>
-            <button class="tab" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
-            <button class="tab" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
-            <div class="navDivider"></div>
+            <button class="tab hidden" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
+            <button class="tab hidden" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
             <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
             <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
             <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
@@ -7529,10 +7571,10 @@ function homePage() {
             </div>
           </section>
           <section id="recordSection">
-            <h2>Añadir seguimiento</h2>
+            <h2>Actualizar seguimiento</h2>
             <div id="quickRecordBox" class="quickRecord hidden">
-              <h3>Entrada inteligente de seguimiento</h3>
-              <p class="muted">Pega una transcripcion, escribe una nota rapida o usa el dictado del teclado del movil. La app lo ordenara en comentario y proximo paso antes de guardar.</p>
+              <h3>Actualizar con IA</h3>
+              <p class="muted">Pega o dicta lo ocurrido. La app propondrá comentario, estado, responsable, fecha y próximo paso para que lo revises antes de guardar.</p>
               <textarea id="quickRecordText" placeholder="Ejemplo: He hablado con el proveedor. Queda pendiente revisar la arqueta, confirmar presupuesto y volver a informar..."></textarea>
               <div class="toolbar">
                 <button id="quickRecordAnalyze">Analizar y rellenar</button>
@@ -8220,7 +8262,7 @@ function homePage() {
       $("recordBlockReason").value = "";
       $("quickRecordText").value = "";
       $("quickRecordMessage").textContent = "";
-      $("quickRecordBox").classList.toggle("hidden", !focusRecord);
+      $("quickRecordBox").classList.toggle("hidden", !canWrite());
       updateBlockReasonVisibility();
       $("recordSection").classList.toggle("hidden", (state.usuario || {}).rol === "Presidente");
       renderHistory(detail.history || []);
@@ -8542,7 +8584,7 @@ function homePage() {
       const attention = ((daily.map || {}).items || []).filter(row => ["Necesita acción", "Bloqueado / riesgo"].includes(row.seccion)).slice(0, 8);
       const actions = president
         ? '<button data-home-view="work">Ver decisiones</button><button class="ghost" data-home-view="projects">Consultar proyectos</button>'
-        : '<button data-home-view="map">Abrir mapa de trabajo</button><button class="green" data-home-view="work">Mi bandeja</button><button class="ghost" data-home-create="project">Nuevo proyecto</button><button class="ghost" data-home-create="task">Nueva tarea</button>';
+        : '<button data-home-view="map">Abrir Trabajo Hoy</button><button class="green" data-home-view="ai">Actualizar con IA</button><button class="ghost" data-home-create="task">Nueva tarea</button><button class="ghost" data-home-create="project">Nuevo proyecto</button>';
       const attentionRows = attention.length ? attention.map(row =>
         '<div class="attentionRow"><div><div class="attentionTitle">' + html(row.titulo) + '</div><div class="muted">' + html(row.entity_type === "task" ? "Tarea" : "Proyecto") + ' · ' + html(row.comunidad || "") + '</div></div>' +
         '<div><span class="pill state-' + slug(row.estado) + '">' + html(row.estado || "Sin estado") + '</span></div>' +
@@ -8581,18 +8623,40 @@ function homePage() {
 
     function mapPanelHtml() {
       const map = (state.daily || {}).map || { items: [], counts: {} };
+      const workflow = state.workflow || {};
+      const actions = workflow.actions || [];
+      const reviewItems = ((workflow.review || {}).items || []).slice(0, 6);
       const sections = [
         ["Necesita acción", "#065f46"],
         ["Pendiente de terceros", "#92400e"],
         ["En seguimiento", "#1d4ed8"],
         ["Bloqueado / riesgo", "#991b1b"]
       ];
-      return '<div class="mapBoard">' + sections.map(([name, color]) => {
+      const actionCards = actions.length
+        ? actions.slice(0, 6).map(workflowActionCard).join("")
+        : '<div class="empty">No tienes acciones pendientes asignadas directamente.</div>';
+      const reviewCards = reviewItems.length
+        ? reviewItems.map(reviewCard).join("")
+        : '<div class="empty">No hay revisiones prioritarias en este momento.</div>';
+      return '<div class="workTodayShell">' +
+        '<section class="workTodayHero"><div><h2>Trabajo Hoy</h2><p>Una vista unica para decidir que atender, actualizar y revisar sin cambiar de pantalla.</p></div>' +
+          '<div class="homeActions"><button class="green" data-home-view="ai">Actualizar con IA</button><button data-home-create="task">Nueva tarea</button><button data-home-create="project">Nuevo proyecto</button><button class="ghost" data-home-view="notifications">Notificaciones</button></div></section>' +
+        '<div class="workTodaySummary">' +
+          countCard("Acciones para mi", actions.length) +
+          countCard("Necesitan accion", (map.counts || {})["Necesita acción"] || 0) +
+          countCard("Pendiente terceros", (map.counts || {})["Pendiente de terceros"] || 0) +
+          countCard("Bloqueo / riesgo", (map.counts || {})["Bloqueado / riesgo"] || 0) +
+        '</div>' +
+        '<div class="workTodayGrid">' +
+          '<section class="workTodayPanel"><div class="contentHead"><div><h2>Mi bandeja</h2><p class="muted">Elementos cuyo siguiente paso depende de ti.</p></div><span class="tabBadge">' + actions.length + '</span></div><div class="workTodayList">' + actionCards + '</div></section>' +
+          '<section class="workTodayPanel"><div class="contentHead"><div><h2>Revision prioritaria</h2><p class="muted">Vencidas, bloqueadas o sin movimiento relevante.</p></div><span class="tabBadge">' + reviewItems.length + '</span></div><div class="workTodayList">' + reviewCards + '</div></section>' +
+        '</div>' +
+        '<div class="mapBoard">' + sections.map(([name, color]) => {
         const rows = (map.items || []).filter(row => row.seccion === name);
         const page = mobilePage(rows, "map-" + slug(name), 4);
         return '<section class="mapSection"><div class="mapSectionHead"><h3 style="color:' + color + '">' + html(name) + '</h3><span class="tabBadge">' + rows.length + '</span></div><div class="mapSectionBody">' +
           (rows.length ? page.rows.map(dailyMapCard).join("") + page.footer : '<div class="empty">Sin elementos.</div>') + '</div></section>';
-      }).join("") + '</div>';
+      }).join("") + '</div></div>';
     }
 
     function searchResultCard(row) {
@@ -9833,8 +9897,8 @@ function homePage() {
         return;
       }
       if (currentView === "map") {
-        $("contentTitle").textContent = "Mapa de trabajo";
-        $("contentSubtitle").textContent = "Todos los elementos clasificados por la acción que requieren.";
+        $("contentTitle").textContent = "Trabajo Hoy";
+        $("contentSubtitle").textContent = "Bandeja central para acciones, revisiones y asuntos clasificados por prioridad operativa.";
         $("visibleCount").textContent = (((state.daily || {}).map || {}).items || []).length + " elementos";
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = mapPanelHtml();
@@ -11300,7 +11364,8 @@ function homePage() {
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
         $("assemblyTab").classList.toggle("hidden", user.rol === "Presidente");
-        $("reviewTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("workTab").classList.toggle("hidden", user.rol !== "Presidente");
+        $("reviewTab").classList.add("hidden");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("reportsTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
