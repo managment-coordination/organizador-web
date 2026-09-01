@@ -24,9 +24,9 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 | Campo | Estado |
 | --- | --- |
-| Nucleo activo | Fase 5 - Agente completo |
-| Estado tecnico | 74% |
-| Estado funcional | 60% |
+| Nucleo activo | Fase 5 - Agente completo / comprension profunda de reuniones largas |
+| Estado tecnico | 84% |
+| Estado funcional | 70% |
 | Nucleo anterior | Fase 4 - Automatizacion guiada cerrada al 100% en su nucleo inicial |
 | Accion permitida ahora | Usar el agente-router con respuestas guiadas, contexto reciente, catalogo de herramientas, preparacion de informes Word y avisos de vigencia economica |
 | Accion no permitida sin confirmacion | Ejecutar acciones automaticas de IA, modificar datos sensibles o activar conectores externos |
@@ -35,10 +35,10 @@ Estos porcentajes se revisaran al cerrar cada nucleo. En cada avance se debe ind
 
 Proxima accion:
 
-1. Convertir herramientas planificadas en flujos seguros uno a uno.
-2. Priorizar email y contabilidad solo con modo propuesta.
-3. Mantener confirmacion por cada accion sensible.
-4. Afinar la comprension de mensajes que dependen del contexto anterior.
+1. Probar funcionalmente el analisis de reuniones largas con una transcripcion real desde la web.
+2. Convertir herramientas planificadas en flujos seguros uno a uno.
+3. Priorizar email y contabilidad solo con modo propuesta.
+4. Mantener confirmacion por cada accion sensible.
 5. Crear acciones sugeridas clicables cuando exista herramienta segura.
 
 ## Reglas de trabajo
@@ -669,11 +669,12 @@ Toda idea nueva que aparezca durante un nucleo se registrara aqui antes de const
 | 2026-08-28 | Fase 5 - Agente completo | 72% tecnico / 58% funcional | Se activa documentos/informes en el agente: consulta de anexos e informes visibles, contrato `agent_report_prepare_v1`, propuesta revisable de informe Word y generacion solo tras confirmacion | Convertir otra herramienta planificada en flujo seguro: email/Outlook o conciliacion bancaria |
 | 2026-08-28 | Fase 5 - Agente completo | 74% tecnico / 60% funcional | Las consultas de deuda, contabilidad y presupuesto muestran aviso de vigencia con fecha maxima de datos importados desde Netfincas/banco y fuentes con cobertura | Mantener esta logica en futuros modulos economicos y conectores |
 | 2026-08-31 | Fase 5 - Agente completo | 80% tecnico / 66% funcional | Se activa email en modo propuesta con contrato `email_draft_v1`: prepara borrador editable de deuda/recibos, busca email del propietario, muestra vigencia y no envia ni crea borrador externo | Pasar a conciliacion bancaria revisable |
+| 2026-09-01 | Fase 5 - Comprension de reuniones largas | 84% tecnico / 70% funcional | Se anade deteccion de transcripcion larga, particion por asuntos operativos, reglas confirmadas por usuario, decision explicita, responsable Administracion por defecto y tarjetas con fragmento fuente | Probar desde web con reunion real y decidir si se vincula la transcripcion completa como documento/anexo comun |
 
 ## Ultima actualizacion
 
-- Fecha: 2026-08-31.
-- Nucleo activo: Fase 5 - Agente completo.
+- Fecha: 2026-09-01.
+- Nucleo activo: Fase 5 - Agente completo / comprension profunda de reuniones largas.
 - Ultimo nucleo cerrado: Fase 4 - Automatizacion guiada al 100% en su nucleo inicial.
-- Avance actual: 80% tecnico / 66% funcional.
-- Pendiente inmediato: conciliacion bancaria revisable con bolsa "a revisar", clasificacion editable y confirmacion antes de guardar.
+- Avance actual: 84% tecnico / 70% funcional.
+- Pendiente inmediato: probar reunion real en web, revisar calidad de tarjetas y decidir vinculacion documental completa de la transcripcion.

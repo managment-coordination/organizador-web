@@ -2925,7 +2925,7 @@ function cleanAiJson(content) {
 }
 
 async function externalAiProposal(text, context) {
-  if (!aiApiKey || aiProvider === "local") return null;
+      if (!aiApiKey || aiProvider === "local") return null;
   const catalog = {
     projects: (context.projects || []).slice(0, 80),
     tasks: (context.tasks || []).slice(0, 100),
@@ -2934,6 +2934,11 @@ async function externalAiProposal(text, context) {
     "Eres el clasificador operativo de una aplicacion de gestion de comunidades.",
     "Devuelve solo JSON valido.",
     "Nunca ordenes guardar directamente. Solo propones.",
+    "Si el texto procede de una reunion larga, analiza solo el asunto recibido en ese bloque, no toda la reunion.",
+    "En reuniones largas prefiere siempre seguimiento de tarea/proyecto existente frente a crear algo nuevo si hay coincidencia razonable.",
+    "Si no hay destino claro, usa revisar_manual y explica que queda pendiente de aclarar/no importar.",
+    "Solo marca tipo_registro Decision si hay acuerdo o decision explicita del presidente o de los asistentes.",
+    "Si no se deduce responsable, usa Administracion como proximo responsable.",
     "No copies transcripciones literalmente en comentario ni proximo_paso.",
     "Redacta comentario como registro administrativo claro: hechos relevantes, decisiones o riesgos, y situacion actual.",
     "Redacta proximo_paso como accion concreta, breve, con responsable/plazo si se deduce.",
@@ -4855,6 +4860,168 @@ async function analyzeOperationalWithAi(session, text) {
   });
 }
 
+function isLongMeetingTranscript(text) {
+  const value = String(text || "");
+  const normalized = normalizeText(value);
+  const lineCount = value.split(/\r?\n/).filter((line) => line.trim()).length;
+  const speakerMarks = (value.match(/\b(?:speaker|interlocutor|persona)\s*\d+\b/gi) || []).length;
+  const meetingWords = ["reunion", "seguimiento", "presidente", "elena", "repasar", "puntos", "asuntos", "presupuesto", "proveedor"];
+  const meetingScore = meetingWords.reduce((total, token) => total + (normalized.includes(token) ? 1 : 0), 0);
+  return value.length > 9000 || speakerMarks >= 5 || (lineCount > 90 && meetingScore >= 3);
+}
+
+const MEETING_TOPIC_RULES = [
+  { id: "reciclaje_contenedores", title: "Punto de reciclaje y contenedores", keywords: ["contenedor", "contenedores", "reciclaje", "basura", "grua", "camion", "muro", "puerta", "camara"] },
+  { id: "rotura_agua_drenaje", title: "Rotura de agua y drenaje", keywords: ["rotura", "agua", "drenaje", "tanque", "contador", "llenado", "limpian con agua", "presion"] },
+  { id: "pintura_isleta", title: "Pintura de isleta de entrada", keywords: ["pintura", "isleta", "arcen", "arcén", "spray", "vial", "entrada"] },
+  { id: "trabajos_witter", title: "Plan de trabajos de Witter", keywords: ["witter", "bitter", "camion", "jardinero", "tareas simples", "mapa de trabajo", "papeleras"] },
+  { id: "seguridad_barrera", title: "Seguridad, barrera y camaras", keywords: ["securitas", "seguridad", "barrera", "camara", "fibra", "poste", "zanja", "juan antonio", "jose antonio"] },
+  { id: "contrato_jardineria", title: "Contrato de jardineria y Licuas", keywords: ["licua", "licuas", "jardineria", "contrato", "prorroga", "febrero", "reduccion"] },
+  { id: "proveedores_valoracion", title: "Panel y valoracion de proveedores", keywords: ["proveedor", "proveedores", "valoracion", "evaluar", "semaforo", "licitacion", "certificacion", "referencias"] },
+  { id: "oficina", title: "Nueva oficina", keywords: ["oficina", "grego", "luz", "internet", "router", "5g", "fianza", "alquiler", "recibo", "compensacion"] },
+  { id: "fianza_arboles", title: "Fianza de arboles y Ayuntamiento", keywords: ["fianza", "arbol", "arboles", "ayuntamiento", "medio ambiente", "alberto lopez", "compensacion"] },
+  { id: "presupuesto", title: "Presupuesto y planificacion economica", keywords: ["presupuesto", "partida", "gasto", "cuota", "contribucion", "balance"] },
+];
+
+function classifyMeetingTopic(text) {
+  const normalized = normalizeText(text);
+  let selected = null;
+  for (const rule of MEETING_TOPIC_RULES) {
+    const score = rule.keywords.reduce((total, keyword) => total + (normalized.includes(normalizeText(keyword)) ? 1 : 0), 0);
+    if (!selected || score > selected.score) selected = { ...rule, score };
+  }
+  if (!selected || selected.score <= 0) return null;
+  return selected;
+}
+
+function cleanMeetingTurn(line) {
+  return String(line || "")
+    .replace(/\d{1,2}:\d{2}(?::\d{2})?\s*(?:Speaker|Interlocutor|Persona)\s*\d+/gi, " ")
+    .replace(/\b(?:Speaker|Interlocutor|Persona)\s*\d+\b/gi, " ")
+    .trim();
+}
+
+function compactMeetingSegment(lines) {
+  return lines
+    .map(cleanMeetingTurn)
+    .filter((line) => line.length > 8)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function splitLongMeetingText(text) {
+  const source = String(text || "").replace(/\r\n?/g, "\n");
+  const turns = source.split(/\n+/).map(cleanMeetingTurn).filter((line) => line.length > 6);
+  const segments = [];
+  let currentTopic = null;
+  let current = [];
+  let neutral = 0;
+
+  function flush(reason = "") {
+    const body = compactMeetingSegment(current);
+    if (body.length >= 180 && currentTopic) {
+      segments.push({
+        topic: currentTopic,
+        reason,
+        text: body.slice(0, 6500),
+      });
+    }
+    current = [];
+    currentTopic = null;
+    neutral = 0;
+  }
+
+  for (const turn of turns) {
+    const topic = classifyMeetingTopic(turn);
+    const signal = hasOperationalSignal(turn);
+    if (topic) {
+      if (currentTopic && topic.id !== currentTopic.id && compactMeetingSegment(current).length >= 450) flush("cambio de asunto");
+      currentTopic = currentTopic || topic;
+      neutral = 0;
+    } else if (!signal && currentTopic) {
+      neutral += 1;
+    }
+    if (!currentTopic && topic) currentTopic = topic;
+    if (currentTopic || signal) current.push(turn);
+    if (currentTopic && neutral >= 9 && compactMeetingSegment(current).length >= 500) flush("bloque cerrado por tramo neutro");
+    if (currentTopic && compactMeetingSegment(current).length >= 4200 && topic && topic.id === currentTopic.id) flush("bloque largo del mismo asunto");
+  }
+  if (current.length) flush("fin de reunion");
+
+  const merged = [];
+  for (const segment of segments) {
+    const previous = merged[merged.length - 1];
+    if (previous && previous.topic.id === segment.topic.id && previous.text.length + segment.text.length < 6800) {
+      previous.text = [previous.text, segment.text].join("\n").trim();
+    } else {
+      merged.push(segment);
+    }
+  }
+  return merged.slice(0, 18).map((segment, index) => [
+    "TIPO DE ORIGEN: Reunion larga",
+    "ASUNTO DETECTADO: " + segment.topic.title,
+    "CRITERIO: Preferir seguimiento sobre creacion. Si no hay destino claro, dejar pendiente de aclarar/no importar.",
+    "ORDEN EN REUNION: " + String(index + 1),
+    "",
+    segment.text,
+  ].join("\n"));
+}
+
+function hasExplicitResponsible(text) {
+  const normalized = normalizeText(text);
+  return ["elena", "luis", "presidente", "rudy", "proveedor", "empresa", "jardinero", "securitas", "licua", "licuas", "costilla", "juanmi", "juan antonio"].some((token) => normalized.includes(token));
+}
+
+function normalizeMeetingProposal(proposal, sourceText) {
+  const normalized = normalizeText(sourceText);
+  const payload = { ...(proposal.payload || {}) };
+  const hasDecision = /\b(se acuerda|queda aprobado|queda decidido|decidimos|el presidente confirma|el presidente aprueba|rudy confirma|rudy aprueba)\b/i.test(sourceText);
+  const hasClearEntity = Boolean(proposal.entity?.id);
+  const hasStrongCandidate = Number((proposal.candidates || [])[0]?.score || 0) >= 3;
+  const isAction = AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action);
+
+  if (isAction && !hasExplicitResponsible(sourceText)) {
+    payload.responsable_proximo_paso = payload.responsable_proximo_paso || "Administracion";
+    if (["crear_tarea", "crear_proyecto"].includes(proposal.action)) payload.responsable_nuevo = payload.responsable_nuevo || "Administracion";
+  }
+  if ((payload.responsable_proximo_paso || "").toLowerCase() === "luis gallardo" && !hasExplicitResponsible(sourceText)) {
+    payload.responsable_proximo_paso = "Administracion";
+  }
+  if ((payload.responsable_nuevo || "").toLowerCase() === "luis gallardo" && !hasExplicitResponsible(sourceText) && ["crear_tarea", "crear_proyecto"].includes(proposal.action)) {
+    payload.responsable_nuevo = "Administracion";
+  }
+
+  const shouldHold = !hasClearEntity && !hasStrongCandidate && (
+    normalized.includes("a lo mejor") ||
+    normalized.includes("no se") ||
+    normalized.includes("habria que ver") ||
+    normalized.includes("lo vemos") ||
+    normalized.includes("barajamos") ||
+    normalized.includes("preguntarle") ||
+    normalized.includes("pendiente aclarar")
+  );
+
+  let next = { ...proposal, payload, meeting_analysis: true, meeting_source_excerpt: sourceText.slice(0, 1600) };
+  if (hasDecision) {
+    next = {
+      ...next,
+      payload: { ...next.payload, tipo_registro: "Decision" },
+      meeting_decision_detected: true,
+    };
+  }
+  if (shouldHold) {
+    next = withAiProposalContract({
+      ...next,
+      action: "revisar_manual",
+      requires_confirmation: false,
+      answer: "Asunto detectado en reunion, pero necesita aclaracion antes de guardar. Puedes cambiarlo manualmente a seguimiento, tarea o proyecto si procede.",
+      questions: [...(next.questions || []), "Confirmar si este asunto debe guardarse y en que tarea/proyecto."],
+    });
+  }
+  return next;
+}
+
 function splitGuidedAutomationText(text) {
   const cleanText = String(text || "").replace(/\r\n?/g, "\n").trim();
   if (!cleanText) return [];
@@ -4876,6 +5043,10 @@ function splitGuidedAutomationText(text) {
   }
   if (current.length) headed.push(current.join("\n").trim());
   if (headed.length > 1) return headed.slice(0, 20);
+  if (isLongMeetingTranscript(cleanText)) {
+    const meetingSegments = splitLongMeetingText(cleanText);
+    if (meetingSegments.length > 1) return meetingSegments;
+  }
   const paragraphs = cleanText.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
   if (paragraphs.length > 1 && paragraphs.every((part) => part.length <= 1800)) return paragraphs.slice(0, 20);
   return [cleanText.slice(0, 8000)];
@@ -4884,21 +5055,31 @@ function splitGuidedAutomationText(text) {
 async function analyzeGuidedAutomationBatch(session, text) {
   const segments = splitGuidedAutomationText(text);
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
+  const meetingMode = isLongMeetingTranscript(text);
   const proposals = [];
   for (let index = 0; index < segments.length; index += 1) {
     const sourceText = segments[index];
-    const proposal = await analyzeOperationalWithAi(session, sourceText);
+    let proposal = await analyzeOperationalWithAi(session, sourceText);
+    if (meetingMode) proposal = normalizeMeetingProposal(proposal, sourceText);
     proposals.push({
       ...proposal,
       batch_item: index + 1,
       batch_contract: "guided_batch_item_v1",
       source_text: sourceText,
-      selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action),
+      selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action) && !proposal.needs_entity_confirmation,
     });
   }
   return {
     ok: true,
     batch_contract: "guided_batch_v1",
+    batch_mode: meetingMode ? "long_meeting_transcript" : "guided_batch",
+    meeting_rules: meetingMode ? {
+      prefer_existing_followup: true,
+      uncertain_items: "no_importar_pendiente_aclarar",
+      president_decision_only_if_explicit: true,
+      default_unclear_responsible: "Administracion",
+      source_document_should_be_linked: true,
+    } : null,
     requires_confirmation: true,
     writes_data: false,
     total: proposals.length,
@@ -10397,8 +10578,8 @@ function homePage() {
           '<div id="aiOperationResult"></div>' +
         '</section>' +
         '<section class="aiBox aiBatchBox">' +
-          '<div class="aiSectionHead"><div><h2>Automatizacion guiada</h2><p>Pega varios asuntos separados por una linea con --- o por bloques. La app propone acciones por separado y tu decides cuales aplicar.</p></div><span class="pill">Lote revisable</span></div>' +
-          '<textarea id="aiBatchText" class="aiInput" placeholder="Asunto 1...\\n---\\nAsunto 2...\\n---\\nAsunto 3..."></textarea>' +
+          '<div class="aiSectionHead"><div><h2>Automatizacion guiada</h2><p>Pega varios asuntos separados por --- o una transcripcion larga de reunion. La app la divide en asuntos revisables y tu decides que aplicar.</p></div><span class="pill">Lote / reunion</span></div>' +
+          '<textarea id="aiBatchText" class="aiInput" placeholder="Pega aqui varios asuntos o una transcripcion completa de reunion. La app intentara separar temas, seguimientos, decisiones, dudas y proximos pasos..."></textarea>' +
           '<div class="toolbar">' +
             '<button id="aiBatchAnalyze">Preparar lote</button>' +
             '<button class="ghost" id="aiBatchClear">Limpiar lote</button>' +
@@ -11500,14 +11681,21 @@ function homePage() {
       const entityType = proposal.entity?.type || aiBatchActionEntityType(action);
       const states = entityType === "task" ? options.estados_tarea : options.estados_proyecto;
       const selected = proposal.selected !== false && proposal.requires_confirmation;
-      const blocked = proposal.requires_confirmation ? "" : " disabled";
+      const blocked = proposal.action === "consulta" || proposal.action === "fuera_de_alcance" ? " disabled" : "";
       const sourcePreview = safe(proposal.source_text || "");
       const shortSource = sourcePreview.length > 360 ? sourcePreview.slice(0, 357) + "..." : sourcePreview;
+      const meetingHtml = proposal.meeting_analysis
+        ? '<div class="detailBox"><strong>Asunto detectado de reunion</strong><div>Regla aplicada: se prioriza seguimiento de tarea/proyecto existente. Si no hay destino claro, queda desmarcado para aclarar o convertir manualmente.</div>' +
+          (proposal.meeting_decision_detected ? '<div><span class="pill">Decision explicita detectada</span></div>' : '') +
+          (proposal.meeting_source_excerpt ? '<details><summary><strong>Fragmento fuente</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.meeting_source_excerpt) + '</pre></details>' : '') +
+        '</div>'
+        : "";
       return '<article class="aiBatchCard' + (selected ? '' : ' disabled') + '" data-ai-batch-card="' + index + '">' +
         '<div class="aiBatchHead">' +
           '<div><h3>Propuesta ' + html(index + 1) + ': ' + html(payload.titulo || proposal.entity?.title || action) + '</h3><p class="muted">' + html(shortSource) + '</p></div>' +
           '<label class="checkLine"><input type="checkbox" data-ai-batch-selected="' + index + '"' + (selected ? " checked" : "") + blocked + ' /> Aplicar</label>' +
         '</div>' +
+        meetingHtml +
         (proposal.queryDetected ? '<div class="detailBox"><strong>Sin accion</strong>' + html(proposal.answer || "Parece una consulta.") + '</div>' : '') +
         ((proposal.used_rules || []).length ? '<div class="detailBox aiMemoryApplied"><strong>Memoria aplicada</strong>' + proposal.used_rules.map(rule => '<div>- ' + html(ruleTypeLabel(rule.tipo_regla)) + '</div>').join("") + '</div>' : '') +
         '<div class="formGrid">' +
@@ -11533,8 +11721,12 @@ function homePage() {
       const container = $("aiBatchResult");
       if (!container || !aiBatch) return;
       const proposals = aiBatch.proposals || [];
+      const meetingNote = aiBatch.batch_mode === "long_meeting_transcript"
+        ? '<div class="answerNote"><strong>Reunion larga detectada</strong><div>La transcripcion se ha dividido por asuntos. Revisa cada tarjeta: las dudosas quedan desmarcadas y se pueden convertir manualmente en seguimiento, tarea o proyecto.</div></div>'
+        : "";
       container.innerHTML = '<div class="proposal">' +
         '<div class="proposalHead"><h2>Lote preparado</h2><span class="confidence">' + html(aiBatch.actionable || 0) + ' accion(es) aplicables de ' + html(aiBatch.total || proposals.length) + '</span></div>' +
+        meetingNote +
         '<div class="detailBox"><strong>Confirmacion necesaria</strong>Nada se ha guardado todavia. Revisa cada tarjeta y deja marcadas solo las que quieras aplicar.</div>' +
         '<label class="checkLine"><input type="checkbox" id="aiBatchLearnCorrections" checked /> Aprender de las correcciones del lote</label>' +
         '<div class="toolbar"><button class="green" id="aiBatchApply">Aplicar seleccionadas</button><span class="muted" id="aiBatchApplyMessage"></span></div>' +
