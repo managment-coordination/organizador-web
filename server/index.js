@@ -5153,8 +5153,7 @@ function looksLikePastedOperationalConversation(text) {
     "proveedor", "valoracion", "presupuesto", "mañana", "manana", "mirarlo", "organices",
     "linea", "fallo", "reparacion", "mantenimiento",
   ].reduce((total, token) => total + (normalized.includes(normalizeText(token)) ? 1 : 0), 0);
-  const hasDialogueFlow = /[¿?]\s*\w|(?:\b(?:si|vale|ya|claro|total|entonces)\b[.,]?){2,}/i.test(value);
-  return value.length > 500 && conversationalSignals >= 2 && operationalSignals >= 2 && hasDialogueFlow;
+  return value.length > 500 && conversationalSignals >= 2 && operationalSignals >= 2;
 }
 
 function shouldUseAgentPreviousContext(text) {
