@@ -8699,15 +8699,20 @@ function homePage() {
     }
 
     async function api(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (options.body && !headers["Content-Type"] && !headers["content-type"]) headers["Content-Type"] = "application/json";
       const response = await fetch(path, {
+        ...options,
         cache: "no-store",
-        headers: options.body ? { "Content-Type": "application/json" } : {},
-        credentials: "same-origin",
-        ...options
+        headers,
+        credentials: "include",
       });
       const data = await response.json();
       if (!response.ok) {
-        const error = new Error(data.error || "Error de servidor");
+        const message = response.status === 401
+          ? "Sesion caducada o no enviada por el navegador. Vuelve a entrar con tu usuario."
+          : (data.error || "Error de servidor");
+        const error = new Error(message);
         error.status = response.status;
         throw error;
       }
@@ -11172,7 +11177,7 @@ function homePage() {
           const response = await fetch("/api/import/extract", {
             method: "POST",
             body: file,
-            credentials: "same-origin",
+            credentials: "include",
             headers: { "x-file-name": encodeURIComponent(file.name), "content-type": file.type || "application/octet-stream" },
           });
           const data = await response.json();
