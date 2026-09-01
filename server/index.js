@@ -6651,6 +6651,17 @@ function homePage() {
     .workflowCard { border-left-color:#2563eb; }
     .workflowCard.overdue { border-left-color:#b91c1c; }
     .workflowCard.thirdParty { border-left-color:#c2410c; }
+    .automationPanel { border:1px solid var(--line); border-radius:8px; background:white; padding:12px; margin-bottom:12px; }
+    .automationList { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:9px; }
+    .automationCard { border:1px solid #e2e8f0; border-left:5px solid #2563eb; border-radius:8px; background:#fff; padding:11px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:start; min-width:0; }
+    .automationCard.risk { border-left-color:#b91c1c; background:#fffafa; }
+    .automationCard.warning { border-left-color:#c2410c; background:#fff7ed; }
+    .automationCard.info { border-left-color:#2563eb; background:#f8fbff; }
+    .automationCard.success { border-left-color:#15803d; background:#f0fdf4; }
+    .automationCard h3 { margin:0 0 5px; font-size:15px; overflow-wrap:anywhere; }
+    .automationCard .line { font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
+    .automationCardActions { display:grid; gap:7px; justify-items:end; align-content:start; }
+    .automationCardActions button { min-height:34px; padding:7px 10px; white-space:nowrap; }
     .notificationCard { min-height:0; }
     .notificationCard.unread { border-left-color:#2563eb; background:#f8fbff; }
     .notificationCard.read { opacity:.78; }
@@ -7005,6 +7016,9 @@ function homePage() {
       .homeActions { justify-content:flex-start; width:100%; }
       .homeActions button { flex:1 1 140px; }
       .homeMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .automationList { grid-template-columns:1fr; }
+      .automationCard { grid-template-columns:1fr; }
+      .automationCardActions { justify-items:start; }
       .attentionRow { grid-template-columns:1fr; gap:4px; }
       .mapSectionBody { grid-template-columns:1fr; }
       .searchControls, .documentControls { grid-template-columns:1fr; }
@@ -8770,6 +8784,8 @@ function homePage() {
       } else if (currentView === "assemblies") {
         context.push(selectedAssemblyId ? "Asamblea abierta ID: " + selectedAssemblyId : "Listado de asambleas.");
       }
+      const automation = automationInsights().filter(row => row.kind !== "success").slice(0, 5);
+      if (automation.length) context.push("Alertas automaticas: " + automation.map(row => row.title + " (" + row.count + ")").join(" | "));
       return context.filter(Boolean).join("\\n");
     }
 
@@ -8826,6 +8842,65 @@ function homePage() {
       return { rows: visible, footer };
     }
 
+    function automationInsights() {
+      const workflow = state.workflow || {};
+      const daily = state.daily || {};
+      const isPresident = (state.usuario || {}).rol === "Presidente";
+      const reviewItems = ((workflow.review || {}).items || []);
+      const mapItems = ((daily.map || {}).items || []);
+      const notifications = workflow.notifications || [];
+      const actions = workflow.actions || [];
+      const presidentRequests = workflow.president_requests || [];
+      const unread = Number(workflow.unread_notifications || 0);
+      const insights = [];
+
+      function sampleTitles(rows, limit = 3) {
+        return (rows || []).slice(0, limit).map(row => row.elemento || row.titulo || "").filter(Boolean).join(" | ");
+      }
+      function add(kind, title, detail, count, action, view, rows) {
+        if (Number(count) > 0 || count === "OK") insights.push({ kind, title, detail, count, action, view, rows: rows || [], sample: sampleTitles(rows || []) });
+      }
+
+      if (isPresident) {
+        add("risk", "Decisiones pendientes", "Hay solicitudes que necesitan aprobacion, rechazo o aclaracion.", presidentRequests.length, "Ver decisiones", "work", presidentRequests);
+        add("info", "Notificaciones sin leer", "Hay avisos recientes relacionados con tus solicitudes.", unread, "Abrir notificaciones", "notifications", notifications.filter(row => !row.leida));
+        if (!insights.length) add("success", "Sin alertas pendientes", "No hay decisiones ni notificaciones pendientes ahora.", "OK", "Ver decisiones", "work", []);
+        return insights.slice(0, 8);
+      }
+
+      const overdue = reviewItems.filter(row => (row.review_reasons || []).includes("Vencida"));
+      const blocked = reviewItems.filter(row => (row.review_reasons || []).includes("Bloqueada"));
+      const stale = reviewItems.filter(row => (row.review_reasons || []).includes("Sin actualizar"));
+      const thirdParty = reviewItems.filter(row => (row.review_reasons || []).includes("Pendiente de tercero"));
+      const mine = reviewItems.filter(row => (row.review_reasons || []).includes("Pendiente de mi"));
+      const riskMap = mapItems.filter(row => row.seccion === "Bloqueado / riesgo");
+      const needsAction = mapItems.filter(row => row.seccion === "Necesita acción");
+
+      add("risk", "Vencimientos vencidos", "Hay asuntos con fecha objetivo superada que conviene revisar hoy.", overdue.length, "Revisar vencidas", "review", overdue);
+      add("risk", "Bloqueos o riesgos", "Elementos marcados como bloqueados o situados en zona de riesgo.", Math.max(blocked.length, riskMap.length), "Abrir Trabajo Hoy", "map", riskMap.length ? riskMap : blocked);
+      add("warning", "Sin seguimiento reciente", "Hay elementos activos sin actualizacion en mas de 7 dias.", stale.length, "Revisar seguimiento", "review", stale);
+      add("warning", "Pendiente de terceros", "Conviene reclamar, registrar espera o fijar siguiente fecha de control.", thirdParty.length, "Ver terceros", "map", thirdParty);
+      add("info", "Acciones para mi", "Tu bandeja contiene proximos pasos asignados a tu usuario.", Math.max(actions.length, mine.length, needsAction.length), "Ver mi bandeja", "map", actions.length ? actions : mine.length ? mine : needsAction);
+      add("info", "Notificaciones sin leer", "Hay aprobaciones, rechazos, aclaraciones o avisos pendientes.", unread, "Abrir notificaciones", "notifications", notifications.filter(row => !row.leida));
+      if (!insights.length) add("success", "Trabajo bajo control", "No hay alertas automaticas criticas en este momento.", "OK", "Abrir Trabajo Hoy", "map", []);
+      return insights.slice(0, 8);
+    }
+
+    function automationCardHtml(item) {
+      return '<article class="automationCard ' + html(item.kind || "info") + '">' +
+        '<div><h3>' + html(item.title) + '</h3><div class="line">' + html(item.detail) + '</div>' +
+        (item.sample ? '<div class="line muted">Ejemplos: ' + html(item.sample) + '</div>' : '') + '</div>' +
+        '<div class="automationCardActions"><span class="tabBadge">' + html(item.count) + '</span><button class="ghost" data-automation-view="' + html(item.view || "map") + '">' + html(item.action || "Abrir") + '</button></div>' +
+      '</article>';
+    }
+
+    function automationPanelHtml(limit = 6) {
+      const insights = automationInsights().slice(0, limit);
+      return '<section class="automationPanel"><div class="contentHead"><div><h2>Alertas automaticas</h2><p class="muted">Senales calculadas sin modificar datos: vencimientos, bloqueos, terceros, notificaciones y asuntos sin seguimiento.</p></div><span class="pill">No destructivo</span></div><div class="automationList">' +
+        (insights.length ? insights.map(automationCardHtml).join("") : '<div class="empty">Sin alertas automaticas.</div>') +
+      '</div></section>';
+    }
+
     function homePanelHtml() {
       const daily = state.daily || {};
       const metrics = daily.metrics || {};
@@ -8847,6 +8922,7 @@ function homePage() {
           countCard("Necesitan acción", ((daily.map || {}).counts || {})["Necesita acción"] || 0) +
           countCard("Bloqueados / riesgo", ((daily.map || {}).counts || {})["Bloqueado / riesgo"] || 0) +
         '</div>' +
+        automationPanelHtml(4) +
         '<section><div class="contentHead"><div><h2>Atención prioritaria</h2><p class="muted">Elementos que requieren actuación o presentan riesgo.</p></div></div><div class="attentionList">' + attentionRows + '</div></section>';
     }
 
@@ -8892,6 +8968,7 @@ function homePage() {
           countCard("Pendiente terceros", (map.counts || {})["Pendiente de terceros"] || 0) +
           countCard("Bloqueo / riesgo", (map.counts || {})["Bloqueado / riesgo"] || 0) +
         '</div>' +
+        automationPanelHtml(6) +
         '<div class="workTodayGrid">' +
           '<section class="workTodayPanel"><div class="contentHead"><div><h2>Mi bandeja</h2><p class="muted">Elementos cuyo siguiente paso depende de ti.</p></div><span class="tabBadge">' + actions.length + '</span></div><div class="workTodayList">' + actionCards + '</div></section>' +
           '<section class="workTodayPanel"><div class="contentHead"><div><h2>Revision prioritaria</h2><p class="muted">Vencidas, bloqueadas o sin movimiento relevante.</p></div><span class="tabBadge">' + reviewItems.length + '</span></div><div class="workTodayList">' + reviewCards + '</div></section>' +
@@ -11696,6 +11773,7 @@ function homePage() {
         $("workTab").querySelector("span").textContent = user.rol === "Presidente" ? "Decisiones" : "Acciones";
         $("counts").innerHTML =
           countCard(user.rol === "Presidente" ? "Decisiones pendientes" : "Acciones pendientes", user.rol === "Presidente" ? workflow.president_requests.length : workflow.actions.length) +
+          countCard("Alertas automaticas", automationInsights().filter(row => row.kind !== "success").length) +
           countCard("Notificaciones sin leer", workflow.unread_notifications || 0) +
           countCard("Proyectos activos", data.counts.proyectos_activos) +
           countCard("Tareas activas", data.counts.tareas_activas) +
@@ -11798,6 +11876,8 @@ function homePage() {
       if (homeView) { switchView(homeView.dataset.homeView); return; }
       const homeCreate = event.target.closest("button[data-home-create]");
       if (homeCreate) { openCreateModal(homeCreate.dataset.homeCreate).catch(error => alert(error.message)); return; }
+      const automationButton = event.target.closest("button[data-automation-view]");
+      if (automationButton) { switchView(automationButton.dataset.automationView || "map"); return; }
       const dailyButton = event.target.closest("button[data-daily-action]");
       if (dailyButton) {
         const action = dailyButton.dataset.dailyAction;
