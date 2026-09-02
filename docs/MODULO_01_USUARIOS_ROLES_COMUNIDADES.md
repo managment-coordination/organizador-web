@@ -4,8 +4,8 @@
 
 ```text
 Modulo: Usuarios, roles y comunidades
-Porcentaje de revision del modulo: 20%
-Estado: diagnostico inicial y decisiones funcionales principales tomadas
+Porcentaje de revision del modulo: 35%
+Estado: diagnostico inicial, definicion de roles y matriz funcional de permisos
 Codigo modificado: no
 Datos modificados: no
 Ultima revision: 2026-09-02
@@ -41,6 +41,7 @@ No debe ser solo un login. Debe actuar como la base de seguridad, alcance de dat
 - La IA debe respetar exactamente los permisos del usuario activo.
 - Superusuario puede hacer consultas IA globales sobre todas las comunidades.
 - La IA debe explicar cuando no puede mostrar algo por falta de permiso.
+- Administrador gestiona operativamente sus comunidades, pero no crea ni modifica usuarios/comunidades.
 
 ## Estado tecnico actual observado
 
@@ -204,9 +205,213 @@ Propuesta recomendada:
 - Presidente: solo decisiones/solicitudes de sus comunidades.
 - Seguridad: solo modulo Seguridad de sus comunidades.
 
-Decision pendiente del usuario:
+Decision del usuario:
 
-- Confirmar si aceptamos esta definicion de Administrador.
+- Definicion aceptada.
+
+## Matriz funcional de permisos
+
+Esta matriz define el criterio funcional que debe cumplir la app. La implementacion tecnica se revisara despues contra esta matriz.
+
+### Superusuario
+
+Finalidad:
+
+- Administracion tecnica y configuracion global del sistema.
+
+Puede:
+
+- ver todas las comunidades;
+- crear, editar y desactivar usuarios;
+- crear, editar y desactivar comunidades;
+- asignar comunidades a usuarios;
+- resetear contrasenas mediante clave temporal;
+- gestionar permisos especiales;
+- consultar auditoria;
+- acceder a todos los modulos;
+- usar IA con alcance global;
+- corregir datos estructurales cuando sea necesario.
+
+No debe:
+
+- usarse como usuario operativo diario salvo necesidad tecnica;
+- sustituir a Luis Gallardo como responsable ordinario de tareas/proyectos.
+
+### Administrador
+
+Finalidad:
+
+- Gestion operativa completa dentro de sus comunidades asignadas.
+
+Puede, solo dentro de sus comunidades:
+
+- ver tareas y proyectos;
+- crear tareas y proyectos;
+- editar tareas y proyectos;
+- anadir seguimientos;
+- cambiar estado, prioridad, responsable y proximo paso;
+- adjuntar documentos;
+- generar informes;
+- gestionar asambleas;
+- importar documentos operativos;
+- usar Centro IA;
+- convertir incidencias de Seguridad en tareas/proyectos si tiene permiso de seguridad;
+- consultar propietarios, deuda, documentos e informes visibles para su comunidad.
+
+No puede:
+
+- crear, editar o desactivar usuarios;
+- crear, editar o desactivar comunidades;
+- asignar comunidades a usuarios;
+- resetear contrasenas;
+- ver comunidades no asignadas;
+- cambiar configuracion global.
+
+### Usuario
+
+Finalidad:
+
+- Trabajo operativo diario dentro de sus comunidades asignadas.
+
+Puede, solo dentro de sus comunidades:
+
+- ver tareas y proyectos;
+- crear tareas y proyectos;
+- anadir seguimientos;
+- actualizar estado, prioridad, responsable y proximo paso;
+- adjuntar documentos;
+- generar informes si el modulo lo permite;
+- importar documentos operativos;
+- usar Centro IA;
+- revisar acciones pendientes;
+- consultar documentos permitidos.
+
+No puede:
+
+- administrar usuarios;
+- administrar comunidades;
+- modificar permisos;
+- resetear contrasenas;
+- consultar comunidades no asignadas.
+
+Diferencia con Administrador:
+
+- Administrador tiene capacidad de gestion operativa ampliada por comunidad.
+- Usuario trabaja y actualiza, pero no debe convertirse en perfil de configuracion ni gobierno operativo general.
+
+### Consulta
+
+Finalidad:
+
+- Acceso de solo lectura a informacion permitida.
+
+Puede, solo dentro de sus comunidades:
+
+- ver fichas/resumenes;
+- ver documentos si tiene permiso;
+- consultar historicos;
+- consultar informes si tiene permiso;
+- usar consultas IA de solo lectura si se autoriza.
+
+No puede:
+
+- crear tareas/proyectos;
+- editar;
+- anadir seguimientos;
+- adjuntar documentos;
+- responder solicitudes;
+- importar documentos;
+- usar IA para preparar acciones de escritura;
+- modificar datos.
+
+### Presidente
+
+Finalidad:
+
+- Responder solicitudes de decision de su comunidad.
+
+Debe ser:
+
+- usuario real con nombre reconocible;
+- asignado a la comunidad donde ejerce;
+- nunca una identidad generica permanente tipo `Presidente` cuando existan varias comunidades.
+
+Puede:
+
+- ver solicitudes dirigidas a el;
+- ver contexto necesario de proyectos vinculados;
+- responder con aprobar, rechazar o solicitar aclaracion;
+- anadir comentario obligatorio en cada respuesta;
+- solicitar acceso puntual a informacion si el flujo lo permite.
+
+No puede:
+
+- crear, editar ni archivar tareas;
+- crear, editar ni archivar proyectos;
+- acceder a informes generales;
+- acceder a tareas salvo autorizacion concreta;
+- modificar comunidades, usuarios, registros ni configuracion;
+- usar Centro IA operativo general.
+
+### Seguridad
+
+Finalidad:
+
+- Cargar partes e informacion de Seguridad de una comunidad concreta.
+
+Puede:
+
+- subir documentos/partes de Seguridad;
+- consultar solo lo necesario si se habilita;
+- usar consulta de localizacion de propietarios si se autoriza para el servicio.
+
+No puede:
+
+- acceder al resto de la app;
+- crear tareas/proyectos directamente;
+- ver informacion economica;
+- ver informes generales;
+- modificar datos operativos fuera del modulo Seguridad.
+
+### Permisos por comunidad
+
+Regla:
+
+- El rol global define la naturaleza del usuario.
+- La asignacion por comunidad define el alcance real.
+- En una fase estable, un usuario debe poder tener permisos distintos por comunidad.
+
+Ejemplo:
+
+```text
+Luis Gallardo
+- Macrocomunidad San Roque Club: Usuario/Administrador operativo
+- Alboaire Golf: Consulta o Usuario, segun se decida
+
+Rudy Hassam
+- Macrocomunidad San Roque Club: Presidente
+
+Presidente comunidad X
+- Comunidad X: Presidente
+```
+
+Campos funcionales recomendados por comunidad:
+
+```text
+id_usuario
+id_comunidad
+rol_en_comunidad
+puede_ver
+puede_crear
+puede_actualizar
+puede_ver_documentos
+puede_generar_informes
+puede_gestionar_asambleas
+puede_gestionar_seguridad
+activo
+```
+
+Esto no obliga a construir toda la granularidad en una sola fase, pero la arquitectura debe quedar preparada.
 
 ## Reglas preliminares de IA para este modulo
 
@@ -241,4 +446,3 @@ Este modulo se considerara estable cuando:
 - Seguridad y Presidente no puedan acceder a modulos no permitidos;
 - haya pruebas tecnicas de acceso por rol;
 - se documente la matriz final de permisos.
-
