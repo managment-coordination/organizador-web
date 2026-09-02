@@ -38,6 +38,8 @@ const required = [
   "function isGenericNextStep",
   "Alumbrado Rafadona y farola dentro de obra",
   "preparar valoracion tecnica de la solucion LED",
+  "timeoutMs: 45000",
+  "analisis local segmentado",
 ];
 
 const missing = required.filter((text) => !source.includes(text));

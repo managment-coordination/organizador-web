@@ -3080,6 +3080,7 @@ async function externalAiProposal(text, context) {
     system,
     purpose: "operational_proposal",
     maxTokens: 5000,
+    timeoutMs: 35000,
     user: `Catalogo visible:\n${JSON.stringify(catalog)}\n\nTexto recibido:\n${text}`,
   });
 }
@@ -3109,6 +3110,7 @@ async function externalRefineOperationalProposal(proposal, sourceText, context =
       system,
       purpose: "operational_redaction",
       maxTokens: 5000,
+      timeoutMs: 25000,
       user: `Propuesta interna revisable:\n${JSON.stringify(safeProposal)}\n\nCatalogo resumido visible:\n${JSON.stringify({ projects: (context.projects || []).slice(0, 40), tasks: (context.tasks || []).slice(0, 50) })}\n\nTexto original:\n${String(sourceText || "").slice(0, 20000)}`,
     });
     const incoming = parsed.payload || {};
@@ -3170,8 +3172,8 @@ async function externalMeetingAnalysis(text, context) {
   return callExternalAiJson({
     system,
     purpose: "meeting_analysis_v1",
-    maxTokens: 14000,
-    timeoutMs: 180000,
+    maxTokens: 9000,
+    timeoutMs: 45000,
     user: `Catalogo visible de tareas y proyectos:\n${JSON.stringify(catalog)}\n\nTranscripcion o resumen de reunion:\n${String(text || "").slice(0, 220000)}`,
   });
 }
@@ -5578,6 +5580,7 @@ async function analyzeGuidedAutomationBatch(session, text) {
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
   const meetingMode = isLongMeetingTranscript(text) || looksLikePastedOperationalConversation(text) || looksLikeMeetingOrMultiTopicText(text);
   let context = null;
+  let externalMeetingWarning = "";
   if (meetingMode && aiExternalAvailable()) {
     context = await queryAiContext(session);
     try {
@@ -5617,14 +5620,16 @@ async function analyzeGuidedAutomationBatch(session, text) {
         };
       }
     } catch (error) {
-      // Si la IA externa falla, mantenemos el flujo local para no bloquear el trabajo diario.
+      externalMeetingWarning = `${error.message}. Se ha usado analisis local segmentado para no bloquear el trabajo diario.`;
     }
   }
   if (meetingMode && !context) context = await queryAiContext(session);
   const proposals = [];
   for (let index = 0; index < segments.length; index += 1) {
     const sourceText = segments[index];
-    let proposal = await analyzeOperationalWithAi(session, sourceText);
+    let proposal = externalMeetingWarning && meetingMode
+      ? withAiProposalContract(polishAiProposal(localAiProposal(sourceText, context || { projects: [], tasks: [] }), sourceText))
+      : await analyzeOperationalWithAi(session, sourceText);
     if (meetingMode) {
       proposal = normalizeMeetingProposal(proposal, sourceText);
       proposal = completeMeetingProposal(proposal, {
@@ -5643,9 +5648,10 @@ async function analyzeGuidedAutomationBatch(session, text) {
       ...proposal,
       batch_item: index + 1,
       batch_contract: "guided_batch_item_v1",
-      source_text: sourceText,
-      selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action) && !proposal.needs_entity_confirmation,
-    });
+        source_text: sourceText,
+        external_warning: [proposal.external_warning, externalMeetingWarning].filter(Boolean).join(" "),
+        selected: AI_ACTIONS_REQUIRING_CONFIRMATION.has(proposal.action) && !proposal.needs_entity_confirmation,
+      });
   }
   return {
     ok: true,
