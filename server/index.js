@@ -1976,9 +1976,12 @@ function detectState(text, fallback = "En curso") {
 
 function detectResponsible(text, fallback = "") {
   const t = normalizeText(text);
-  if (t.includes("elena")) return "Elena Cuenca";
-  if (t.includes("luis")) return "Luis Gallardo";
+  if (t.includes("miguel angel") || t.includes("costilla")) return "Miguel Ángel / Costilla";
+  if (t.includes("juanmi")) return "Juanmi";
+  if (t.includes("juan") && (t.includes("farola") || t.includes("electric") || t.includes("obra"))) return "Proveedor";
   if (t.includes("presidente") || t.includes("rudy")) return "Presidente";
+  if (t.includes("elena")) return "Elena Cuenca";
+  if (/\bluis\b/.test(t) || t.includes("luis gallardo")) return "Luis Gallardo";
   if (t.includes("proveedor") || t.includes("empresa") || t.includes("jardinero")) return "Proveedor";
   return fallback;
 }
@@ -2039,6 +2042,34 @@ function buildFormalComment(text, contextItem = null) {
 function buildFormalNextStep(text, fallback = "") {
   const clean = cleanTranscriptText(text);
   const t = normalizeText(clean);
+
+  if (t.includes("rafadona") || t.includes("farola") || t.includes("alumbrado")) {
+    const responsible = detectResponsible(clean, "Proveedor");
+    const timing = (t.includes("manana") || t.includes("mañana")) ? " manana" : "";
+    const tasks = [];
+    if (t.includes("obra") || t.includes("valla") || t.includes("permiso")) {
+      tasks.push("acceder a la zona de obra ya autorizada y revisar la farola afectada");
+    } else {
+      tasks.push("revisar la farola o linea de alumbrado afectada sobre el terreno");
+    }
+    if (t.includes("bloque optico")) tasks.push("proponer alternativa para el bloque optico pendiente");
+    if (t.includes("led") || t.includes("rotulo") || t.includes("potenciometro") || t.includes("reductor")) {
+      tasks.push("preparar valoracion tecnica de la solucion LED evitando exceso de iluminacion");
+    }
+    return `${responsible} debe ${tasks.join(", y ")}${timing}.`;
+  }
+
+  if (t.includes("contenedor") || t.includes("reciclaje") || t.includes("basura")) {
+    return "Solicitar o revisar la propuesta pendiente sobre contenedores/punto de reciclaje, confirmar alcance, coste y viabilidad antes de elevar decision.";
+  }
+
+  if (t.includes("panel") && t.includes("proveedor")) {
+    return "Preparar el panel de proveedores por categorias, incorporando alternativas preaprobadas y criterios comparables de precio, calidad y referencias.";
+  }
+
+  if (t.includes("seguridad") && (t.includes("parte") || t.includes("incidencia") || t.includes("informe"))) {
+    return "Revisar los partes de seguridad pendientes, clasificar las incidencias relevantes y decidir si deben convertirse en tarea, proyecto o seguimiento.";
+  }
 
   if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc") || t.includes("raiz") || t.includes("raices") || t.includes("tubo"))) {
     return "Coordinar revision sobre el terreno con el proveedor/jardinero, valorar la retirada controlada de las raices y confirmar si es necesaria una intervencion especializada para evitar la obstruccion de la red.";
@@ -2216,6 +2247,28 @@ function polishTitle(value) {
   return clean.length > 120 ? clean.slice(0, 117).trim() + "..." : clean;
 }
 
+function isGenericMeetingTitle(value) {
+  const text = normalizeText(value);
+  if (!text) return true;
+  return /^asunto de reunion\s+\d+$/.test(text)
+    || text === "incidencia operativa"
+    || text === "actuacion indicada"
+    || text === "seguimiento operativo"
+    || text === "actualizacion operativa"
+    || text === "reunion larga"
+    || text === "tema de reunion";
+}
+
+function isGenericNextStep(value) {
+  const text = normalizeText(value);
+  if (!text) return true;
+  return text.includes("revisar el asunto")
+    || text.includes("revisar la informacion aportada")
+    || text.includes("definir el siguiente paso operativo")
+    || text.includes("confirmar el alcance y asignar")
+    || text.includes("revisar la incidencia sobre el terreno y confirmar el alcance de la actuacion necesaria");
+}
+
 function hasOperationalSignal(text) {
   const t = normalizeText(text);
   return [
@@ -2242,7 +2295,15 @@ function extractIssueTitle(text) {
   const t = normalizeText(text);
   const location = extractLocation(text);
   let issue = "Incidencia operativa";
-  if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc"))) issue = "Arqueta obstruida";
+  if (t.includes("rafadona") && t.includes("farola")) issue = "Alumbrado Rafadona y farola dentro de obra";
+  else if (t.includes("farola") && t.includes("bloque optico")) issue = "Farola pendiente de bloque optico";
+  else if (t.includes("farola")) issue = "Revision de farola";
+  else if (t.includes("led") || t.includes("rotulo")) issue = "Valoracion de iluminacion LED";
+  else if (t.includes("contenedor") || t.includes("reciclaje")) issue = "Punto de reciclaje y contenedores";
+  else if (t.includes("panel") && t.includes("proveedor")) issue = "Panel de proveedores por categoria";
+  else if (t.includes("proveedor") && (t.includes("referencia") || t.includes("valoracion"))) issue = "Valoracion de proveedores";
+  else if (t.includes("seguridad") && (t.includes("parte") || t.includes("incidencia"))) issue = "Revision de partes de Seguridad";
+  else if (t.includes("arqueta") && (t.includes("obstru") || t.includes("atasc"))) issue = "Arqueta obstruida";
   else if (t.includes("arqueta")) issue = "Revision de arqueta";
   else if (t.includes("raiz") || t.includes("raices")) issue = "Raices afectando instalacion";
   else if (t.includes("tubo")) issue = "Revision de tubo";
@@ -3186,7 +3247,10 @@ function completeMeetingProposal(proposal, item, context, index) {
   const sourceText = meetingItemText(item) || payload.comentario || payload.proximo_paso || payload.titulo || "";
   const kind = proposal.action.includes("tarea") ? "task" : "project";
   const entityTitle = proposal.entity?.title || "";
-  const title = firstMeetingString(item, ["titulo", "title", "asunto", "nombre"], payload.titulo || entityTitle || extractIssueTitle(sourceText) || `Asunto de reunion ${index + 1}`);
+  let title = firstMeetingString(item, ["titulo", "title", "asunto", "nombre"], payload.titulo || entityTitle || "");
+  if (isGenericMeetingTitle(title)) {
+    title = extractIssueTitle(sourceText) || entityTitle || `Asunto de reunion ${index + 1}`;
+  }
   payload.titulo = polishTitle(title || entityTitle || `Asunto de reunion ${index + 1}`).slice(0, 160);
   payload.categoria = firstMeetingString(item, ["categoria", "categoría", "category"], payload.categoria || (normalizeText(sourceText).includes("presupuesto") ? "Presupuesto" : "Gestión"));
   payload.tipo_registro = firstMeetingString(item, ["tipo_registro", "tipo", "record_type"], payload.tipo_registro || "Seguimiento");
@@ -3208,7 +3272,7 @@ function completeMeetingProposal(proposal, item, context, index) {
     payload.comentario = [payload.comentario, "Puntos clave:\n" + points.slice(0, 6).map((line) => `- ${polishSentence(line)}`).join("\n")].filter(Boolean).join("\n\n");
   }
   const next = firstMeetingString(item, ["proximo_paso", "siguiente_paso", "next_step"], payload.proximo_paso);
-  payload.proximo_paso = professionalNextStep(next || sourceText, "Revisar el asunto, confirmar el alcance y asignar la siguiente actuacion.").slice(0, 2000);
+  payload.proximo_paso = professionalNextStep(isGenericNextStep(next) ? sourceText : (next || sourceText), "Revisar el asunto, confirmar el alcance y asignar la siguiente actuacion.").slice(0, 2000);
   payload.fecha_objetivo_proximo_paso = normalizeImportDate(firstMeetingString(item, ["fecha_objetivo", "fecha", "plazo"], payload.fecha_objetivo_proximo_paso));
   payload.fecha_proxima_revision = payload.fecha_objetivo_proximo_paso || normalizeImportDate(payload.fecha_proxima_revision || "");
   if (normalizeText(payload.estado_nuevo).includes("bloque")) {
@@ -5344,7 +5408,8 @@ function splitMultiTopicNarrativeText(text) {
   const parts = matches.map((match, index) => {
     const end = matches[index + 1]?.index ?? clean.length;
     const body = clean.slice(match.index, end).trim();
-    return [intro && intro.length < 500 ? intro : "", body].filter(Boolean).join("\n\n");
+    const scopedIntro = intro && intro.length < 220 && !hasExplicitResponsible(intro) ? intro : "";
+    return [scopedIntro, body].filter(Boolean).join("\n\n");
   }).filter((part) => part.length >= 120);
   return parts.slice(0, 20);
 }

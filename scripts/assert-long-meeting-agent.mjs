@@ -34,6 +34,10 @@ const required = [
   "fragmento_origen",
   "source_text: meetingItemText(item)",
   "minimumExpected",
+  "function isGenericMeetingTitle",
+  "function isGenericNextStep",
+  "Alumbrado Rafadona y farola dentro de obra",
+  "preparar valoracion tecnica de la solucion LED",
 ];
 
 const missing = required.filter((text) => !source.includes(text));
