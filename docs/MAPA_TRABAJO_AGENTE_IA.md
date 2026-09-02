@@ -6,6 +6,8 @@ Convertir Organizador Web en el entorno central de trabajo para la gestion integ
 
 El objetivo final no es tener "una IA que contesta", sino un agente operativo con datos fiables, memoria controlada, permisos, confirmacion previa, trazabilidad y capacidad de proponer actuaciones defendiendo los intereses de la comunidad.
 
+La consolidacion funcional de la aplicacion se rige por el documento `docs/ROADMAP_REVISION_MODULAR.md`. Ese roadmap fija el orden de revision modulo por modulo y obliga a empezar cada modulo con preguntas de finalidad, datos, permisos, flujo, trazabilidad, interconexion e IA antes de modificar codigo o datos.
+
 ## Estado global
 
 - App web operativa actual: 74%.
