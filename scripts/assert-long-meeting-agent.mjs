@@ -38,7 +38,7 @@ const required = [
   "function isGenericNextStep",
   "Alumbrado Rafadona y farola dentro de obra",
   "preparar valoracion tecnica de la solucion LED",
-  "timeoutMs: 45000",
+  "timeoutMs: 18000",
   "analisis local segmentado",
 ];
 

@@ -1976,6 +1976,7 @@ function detectState(text, fallback = "En curso") {
 
 function detectResponsible(text, fallback = "") {
   const t = normalizeText(text);
+  if (t.includes("panel") && t.includes("proveedor")) return "Administracion";
   if (t.includes("miguel angel") || t.includes("costilla")) return "Miguel Ángel / Costilla";
   if (t.includes("juanmi")) return "Juanmi";
   if (t.includes("juan") && (t.includes("farola") || t.includes("electric") || t.includes("obra"))) return "Proveedor";
@@ -2266,7 +2267,9 @@ function isGenericNextStep(value) {
     || text.includes("revisar la informacion aportada")
     || text.includes("definir el siguiente paso operativo")
     || text.includes("confirmar el alcance y asignar")
-    || text.includes("revisar la incidencia sobre el terreno y confirmar el alcance de la actuacion necesaria");
+    || text.includes("revisar la incidencia sobre el terreno y confirmar el alcance de la actuacion necesaria")
+    || /^(primero|segundo|tercero|cuarto|quinto)\b/.test(text)
+    || text.length > 170;
 }
 
 function hasOperationalSignal(text) {
@@ -3144,11 +3147,11 @@ async function externalRefineOperationalProposal(proposal, sourceText, context =
 async function externalMeetingAnalysis(text, context) {
   if (!aiExternalAvailable()) return null;
   const catalog = {
-    projects: (context.projects || []).slice(0, 120).map((item) => ({
-      type: "project", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, proximo_paso: item.proximo_paso || item.responsable_proximo_paso || "", comunidad: item.comunidad || "",
+    projects: (context.projects || []).slice(0, 70).map((item) => ({
+      type: "project", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, comunidad: item.comunidad || "",
     })),
-    tasks: (context.tasks || []).slice(0, 160).map((item) => ({
-      type: "task", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, proximo_paso: item.proximo_paso || "", comunidad: item.comunidad || "",
+    tasks: (context.tasks || []).slice(0, 90).map((item) => ({
+      type: "task", id: item.id, title: item.titulo, estado: item.estado, responsable: item.responsable, comunidad: item.comunidad || "",
     })),
   };
   const system = [
@@ -3172,9 +3175,9 @@ async function externalMeetingAnalysis(text, context) {
   return callExternalAiJson({
     system,
     purpose: "meeting_analysis_v1",
-    maxTokens: 9000,
-    timeoutMs: 45000,
-    user: `Catalogo visible de tareas y proyectos:\n${JSON.stringify(catalog)}\n\nTranscripcion o resumen de reunion:\n${String(text || "").slice(0, 220000)}`,
+    maxTokens: 7000,
+    timeoutMs: 18000,
+    user: `Catalogo visible de tareas y proyectos:\n${JSON.stringify(catalog)}\n\nTranscripcion o resumen de reunion:\n${String(text || "").slice(0, 80000)}`,
   });
 }
 
@@ -3233,7 +3236,14 @@ function normalizeMeetingState(value, kind, sourceText) {
     ? ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueada", "Terminada", "Archivada"]
     : ["Pendiente", "En curso", "Pendiente de tercero", "Bloqueado", "Finalizado", "Archivado"];
   const found = allowed.find((state) => normalizeText(state) === normalizeText(text));
-  if (found) return found;
+  const source = normalizeText(sourceText);
+  const hasPendingAction = /\b(debe|pendiente|preparar|revisar|buscar|solicitar|coordinar|organizar|confirmar|valorar)\b/.test(source);
+  if (found) {
+    if (hasPendingAction && ["finalizado", "terminada", "archivado", "archivada"].includes(normalizeText(found))) {
+      return kind === "task" ? "Pendiente" : "En curso";
+    }
+    return found;
+  }
   return detectState([text, sourceText].filter(Boolean).join(" "), kind === "task" ? "Pendiente" : "En curso");
 }
 
