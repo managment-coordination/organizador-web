@@ -26,12 +26,14 @@ const required = [
   "function completeMeetingProposal",
   "function meetingItemText",
   "function firstMeetingString",
+  "function splitMultiTopicNarrativeText",
   "meeting_required_fields_v1",
   "Campos obligatorios en cada item",
   "comentario debe tener minimo 2 frases utiles",
   "responsable_proximo_paso nunca puede estar vacio",
   "fragmento_origen",
   "source_text: meetingItemText(item)",
+  "minimumExpected",
 ];
 
 const missing = required.filter((text) => !source.includes(text));

@@ -5334,6 +5334,21 @@ function compactMeetingSegment(lines) {
     .trim();
 }
 
+function splitMultiTopicNarrativeText(text) {
+  const clean = String(text || "").replace(/\r\n?/g, "\n").trim();
+  if (!clean) return [];
+  const pattern = /\b(?:primero|segundo|tercero|cuarto|quinto|sexto|septimo|septimo|por otro lado|ademas|tambien)\s*[:,.-]\s*/gi;
+  const matches = [...clean.matchAll(pattern)];
+  if (matches.length < 2) return [];
+  const intro = clean.slice(0, matches[0].index).trim();
+  const parts = matches.map((match, index) => {
+    const end = matches[index + 1]?.index ?? clean.length;
+    const body = clean.slice(match.index, end).trim();
+    return [intro && intro.length < 500 ? intro : "", body].filter(Boolean).join("\n\n");
+  }).filter((part) => part.length >= 120);
+  return parts.slice(0, 20);
+}
+
 function splitLongMeetingText(text) {
   const source = String(text || "").replace(/\r\n?/g, "\n");
   const turns = source.split(/\n+/).map(cleanMeetingTurn).filter((line) => line.length > 6);
@@ -5468,6 +5483,8 @@ function splitGuidedAutomationText(text) {
   if (current.length) headed.push(current.join("\n").trim());
   if (headed.length > 1) return headed.slice(0, 20);
   if (isLongMeetingTranscript(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText)) {
+    const narrativeSegments = splitMultiTopicNarrativeText(cleanText);
+    if (narrativeSegments.length > 1) return narrativeSegments;
     const meetingSegments = splitLongMeetingText(cleanText);
     if (meetingSegments.length > 1) return meetingSegments;
   }
@@ -5501,7 +5518,8 @@ async function analyzeGuidedAutomationBatch(session, text) {
     try {
       const external = await externalMeetingAnalysis(text, context);
       const items = Array.isArray(external?.items) ? external.items.slice(0, 30) : [];
-      if (items.length) {
+      const minimumExpected = segments.length > 1 ? Math.min(segments.length, 3) : 1;
+      if (items.length >= minimumExpected) {
         const proposals = items.map((item, index) => {
           const proposal = proposalFromMeetingItem(item, context, index);
           return {
