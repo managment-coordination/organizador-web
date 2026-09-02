@@ -165,7 +165,7 @@ El siguiente modulo a revisar es:
 
 ```text
 Modulo activo: Usuarios, roles y comunidades
-Porcentaje de revision modular global: 0%
+Porcentaje de revision modular global: 2%
 Objetivo inmediato: cerrar la base de permisos, alcance por comunidad y perfiles especiales antes de revisar tareas/proyectos.
+Ficha activa: docs/MODULO_01_USUARIOS_ROLES_COMUNIDADES.md
 ```
-
