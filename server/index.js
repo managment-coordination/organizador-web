@@ -2060,6 +2060,11 @@ function buildFormalNextStep(text, fallback = "") {
     return `${responsible} debe ${tasks.join(", y ")}${timing}.`;
   }
 
+  if (t.includes("led") || t.includes("rotulo") || t.includes("potenciometro") || t.includes("reductor")) {
+    const responsible = detectResponsible(clean, "Proveedor");
+    return `${responsible} debe preparar una valoracion tecnica de la solucion LED, comprobando intensidad, alcance de luz y posible reductor de potencia antes de ejecutar la actuacion.`;
+  }
+
   if (t.includes("contenedor") || t.includes("reciclaje") || t.includes("basura")) {
     return "Solicitar o revisar la propuesta pendiente sobre contenedores/punto de reciclaje, confirmar alcance, coste y viabilidad antes de elevar decision.";
   }
@@ -3176,7 +3181,7 @@ async function externalMeetingAnalysis(text, context) {
     system,
     purpose: "meeting_analysis_v1",
     maxTokens: 7000,
-    timeoutMs: 18000,
+    timeoutMs: 8000,
     user: `Catalogo visible de tareas y proyectos:\n${JSON.stringify(catalog)}\n\nTranscripcion o resumen de reunion:\n${String(text || "").slice(0, 80000)}`,
   });
 }
