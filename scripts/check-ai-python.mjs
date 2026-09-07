@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const indexPath = path.join(root, "server", "index.js");
 const source = fs.readFileSync(indexPath, "utf8");
-const match = source.match(/function querySmartAssistant\(session, text\) \{\s+const script = `([\s\S]*?)`;\s+return runPythonJson\(script\);/);
+const match = source.match(/function querySmartAssistant\(session, text\) \{\s+const script = (?:pythonScript)?`([\s\S]*?)`;\s+return runPythonJson\(script\);/);
 
 if (!match) {
   console.error("No se ha encontrado el bloque Python de querySmartAssistant.");

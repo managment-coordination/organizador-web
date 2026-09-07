@@ -7,10 +7,11 @@ import secrets
 import sqlite3
 import sys
 from datetime import datetime
+from access_control import FIELDS, WORK_ROLES, defaults, migrate, save_permissions
 
 
 DATABASE = sys.argv[1]
-REQUEST = json.loads(sys.argv[2])
+REQUEST = json.loads(sys.argv[2]) if len(sys.argv) > 2 else json.load(sys.stdin)
 SESSION = REQUEST.get("session") or {}
 ACTION = str(REQUEST.get("action") or "")
 DATA = REQUEST.get("data") or {}
@@ -37,6 +38,7 @@ def connection() -> sqlite3.Connection:
            )"""
     )
     conn.commit()
+    migrate(conn)
     return conn
 
 
@@ -108,13 +110,19 @@ def admin_list() -> dict:
         by_user.setdefault(int(row["id_usuario"]), []).append(int(row["id_comunidad"]))
     for user in users:
         user["community_ids"] = by_user.get(int(user["id_usuario"]), [])
+        user["community_permissions"] = dictionaries(conn.execute(
+            "SELECT * FROM usuario_comunidad_permisos WHERE id_usuario=? AND activo=1", (user["id_usuario"],)
+        ).fetchall())
         user["password_status"] = "Configurada" if user.get("password_configurada") and not user.get("requiere_cambio_password") else "Clave temporal pendiente"
     communities = dictionaries(conn.execute(
         """SELECT c.id_comunidad,c.nombre,c.descripcion,c.activo,c.fecha_creacion,
+                  cp.id_usuario AS id_usuario_presidente,pr.nombre AS presidente,
                   COUNT(DISTINCT uc.id_usuario) AS total_usuarios,
                   COUNT(DISTINCT p.id_proyecto) AS total_proyectos,
                   COUNT(DISTINCT t.id_tarea) AS total_tareas
            FROM comunidades c
+           LEFT JOIN comunidad_presidencia cp ON cp.id_comunidad=c.id_comunidad
+           LEFT JOIN usuarios pr ON pr.id_usuario=cp.id_usuario
            LEFT JOIN usuario_comunidad uc ON uc.id_comunidad=c.id_comunidad
            LEFT JOIN proyectos p ON p.id_comunidad=c.id_comunidad
            LEFT JOIN tareas t ON t.id_comunidad=c.id_comunidad
@@ -155,6 +163,12 @@ def save_user() -> dict:
         raise ValueError("Ya existe otro usuario con ese nombre.")
     temp_key = ""
     community_ids = normalized_community_ids(conn, DATA.get("community_ids"))
+    if active and role != "Superusuario" and not community_ids:
+        raise ValueError("Asigna al menos una comunidad al usuario activo.")
+    permission_rows = DATA.get("community_permissions")
+    overrides = {int(row["id_comunidad"]): row for row in permission_rows or []}
+    if set(overrides) - set(community_ids):
+        raise ValueError("Los permisos deben pertenecer a las comunidades asignadas.")
     with conn:
         if user_id:
             existing = conn.execute("SELECT * FROM usuarios WHERE id_usuario=?", (user_id,)).fetchone()
@@ -170,6 +184,16 @@ def save_user() -> dict:
                 if not others:
                     raise ValueError("Debe quedar al menos un Superusuario activo.")
             conn.execute("UPDATE usuarios SET nombre=?,rol=?,activo=? WHERE id_usuario=?", (name, role, active, user_id))
+            if existing["nombre"] != name:
+                for table, fields in {
+                    "tareas": ["responsable", "responsable_proximo_paso"],
+                    "proyectos": ["responsable_principal", "responsable_proximo_paso"],
+                    "acciones_pendientes": ["usuario_destino"],
+                    "solicitudes_presidente": ["responsable_retorno"],
+                }.items():
+                    for field in fields:
+                        conn.execute(f"UPDATE {table} SET {field}=? WHERE {field}=?", (name, existing["nombre"]))
+                conn.execute("UPDATE notificaciones SET usuario_destino=? WHERE id_usuario_destino=?", (name, user_id))
             action = "Editar usuario web"
         else:
             temp_key = temporary_key()
@@ -187,6 +211,28 @@ def save_user() -> dict:
             "INSERT INTO usuario_comunidad (id_usuario,id_comunidad) VALUES (?,?)",
             [(user_id, community_id) for community_id in community_ids],
         )
+        previous = {row["id_comunidad"]: dict(row) for row in conn.execute(
+            "SELECT * FROM usuario_comunidad_permisos WHERE id_usuario=?", (user_id,))}
+        conn.execute("UPDATE usuario_comunidad_permisos SET activo=0 WHERE id_usuario=?", (user_id,))
+        for community_id in community_ids:
+            supplied = overrides.get(community_id)
+            if supplied is None and user_id and permission_rows is None and community_id in previous:
+                supplied = previous[community_id]
+            supplied = supplied or {}
+            local_role = str(supplied.get("rol_en_comunidad") or role)
+            if role in {"Administrador", "Usuario"} and local_role not in {role, "Consulta"}:
+                raise ValueError("El acceso por comunidad puede ser operativo o Consulta.")
+            if role not in {"Administrador", "Usuario"}:
+                local_role = role
+            caps = defaults(local_role, bool(manage_security))
+            permissions = {field: int(caps[field] and supplied.get(field, caps[field])) for field in FIELDS}
+            save_permissions(conn, user_id, community_id, local_role, permissions)
+        conn.execute("""DELETE FROM comunidad_presidencia WHERE id_usuario=? AND
+            (?<>'Presidente' OR ?=0 OR id_comunidad NOT IN (SELECT id_comunidad FROM usuario_comunidad WHERE id_usuario=?))""",
+            (user_id, role, active, user_id))
+        if role == "Presidente" and active:
+            for community_id in community_ids:
+                conn.execute("INSERT OR IGNORE INTO comunidad_presidencia VALUES (?,?,?)", (community_id, user_id, now_iso()))
         conn.execute(
             """INSERT INTO usuario_permisos
                (id_usuario,gestionar_seguridad,usuario_asignacion,fecha_asignacion)
@@ -240,6 +286,25 @@ def save_community() -> dict:
             )
             community_id = int(cursor.lastrowid)
             action = "Crear comunidad web"
+        if "id_usuario_presidente" in DATA:
+            president_id = int(DATA.get("id_usuario_presidente") or 0)
+            if president_id:
+                president = conn.execute("""SELECT u.nombre FROM usuarios u JOIN usuario_comunidad uc USING(id_usuario)
+                    WHERE u.id_usuario=? AND u.rol='Presidente' AND u.activo=1 AND uc.id_comunidad=?""",
+                    (president_id, community_id)).fetchone()
+                if not president:
+                    raise ValueError("Selecciona un presidente activo asignado a esta comunidad.")
+                conn.execute("""INSERT INTO comunidad_presidencia VALUES (?,?,?) ON CONFLICT(id_comunidad)
+                    DO UPDATE SET id_usuario=excluded.id_usuario,fecha_asignacion=excluded.fecha_asignacion""",
+                    (community_id, president_id, now_iso()))
+                conn.execute("UPDATE solicitudes_presidente SET id_usuario_presidente=? WHERE id_comunidad=? AND estado='Pendiente'", (president_id, community_id))
+                conn.execute("""UPDATE notificaciones SET id_usuario_destino=?,usuario_destino=?
+                    WHERE leida=0 AND tipo='Solicitud presidente' AND id_comunidad=?""", (president_id, president["nombre"], community_id))
+                audit(conn, "Asignar presidencia web", "comunidad", community_id, f"Usuario {president_id}; solicitudes pendientes reasignadas")
+            else:
+                if conn.execute("SELECT 1 FROM solicitudes_presidente WHERE id_comunidad=? AND estado='Pendiente'", (community_id,)).fetchone():
+                    raise ValueError("Hay decisiones pendientes. Asigna otro presidente antes de retirar el actual.")
+                conn.execute("DELETE FROM comunidad_presidencia WHERE id_comunidad=?", (community_id,))
         audit(conn, action, "comunidad", community_id, f"{name}; activo={active}")
     conn.close()
     return {"ok": True, "id_comunidad": community_id}
@@ -256,7 +321,7 @@ def reset_password() -> dict:
     with conn:
         conn.execute(
             """UPDATE usuarios SET password_hash=NULL,password_configurada=0,clave_temporal_hash=?,
-                      requiere_cambio_password=1,intentos_fallidos=0,bloqueado=0 WHERE id_usuario=?""",
+                      requiere_cambio_password=1,intentos_fallidos=0,bloqueado=0,auth_version=auth_version+1 WHERE id_usuario=?""",
             (hash_secret(temp_key), user_id),
         )
         audit(conn, "Resetear password web", "usuario", user_id, f"Nueva clave temporal para {user['nombre']}")
@@ -290,6 +355,7 @@ def first_access() -> dict:
     if len(password.strip()) < 6:
         raise ValueError("La contrasena debe tener al menos 6 caracteres.")
     conn = connection()
+    conn.execute("BEGIN IMMEDIATE")
     user = conn.execute("SELECT * FROM usuarios WHERE nombre=?", (name,)).fetchone()
     if not user or not user["activo"]:
         conn.close()
@@ -302,11 +368,10 @@ def first_access() -> dict:
         raise ValueError("Este usuario ya tiene una contrasena configurada.")
     if not verify_secret(key, user["clave_temporal_hash"]):
         failed = int(user["intentos_fallidos"] or 0) + 1
-        blocked = 1 if failed >= 5 else 0
         with conn:
             conn.execute(
-                "UPDATE usuarios SET intentos_fallidos=?,bloqueado=? WHERE id_usuario=?",
-                (failed, blocked, user["id_usuario"]),
+                "UPDATE usuarios SET intentos_fallidos=? WHERE id_usuario=?",
+                (failed, user["id_usuario"]),
             )
             conn.execute(
                 """INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle)
@@ -318,7 +383,7 @@ def first_access() -> dict:
     with conn:
         conn.execute(
             """UPDATE usuarios SET password_hash=?,password_configurada=1,clave_temporal_hash=NULL,
-                      requiere_cambio_password=0,ultimo_acceso=?,intentos_fallidos=0,bloqueado=0
+                      requiere_cambio_password=0,ultimo_acceso=?,intentos_fallidos=0,bloqueado=0,auth_version=auth_version+1
                WHERE id_usuario=?""",
             (hash_secret(password), now_iso(), user["id_usuario"]),
         )

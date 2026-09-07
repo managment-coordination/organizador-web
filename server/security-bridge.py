@@ -7,6 +7,7 @@ import sys
 import unicodedata
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+from access_control import install_scoped_views, permission, require_permission
 
 
 DATABASE = sys.argv[1]
@@ -56,6 +57,12 @@ def connection() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 30000")
     ensure_schema(conn)
+    if ACTION in {"overview", "detail", "owner_lookup", "document_info", "file_exists"}:
+        ids = security_community_ids(conn, manage=ACTION not in {"owner_lookup", "file_exists"})
+        tables = ["seguridad_documentos", "seguridad_incidencias"]
+        if ACTION == "owner_lookup":
+            tables += [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'cf_%'")]
+        install_scoped_views(conn, ids, tables)
     return conn
 
 
@@ -176,22 +183,26 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def macro_community_id(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT id_comunidad FROM comunidades WHERE lower(nombre)=lower('Macrocomunidad San Roque Club') LIMIT 1"
-    ).fetchone()
-    if not row:
-        raise ValueError("No existe la comunidad gestora Macrocomunidad San Roque Club.")
-    return int(row["id_comunidad"])
+    ids = security_community_ids(conn)
+    requested = int(DATA.get('id_comunidad') or 0)
+    if requested:
+        if requested not in ids:
+            raise PermissionError("No tienes permiso de Seguridad en esa comunidad.")
+        return requested
+    if len(ids) == 1:
+        return ids[0]
+    raise ValueError("Selecciona la comunidad gestora del parte de Seguridad.")
+
+
+def security_community_ids(conn, manage=False):
+    role = str(SESSION.get('rol') or '')
+    return [int(row['id_comunidad']) for row in SESSION.get('comunidades', [])
+            if role == 'Superusuario' or (role == 'Seguridad' and not manage)
+            or (role in {'Administrador','Usuario'} and row.get('puede_gestionar_seguridad'))]
 
 
 def can_manage(conn: sqlite3.Connection) -> bool:
-    if str(SESSION.get("rol") or "") == "Superusuario":
-        return True
-    user_id = int(SESSION.get("id_usuario") or 0)
-    row = conn.execute(
-        "SELECT gestionar_seguridad FROM usuario_permisos WHERE id_usuario=?", (user_id,)
-    ).fetchone()
-    return bool(row and row["gestionar_seguridad"])
+    return bool(security_community_ids(conn, manage=True))
 
 
 def require_manager(conn: sqlite3.Connection) -> None:
@@ -200,7 +211,7 @@ def require_manager(conn: sqlite3.Connection) -> None:
 
 
 def require_uploader(conn: sqlite3.Connection) -> None:
-    if str(SESSION.get("rol") or "") == "Seguridad" or can_manage(conn):
+    if security_community_ids(conn):
         return
     raise PermissionError("Tu perfil no puede subir partes de Seguridad.")
 
@@ -489,19 +500,20 @@ def incident_similarity(existing: sqlite3.Row, incoming: dict) -> float:
 
 
 def find_duplicate(conn: sqlite3.Connection, incident: dict) -> tuple[int, float] | None:
+    community_id = macro_community_id(conn)
     report = str(incident.get("numero_reporte") or "").strip()
     if report:
         row = conn.execute(
-            "SELECT id_incidencia FROM seguridad_incidencias WHERE numero_reporte=?", (report,)
+            "SELECT id_incidencia FROM seguridad_incidencias WHERE numero_reporte=? AND id_comunidad=?", (report,community_id)
         ).fetchone()
         if row:
             return int(row["id_incidencia"]), 1.0
     event_date = str(incident.get("fecha_hora_suceso") or "")[:10]
     candidates = conn.execute(
         """SELECT * FROM seguridad_incidencias
-           WHERE (?='' OR substr(COALESCE(fecha_hora_suceso,''),1,10)=?)
+           WHERE id_comunidad=? AND (?='' OR substr(COALESCE(fecha_hora_suceso,''),1,10)=?)
            ORDER BY id_incidencia DESC LIMIT 80""",
-        (event_date, event_date),
+        (community_id,event_date,event_date),
     ).fetchall()
     scored = [(int(row["id_incidencia"]), incident_similarity(row, incident)) for row in candidates]
     if not scored:
@@ -521,9 +533,10 @@ def access() -> dict:
     conn = connection()
     payload = {
         "ok": True,
-        "can_upload": str(SESSION.get("rol") or "") == "Seguridad" or can_manage(conn),
+        "can_upload": bool(security_community_ids(conn)),
         "can_manage": can_manage(conn),
         "upload_only": str(SESSION.get("rol") or "") == "Seguridad",
+        "communities": [row for row in SESSION.get('comunidades',[]) if int(row['id_comunidad']) in security_community_ids(conn)],
     }
     conn.close()
     return payload
@@ -534,7 +547,7 @@ def file_exists() -> dict:
     require_uploader(conn)
     row = conn.execute(
         "SELECT id_documento,nombre_original,fecha_carga FROM seguridad_documentos WHERE hash_archivo=?",
-        (str(DATA.get("hash_archivo") or ""),),
+        (str(macro_community_id(conn)) + ':' + str(DATA.get("hash_archivo") or ""),),
     ).fetchone()
     conn.close()
     return {"exists": bool(row), "document": dict(row) if row else None}
@@ -552,7 +565,13 @@ def notify_reviewers(conn: sqlite3.Connection, community_id: int, new_incidents:
         f"{len(notifiable)} incidencia(s) de prioridad alta pendiente(s) de revision. "
         + (f"Revisar con prioridad: {maximum.get('titulo')}." if critical else "Accede al modulo Seguridad para validarlas.")
     )
-    for user in ("Luis Gallardo", "Elena Cuenca"):
+    reviewers = conn.execute("""SELECT u.id_usuario,u.nombre FROM usuarios u
+        JOIN usuario_comunidad uc USING(id_usuario)
+        JOIN usuario_comunidad_permisos p ON p.id_usuario=u.id_usuario AND p.id_comunidad=uc.id_comunidad
+        WHERE uc.id_comunidad=? AND u.activo=1 AND p.activo=1 AND p.puede_gestionar_seguridad=1
+        AND u.rol IN ('Usuario','Administrador','Superusuario')""", (community_id,)).fetchall()
+    for reviewer in reviewers:
+        user = reviewer['nombre']
         conn.execute(
             """INSERT INTO notificaciones
                (id_comunidad,usuario_destino,tipo,titulo,mensaje,id_solicitud,id_tarea,id_proyecto,leida,fecha_creacion)
@@ -566,9 +585,11 @@ def register_upload() -> dict:
     require_uploader(conn)
     document = DATA.get("document") or {}
     incidents = list(DATA.get("incidents") or [])[:100]
-    file_hash = str(document.get("hash_archivo") or "").strip()
-    if not file_hash:
+    raw_hash = str(document.get("hash_archivo") or "").strip()
+    if not raw_hash:
         raise ValueError("No se ha calculado la huella del documento.")
+    community_id = macro_community_id(conn)
+    file_hash = str(community_id) + ':' + raw_hash
     existing = conn.execute(
         "SELECT id_documento,nombre_original,fecha_carga FROM seguridad_documentos WHERE hash_archivo=?",
         (file_hash,),
@@ -576,7 +597,6 @@ def register_upload() -> dict:
     if existing:
         conn.close()
         return {"ok": True, "duplicate_document": True, "document": dict(existing), "new_incidents": 0}
-    community_id = macro_community_id(conn)
     now = now_iso()
     new_rows: list[dict] = []
     duplicate_count = 0
@@ -585,8 +605,8 @@ def register_upload() -> dict:
             """INSERT INTO seguridad_documentos
                (hash_archivo,nombre_original,ruta_archivo,tipo_mime,extension,tamano_bytes,fecha_carga,
                 usuario_carga,pc_carga,estado_procesamiento,error_procesamiento,advertencias,texto_extraido,
-                tipo_documento,inicio_turno,fin_turno,operativos,incidencias_detectadas)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tipo_documento,inicio_turno,fin_turno,operativos,incidencias_detectadas,id_comunidad)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 file_hash,
                 str(document.get("nombre_original") or "Documento"),
@@ -606,6 +626,7 @@ def register_upload() -> dict:
                 str(document.get("fin_turno") or ""),
                 json.dumps(document.get("operativos") or [], ensure_ascii=False),
                 len(incidents),
+                community_id,
             ),
         )
         document_id = int(cursor.lastrowid)
@@ -756,7 +777,8 @@ def overview() -> dict:
     category_options = [row["nombre"] for row in conn.execute(
         "SELECT nombre FROM seguridad_categorias WHERE activa=1 ORDER BY orden,nombre"
     )]
-    community_id = macro_community_id(conn)
+    available = security_community_ids(conn, manage=True)
+    community_id = available[0] if len(available) == 1 else None
     pending = counts.get("Pendiente de revision", 0) + counts.get("En revision", 0)
     total = sum(counts.values())
     conn.close()
@@ -843,6 +865,8 @@ def incident_detail() -> dict:
 
 
 def ensure_claim(conn: sqlite3.Connection, incident: sqlite3.Row) -> None:
+    if int(incident['id_comunidad']) not in security_community_ids(conn, manage=True):
+        raise PermissionError("No tienes permiso para esta incidencia de Seguridad.")
     reviewer = str(incident["revisor"] or "")
     current = str(SESSION.get("nombre") or "")
     if not reviewer or reviewer == current or str(SESSION.get("rol") or "") == "Superusuario":
@@ -954,12 +978,17 @@ def link_incident() -> dict:
     entity_type = str(DATA.get("entity_type") or "")
     entity_id = int(DATA.get("entity_id") or 0)
     relation = str(DATA.get("relation") or "Vinculada")
+    incident = conn.execute("SELECT * FROM seguridad_incidencias WHERE id_incidencia=?", (incident_id,)).fetchone()
+    if not incident:
+        raise ValueError("La incidencia ya no existe.")
+    ensure_claim(conn, incident)
     if entity_type not in {"task", "project"} or not entity_id:
         raise ValueError("La tarea o proyecto vinculado no es valido.")
     table = "tareas" if entity_type == "task" else "proyectos"
     column = "id_tarea" if entity_type == "task" else "id_proyecto"
-    if not conn.execute(f"SELECT 1 FROM {table} WHERE {column}=?", (entity_id,)).fetchone():
+    if not conn.execute(f"SELECT 1 FROM {table} WHERE {column}=? AND id_comunidad=?", (entity_id,incident['id_comunidad'])).fetchone():
         raise ValueError("El elemento vinculado ya no existe.")
+    require_permission(SESSION, incident['id_comunidad'], 'puede_actualizar')
     with conn:
         conn.execute(
             """UPDATE seguridad_incidencias
@@ -975,7 +1004,7 @@ def link_incident() -> dict:
 def document_info() -> dict:
     conn = connection()
     require_manager(conn)
-    document_id = int(DATA.get("id") or 0)
+    document_id = int(DATA.get("id_documento") or DATA.get("id") or 0)
     row = conn.execute(
         "SELECT id_documento,nombre_original,ruta_archivo FROM seguridad_documentos WHERE id_documento=?",
         (document_id,),

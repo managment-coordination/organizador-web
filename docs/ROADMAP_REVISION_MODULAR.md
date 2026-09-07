@@ -1,5 +1,9 @@
 # Roadmap de revision modular
 
+## Punto de continuidad: 08/09/2026
+
+Modulo 01 implementado y publicado en Ubuntu, con pruebas HTTP de roles, comunidades, presidencia, documentos, Seguridad, asambleas y Centro IA. Ver `CIERRE_OPERATIVO_2026-09-08.md`. Verificados los cinco usuarios activos mediante consultas de solo lectura y acceso por navegador Tailscale. Los modulos 02-10 no quedan cerrados por esta entrega; continuar por orden y con sus preguntas de contexto.
+
 ## Proposito
 
 Este documento fija el metodo de trabajo para consolidar la aplicacion modulo por modulo antes de seguir ampliandola.

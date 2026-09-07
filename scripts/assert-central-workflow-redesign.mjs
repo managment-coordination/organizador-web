@@ -22,7 +22,7 @@ const required = [
   '$("newProjectButton").classList.toggle("hidden", currentView !== "projects");',
   '$("newTaskButton").classList.toggle("hidden", currentView !== "tasks");',
   '<h3>Actualizar con IA</h3>',
-  '$("quickRecordBox").classList.toggle("hidden", !canWrite());',
+  '$("quickRecordBox").classList.toggle("hidden", !writable);',
 ];
 
 const missing = required.filter((needle) => !source.includes(needle));

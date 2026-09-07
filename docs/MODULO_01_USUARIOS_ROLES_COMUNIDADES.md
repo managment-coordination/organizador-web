@@ -424,7 +424,7 @@ La IA debe:
 - para Superusuario, poder resumir usuarios, roles, comunidades asignadas y posibles incoherencias;
 - no proponer crear usuarios genericos si el rol requiere identidad real, especialmente Presidente.
 
-## Riesgos actuales
+## Riesgos identificados antes de la implementacion
 
 1. Usuario `Presidente` generico no escala a varias comunidades.
 2. Las notificaciones al presidente pueden depender del nombre literal `Presidente`.
@@ -433,6 +433,8 @@ La IA debe:
 5. Si se sigue ampliando sin cerrar esto, tareas, asambleas, seguridad e IA podrian heredar permisos insuficientemente definidos.
 
 ## Criterio de cierre del modulo
+
+Actualizacion 08/09/2026: implementada y publicada la entrega de estabilizacion. Evidencias, limites, uso y copia de recuperacion en `CIERRE_OPERATIVO_2026-09-08.md`. El usuario Presidente existente conserva su nombre hasta que el Superusuario indique la identidad real; no se han inventado ni cambiado identidades.
 
 Este modulo se considerara estable cuando:
 

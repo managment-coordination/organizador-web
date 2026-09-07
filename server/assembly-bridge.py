@@ -4,6 +4,7 @@ import sys
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from access_control import require_permission
 
 
 DATABASE = sys.argv[1]
@@ -46,6 +47,11 @@ def require_visible(assembly_id, conn):
         raise ValueError("La asamblea no existe.")
     if ROLE != "Superusuario" and int(row["id_comunidad"] or 0) not in ALLOWED:
         raise PermissionError("No tienes permiso para esta comunidad.")
+    require_permission(SESSION, row['id_comunidad'])
+    if ACTION in {'document_info','document_add','document_delete'}:
+        require_permission(SESSION, row['id_comunidad'], 'puede_ver_documentos')
+    if ACTION not in {'list','detail','document_info','minutes_get'}:
+        require_permission(SESSION, row['id_comunidad'], 'puede_gestionar_asambleas')
     return dict(row)
 
 
@@ -60,6 +66,7 @@ def require_community(community_id):
         raise ValueError("Selecciona una comunidad.")
     if ROLE != "Superusuario" and value not in ALLOWED:
         raise PermissionError("No tienes permiso para esa comunidad.")
+    require_permission(SESSION, value, 'puede_gestionar_asambleas')
     return value
 
 
@@ -215,7 +222,7 @@ def point_result(point, attendance, votes):
 
 def list_assemblies():
     conn = connection(True)
-    scope = "" if ROLE == "Superusuario" else (f" AND a.id_comunidad IN ({','.join('?' for _ in ALLOWED)})" if ALLOWED else " AND 1=0")
+    scope = f" AND a.id_comunidad IN ({','.join('?' for _ in ALLOWED)})" if ALLOWED else " AND 1=0"
     rows = dictionaries(conn.execute(
         """SELECT a.*,c.nombre AS comunidad,
                   (SELECT COUNT(*) FROM asamblea_puntos p WHERE p.id_asamblea=a.id_asamblea AND p.activo=1) AS total_puntos,
@@ -224,7 +231,7 @@ def list_assemblies():
                   (SELECT COUNT(*) FROM asamblea_documentos d WHERE d.id_asamblea=a.id_asamblea) AS total_documentos
            FROM asambleas a LEFT JOIN comunidades c ON c.id_comunidad=a.id_comunidad
            WHERE 1=1""" + scope + " ORDER BY COALESCE(a.fecha,'') DESC,a.id_asamblea DESC",
-        tuple(ALLOWED if ROLE != "Superusuario" else []),
+        tuple(ALLOWED),
     ).fetchall())
     conn.close()
     return {"assemblies": rows}
@@ -321,6 +328,8 @@ def update_assembly():
     conn = connection()
     assembly = require_visible(assembly_id, conn)
     community_id = require_community(DATA.get("id_comunidad") or assembly.get("id_comunidad"))
+    if community_id != int(assembly['id_comunidad']):
+        raise ValueError('La comunidad de una asamblea existente no se puede cambiar: conserva su censo, votos y documentos.')
     code = str(DATA.get("codigo", assembly.get("codigo")) or "").strip()
     name = str(DATA.get("nombre", assembly.get("nombre")) or "").strip()
     if not code or not name:
@@ -945,7 +954,7 @@ ACTIONS = {
 
 
 try:
-    if ROLE == "Presidente":
+    if ROLE in {"Presidente", "Seguridad"}:
         raise PermissionError("El perfil Presidente no tiene acceso general al modulo de asambleas.")
     if ACTION not in ACTIONS:
         raise ValueError("Operacion de asamblea no valida.")

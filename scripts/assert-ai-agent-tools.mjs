@@ -25,7 +25,8 @@ requireIncludes("function getAgentToolCatalog", "falta funcion de catalogo por s
 requireIncludes("function selectAgentTool", "falta selector de herramienta");
 requireIncludes("function scoreAgentTool", "falta puntuacion de herramientas");
 requireIncludes("selected_tool: selectedTool", "el agente no devuelve herramienta seleccionada");
-requireIncludes("available_tools: getAgentToolCatalog(session)", "el agente no devuelve herramientas disponibles");
+requireIncludes("available_tools: availableTools", "el agente no devuelve herramientas disponibles");
+requireIncludes("const availableTools = getAgentToolCatalog(session)", "el catalogo debe respetar la sesion");
 requireIncludes("/api/agent/tools", "falta endpoint de herramientas del agente");
 requireIncludes("Herramientas internas", "falta panel visible de herramientas");
 requireIncludes("renderAgentTools", "falta render del catalogo");

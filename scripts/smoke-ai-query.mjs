@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const indexPath = path.join(root, "server", "index.js");
 const source = fs.readFileSync(indexPath, "utf8");
-const match = source.match(/function querySmartAssistant\(session, text\) \{\s+const script = `([\s\S]*?)`;\s+return runPythonJson\(script\);/);
+const match = source.match(/function querySmartAssistant\(session, text\) \{\s+const script = (?:pythonScript)?`([\s\S]*?)`;\s+return runPythonJson\(script\);/);
 
 if (!match) {
   console.error("No se ha encontrado el bloque Python de querySmartAssistant.");
@@ -50,7 +50,7 @@ for (const candidate of candidates) {
   const result = spawnSync(candidate, [outputPath], {
     encoding: "utf8",
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+    env: { ...process.env, PYTHONPATH: path.join(root, 'server'), PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
   });
   if (result.status === 0) {
     console.log(result.stdout.trim());

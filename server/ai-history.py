@@ -2,6 +2,7 @@ import json
 import sqlite3
 import sys
 from datetime import datetime
+from access_control import visible_history
 
 
 def ensure_schema(conn):
@@ -52,7 +53,7 @@ def main():
             limit = min(max(int(data.get("limit") or 40), 1), 100)
             rows = conn.execute(
                 """
-                SELECT id_consulta, pregunta, respuesta_json, fuente, confianza, fecha_creacion
+                SELECT id_consulta, pregunta, respuesta_json, fuente, confianza, fecha_creacion,comunidades_json
                 FROM ia_consultas
                 WHERE id_usuario = ?
                 ORDER BY fecha_creacion DESC, id_consulta DESC
@@ -62,6 +63,8 @@ def main():
             ).fetchall()
             history = []
             for row in rows:
+                if not visible_history(session, row["comunidades_json"]):
+                    continue
                 try:
                     answer = json.loads(row["respuesta_json"] or "{}")
                 except json.JSONDecodeError:

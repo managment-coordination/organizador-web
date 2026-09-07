@@ -8,6 +8,7 @@ import mammoth from "mammoth";
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
 import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
+import { pythonScript } from "./python-template.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,7 +24,7 @@ const aiProvider = (process.env.AI_PROVIDER || "local").toLowerCase();
 const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.ORGANIZADOR_NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
 const aiBaseUrl = process.env.AI_BASE_URL || (aiProvider === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://api.openai.com/v1");
 const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "nvidia/nemotron-3-super-120b-a12b" : "gpt-4.1-mini");
-const dataDir = path.join(rootDir, "data");
+const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, "data"));
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
 const uploadsDir = path.join(dataDir, "uploads");
@@ -36,6 +37,7 @@ const assemblyBridgePath = path.join(__dirname, "assembly-bridge.py");
 const adminBridgePath = path.join(__dirname, "admin-bridge.py");
 const securityBridgePath = path.join(__dirname, "security-bridge.py");
 const aiHistoryBridgePath = path.join(__dirname, "ai-history.py");
+const accessBridgePath = path.join(__dirname, "access-bridge.py");
 
 for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir, securityDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -200,6 +202,7 @@ function makeSessionCookie(user) {
       id_usuario: user.id_usuario,
       nombre: user.nombre,
       rol: user.rol,
+      auth_version: user.auth_version || 1,
       comunidades: user.comunidades,
       comunidades_asignadas: user.comunidades_asignadas || user.comunidades || [],
       alcance_comunidades: user.alcance_comunidades || "todas",
@@ -210,6 +213,7 @@ function makeSessionCookie(user) {
 }
 
 function readSession(req) {
+  if (Object.hasOwn(req, "validatedSession")) return req.validatedSession;
   const cookie = parseCookies(req)[sessionCookieName];
   if (!cookie || !cookie.includes(".")) return null;
   const [payload, signature] = cookie.split(".", 2);
@@ -225,6 +229,49 @@ function readSession(req) {
   } catch {
     return null;
   }
+}
+
+function runAccessCommand(request) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(pythonBin, [accessBridgePath, databasePath], { timeout: 30000, maxBuffer: 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1" } }, (error, stdout) => {
+      try {
+        const result = JSON.parse(stdout);
+        if (error || result.error) throw new Error(`${result.error_type || "ValueError"}: ${result.error || "No se pudo validar el acceso."}`);
+        resolve(result);
+      } catch (failure) { reject(failure); }
+    });
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+
+async function refreshSession(req) {
+  const cookie = readSession(req);
+  if (!cookie) return null;
+  const { user } = await runAccessCommand({ action: "profile", id_usuario: cookie.id_usuario });
+  if (!user || user.bloqueado || !user.password_configurada || user.requiere_cambio_password || Number(cookie.auth_version || 1) !== Number(user.auth_version)) return null;
+  const assigned = user.comunidades;
+  const selectedIds = new Set(cookie.comunidades.map(row => Number(row.id_comunidad)));
+  return {
+    id_usuario: user.id_usuario, nombre: user.nombre, rol: user.rol, auth_version: user.auth_version,
+    comunidades: cookie.alcance_comunidades === "seleccion" ? assigned.filter(row => selectedIds.has(Number(row.id_comunidad))) : assigned,
+    comunidades_asignadas: assigned, alcance_comunidades: cookie.alcance_comunidades, exp: cookie.exp
+  };
+}
+
+function sessionForPermission(session, permission) {
+  if (!session) throw new Error("PermissionError: No autenticado.");
+  const communities = (session.comunidades || []).filter(row => session.rol === "Superusuario" || row[permission] === 1);
+  return { ...session, comunidades: communities };
+}
+
+function requireCommunityPermission(session, communityId, permission) {
+  if (!sessionForPermission(session, permission).comunidades.some(row => Number(row.id_comunidad) === Number(communityId))) {
+    throw new Error("PermissionError: No tienes permiso para esta accion en esa comunidad.");
+  }
+}
+
+function accessEvent(session, event, req, detail = "") {
+  return runAccessCommand({ action: "access_event", id_usuario: session.id_usuario, nombre: session.nombre, event, detalle: detail, pc: req.socket.remoteAddress || "web" });
 }
 
 function setSessionCookie(res, user) {
@@ -253,7 +300,7 @@ function verifyPassword(password, storedHash) {
 
 function runPythonJson(script) {
   return new Promise((resolve, reject) => {
-    const child = execFile(pythonBin, ["-"], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
+    const child = execFile(pythonBin, ["-"], { timeout: 30000, maxBuffer: 12 * 1024 * 1024, env: { ...process.env, PYTHONPATH: __dirname, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
@@ -292,7 +339,7 @@ function runAssemblyCommand(session, action, data = {}, pc = "web") {
 function runAdminCommand(session, action, data = {}, pc = "web") {
   return new Promise((resolve, reject) => {
     const request = JSON.stringify({ session, action, data, pc });
-    execFile(pythonBin, [adminBridgePath, databasePath, request], { timeout: 30000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
+    const child = execFile(pythonBin, [adminBridgePath, databasePath], { timeout: 30000, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" } }, (error, stdout, stderr) => {
       let result;
       try {
         result = JSON.parse(String(stdout || "{}").trim() || "{}");
@@ -306,6 +353,7 @@ function runAdminCommand(session, action, data = {}, pc = "web") {
       }
       resolve(result);
     });
+    child.stdin.end(request);
   });
 }
 
@@ -330,10 +378,11 @@ function runAiHistoryCommand(session, action, data = {}) {
 }
 
 function runAiMemoryCommand(session, action, data = {}, pc = "web") {
-  const script = `
+  const script = pythonScript`
 import json
 import re
 import sqlite3
+from access_control import visible_history
 from datetime import datetime
 
 path = ${JSON.stringify(databasePath)}
@@ -355,6 +404,8 @@ def can_use_memory():
     return bool(user) and role in {"Superusuario", "Administrador", "Usuario"}
 
 def can_manage_rule(row=None):
+    if row and not visible_history(session, row['comunidades_json']):
+        return False
     if role in {"Superusuario", "Administrador"}:
         return True
     if row and int(row["id_usuario_creacion"] or 0) == user_id:
@@ -387,6 +438,8 @@ def ensure_schema(conn):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_reglas_modulo_tipo ON ia_reglas(modulo, tipo_regla, activa)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_reglas_usuario ON ia_reglas(id_usuario_creacion, fecha_creacion DESC)")
+    if 'comunidades_json' not in {r[1] for r in conn.execute('PRAGMA table_info(ia_reglas)')}:
+        conn.execute("ALTER TABLE ia_reglas ADD COLUMN comunidades_json TEXT NOT NULL DEFAULT '[]'")
 
 def audit(conn, action_name, entity="", entity_id=None, detail=""):
     conn.execute(
@@ -418,11 +471,12 @@ def create_rule(conn, tipo, field_label, original, final, source_text, origin):
         INSERT INTO ia_reglas
         (modulo,tipo_regla,descripcion,valor_detectado,valor_propuesto,patron,confianza,activa,confirmada,
          origen,id_usuario_creacion,usuario_creacion,fecha_creacion,usuario_confirmacion,fecha_confirmacion,pc_creacion)
-        VALUES ('redaccion',?,?,?,?,?,0.72,1,1,?,?,?,?,?,?)
+        VALUES ('redaccion',?,?,?,?,?,0.72,1,1,?,?,?,?,?,?,?)
         """,
         (tipo, description, original, final, pattern, origin, user_id, user, now_iso(), user, now_iso(), pc),
     )
     rule_id = int(cursor.lastrowid)
+    conn.execute('UPDATE ia_reglas SET comunidades_json=? WHERE id_regla=?', (json.dumps(session.get('comunidades', [])), rule_id))
     audit(conn, "Crear regla IA", "ia_regla", rule_id, f"{tipo}: {final[:160]}")
     return rule_id
 
@@ -450,7 +504,7 @@ try:
                 sql += " AND activa = 1"
             sql += " ORDER BY activa DESC, fecha_creacion DESC, id_regla DESC LIMIT ?"
             params.append(max(1, min(int(data.get("limit") or 80), 200)))
-            rules = [dict(row) for row in conn.execute(sql, params)]
+            rules = [dict(row) for row in conn.execute(sql, params) if visible_history(session, row['comunidades_json'])]
             print(json.dumps({"ok": True, "rules": rules}, ensure_ascii=False))
         elif action == "learn_redaction":
             original = data.get("original_payload") or {}
@@ -495,6 +549,7 @@ try:
             print(json.dumps({"ok": True, "id_regla": rule_id}, ensure_ascii=False))
         elif action == "mark_used":
             ids = [int(value) for value in data.get("ids") or [] if int(value or 0)]
+            ids = [value for value in ids if (lambda row: row is not None and visible_history(session, row['comunidades_json']))(conn.execute('SELECT comunidades_json FROM ia_reglas WHERE id_regla=?', (value,)).fetchone())]
             if ids:
                 marks = ",".join("?" for _ in ids)
                 conn.execute(f"UPDATE ia_reglas SET usos=COALESCE(usos,0)+1, fecha_ultimo_uso=? WHERE id_regla IN ({marks})", [now_iso()] + ids)
@@ -508,10 +563,11 @@ finally:
 }
 
 function runAgentContextCommand(session, action, data = {}, pc = "web") {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
+from access_control import visible_history
 
 path = ${JSON.stringify(databasePath)}
 session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
@@ -551,6 +607,8 @@ def ensure_schema(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_contexto_usuario_fecha ON ia_contexto_conversacion(id_usuario, fecha_creacion DESC, id_contexto DESC)")
+    if 'comunidades_json' not in {row[1] for row in conn.execute('PRAGMA table_info(ia_contexto_conversacion)')}:
+        conn.execute("ALTER TABLE ia_contexto_conversacion ADD COLUMN comunidades_json TEXT")
 
 def row_dict(row):
     result = dict(row)
@@ -583,6 +641,7 @@ try:
                     """,
                     (user_id, limit),
                 )
+                if visible_history(session, row['comunidades_json'])
             ]
             print(json.dumps({"ok": True, "context": rows}, ensure_ascii=False))
         elif action == "save":
@@ -611,6 +670,7 @@ try:
                     now_iso(),
                 ),
             )
+            conn.execute("UPDATE ia_contexto_conversacion SET comunidades_json=? WHERE id_contexto=?", (json.dumps(session.get('comunidades',[])),cursor.lastrowid))
             keep = max(8, min(int(data.get("keep") or 24), 60))
             conn.execute(
                 """
@@ -639,10 +699,11 @@ finally:
 }
 
 function runAgentActionsCommand(session, action, data = {}, pc = "web") {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
+from access_control import visible_history
 
 path = ${JSON.stringify(databasePath)}
 session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
@@ -681,6 +742,8 @@ def ensure_schema(conn):
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ia_propuestas_usuario_estado ON ia_propuestas_pendientes(id_usuario, estado, fecha_creacion DESC)")
+    if 'comunidades_json' not in {row[1] for row in conn.execute('PRAGMA table_info(ia_propuestas_pendientes)')}:
+        conn.execute("ALTER TABLE ia_propuestas_pendientes ADD COLUMN comunidades_json TEXT")
 
 def row_dict(row):
     result = dict(row)
@@ -713,7 +776,7 @@ try:
                 params.append(status)
             sql += " ORDER BY CASE estado WHEN 'Pendiente' THEN 0 ELSE 1 END, fecha_creacion DESC, id_propuesta DESC LIMIT ?"
             params.append(limit)
-            rows = [row_dict(row) for row in conn.execute(sql, params)]
+            rows = [row_dict(row) for row in conn.execute(sql, params) if visible_history(session, row['comunidades_json'])]
             print(json.dumps({"ok": True, "actions": rows}, ensure_ascii=False))
         elif action == "save":
             proposal = data.get("proposal") or {}
@@ -753,6 +816,7 @@ try:
                         now_iso(),
                     ),
                 )
+                conn.execute("UPDATE ia_propuestas_pendientes SET comunidades_json=? WHERE id_propuesta=?", (json.dumps(session.get('comunidades',[])),cursor.lastrowid))
                 print(json.dumps({"ok": True, "id_propuesta": int(cursor.lastrowid)}, ensure_ascii=False))
         elif action == "update":
             proposal_id = int(data.get("id_propuesta") or 0)
@@ -819,7 +883,6 @@ function redactSecurityText(value) {
 }
 
 function allowedCommunity(session, communityId) {
-  if (session?.rol === "Superusuario") return true;
   const allowed = (session?.comunidades || []).map((row) => Number(row.id_comunidad)).filter(Boolean);
   return allowed.includes(Number(communityId));
 }
@@ -855,6 +918,7 @@ function resolveAttachmentPath(storedPath) {
 }
 
 async function generateEntityReport(session, type, id, pc) {
+  session = sessionForPermission(session, "puede_generar_informes");
   if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
   const detail = await queryEntityDetail(session, type, id);
   if (detail?.error || !detail?.item) throw new Error(detail?.error || "Elemento no encontrado.");
@@ -867,7 +931,7 @@ async function generateEntityReport(session, type, id, pc) {
   try {
     const projectId = type === "task" ? Number(detail.item.id_proyecto || 0) : Number(id);
     const communityId = Number(detail.item.id_comunidad || 0);
-    const script = `
+    const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
@@ -905,7 +969,8 @@ print(json.dumps({"ok": True, "report_id": report_id, "filename": filename}, ens
 }
 
 function queryReportsCenter(session) {
-  const script = `
+  session = sessionForPermission(session, "puede_generar_informes");
+  const script = pythonScript`
 import json,sqlite3
 path=${JSON.stringify(databasePath)}
 session=${JSON.stringify(session || {})}
@@ -914,7 +979,6 @@ allowed_ids=[int(c.get("id_comunidad")) for c in session.get("comunidades",[]) i
 conn=sqlite3.connect(f"file:{path}?mode=ro",uri=True); conn.row_factory=sqlite3.Row
 def rows(sql,params=()): return [dict(r) for r in conn.execute(sql,params).fetchall()]
 def scope(alias):
-    if role=="Superusuario": return "",[]
     if not allowed_ids: return " AND 1=0",[]
     return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in allowed_ids)})",allowed_ids
 rf,rp=scope("i")
@@ -945,6 +1009,7 @@ print(json.dumps({"reports":reports,"entities":projects+tasks,"communities":comm
 }
 
 async function generateCollectionReport(session, selections, title, pc) {
+  session = sessionForPermission(session, "puede_generar_informes");
   if (!Array.isArray(selections) || !selections.length) throw new Error("Selecciona al menos un elemento.");
   if (selections.length > 40) throw new Error("El informe conjunto admite un maximo de 40 elementos.");
   const normalized = selections.map(row => ({ type: String(row.type || ""), id: Number(row.id || 0) }));
@@ -966,7 +1031,7 @@ async function generateCollectionReport(session, selections, title, pc) {
   const outputPath = path.join(folder, report.filename);
   fs.writeFileSync(outputPath, report.buffer, { flag: "wx" });
   try {
-    const script = `
+    const script = pythonScript`
 import json,sqlite3
 from datetime import datetime
 path=${JSON.stringify(databasePath)}; output=${JSON.stringify(outputPath)}; filename=${JSON.stringify(report.filename)}
@@ -989,7 +1054,8 @@ conn.close(); print(json.dumps({"ok":True,"report_id":report_id,"filename":filen
 }
 
 function queryReportFile(session, reportId) {
-  const script = `
+  session = sessionForPermission(session, "puede_generar_informes");
+  const script = pythonScript`
 import json
 import sqlite3
 path = ${JSON.stringify(databasePath)}
@@ -1001,7 +1067,7 @@ conn.close()
 print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 `;
   return runPythonJson(script).then((row) => {
-    if (!row?.id_informe || !allowedCommunity(session, row.id_comunidad)) throw new Error("Informe no encontrado o sin permiso.");
+    if (!row?.id_informe || !allowedCommunity(session, row.id_comunidad)) throw new Error("PermissionError: Informe no encontrado o sin permiso.");
     if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
     const filePath = path.resolve(String(row.archivo_word || ""));
     if (!fs.existsSync(filePath) || !pathInside(filePath, reportsDir)) throw new Error("El archivo del informe no esta disponible.");
@@ -1010,10 +1076,13 @@ print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 }
 
 function queryAttachmentFile(session, attachmentId) {
-  const script = `
+  session = sessionForPermission(session, "puede_ver_documentos");
+  const script = pythonScript`
 import json
 import sqlite3
+from access_control import require_president_entity
 path = ${JSON.stringify(databasePath)}
+session = ${JSON.stringify(session)}
 attachment_id = int(${JSON.stringify(attachmentId)})
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
@@ -1024,11 +1093,13 @@ row = conn.execute("""
     LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
     WHERE a.id_anexo=?
 """, (attachment_id,)).fetchone()
+if row:
+    require_president_entity(conn, session, 'task' if row['tipo_entidad']=='tarea' else 'project', row['id_tarea'] if row['tipo_entidad']=='tarea' else row['id_proyecto'])
 conn.close()
 print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 `;
   return runPythonJson(script).then((row) => {
-    if (!row?.id_anexo || !allowedCommunity(session, row.comunidad_real)) throw new Error("Anexo no encontrado o sin permiso.");
+    if (!row?.id_anexo || !allowedCommunity(session, row.comunidad_real)) throw new Error("PermissionError: Anexo no encontrado o sin permiso.");
     const filePath = resolveAttachmentPath(row.ruta_archivo);
     if (!filePath) throw new Error("Este anexo historico aun no esta disponible en el servidor.");
     return { ...row, filePath };
@@ -1036,6 +1107,7 @@ print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
 }
 
 async function saveEntityAttachment(session, type, id, fileName, mimeType, bytes, pc) {
+  session = sessionForPermission(session, "puede_actualizar");
   if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) {
     throw new Error("Tu perfil no tiene permiso para adjuntar archivos.");
   }
@@ -1052,7 +1124,7 @@ async function saveEntityAttachment(session, type, id, fileName, mimeType, bytes
   const storedPath = path.join(entityFolder, storedName);
   fs.writeFileSync(storedPath, bytes, { flag: "wx" });
   try {
-    const script = `
+    const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
@@ -1088,7 +1160,7 @@ print(json.dumps({"ok": True, "attachment_id": attachment_id, "name": name}, ens
 }
 
 function queryAuthUsers() {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 path = ${JSON.stringify(databasePath)}
@@ -1107,7 +1179,7 @@ print(json.dumps({"usuarios": users}, ensure_ascii=False))
 }
 
 function queryUserForLogin(userName) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 path = ${JSON.stringify(databasePath)}
@@ -1140,9 +1212,10 @@ print(json.dumps(payload, ensure_ascii=False))
 }
 
 function queryOverview(session) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
+from access_control import install_scoped_views
 
 path = ${JSON.stringify(databasePath)}
 role = ${JSON.stringify(session?.rol || "")}
@@ -1150,6 +1223,7 @@ user_name = ${JSON.stringify(session?.nombre || "")}
 allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+install_scoped_views(conn, allowed_ids, ['cf_propiedades','asambleas'])
 
 def rows(sql, params=()):
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -1159,8 +1233,6 @@ def one(sql, params=()):
     return dict(row) if row else {}
 
 def community_filter(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1 = 0", []
     prefix = f"{alias}." if alias else ""
@@ -1172,16 +1244,16 @@ task_filter, task_params = community_filter("t")
 hide_tasks = role == "Presidente"
 
 counts = {
-    "usuarios": one("SELECT COUNT(*) AS total FROM usuarios WHERE COALESCE(activo, 1) = 1").get("total", 0),
-    "comunidades": len(allowed_ids) if role != "Superusuario" else one("SELECT COUNT(*) AS total FROM comunidades WHERE COALESCE(activo, 1) = 1").get("total", 0),
+    "usuarios": one("SELECT COUNT(DISTINCT u.id_usuario) AS total FROM usuarios u JOIN usuario_comunidad uc USING(id_usuario) WHERE u.activo=1 AND uc.id_comunidad IN (" + ','.join('?' for _ in allowed_ids) + ")", allowed_ids).get("total", 0) if allowed_ids else 0,
+    "comunidades": len(allowed_ids),
     "proyectos_activos": one("SELECT COUNT(*) AS total FROM proyectos p WHERE COALESCE(p.activo, 1) = 1" + project_filter, project_params).get("total", 0),
     "tareas_activas": 0 if hide_tasks else one("SELECT COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter, task_params).get("total", 0),
-    "asambleas": one("SELECT COUNT(*) AS total FROM asambleas").get("total", 0),
-    "propiedades_contabilidad": one("SELECT COUNT(*) AS total FROM cf_propiedades").get("total", 0),
+    "asambleas": 0 if hide_tasks else one("SELECT COUNT(*) AS total FROM asambleas").get("total", 0),
+    "propiedades_contabilidad": 0 if hide_tasks else one("SELECT COUNT(*) AS total FROM cf_propiedades").get("total", 0),
 }
 
 proyectos = rows("""
-    SELECT p.id_proyecto, p.nombre, p.categoria, p.estado_general, p.prioridad,
+    SELECT p.id_proyecto, p.id_comunidad, p.nombre, p.categoria, p.estado_general, p.prioridad, p.observaciones AS proximo_paso,
            p.responsable_principal, p.responsable_proximo_paso,
            p.fecha_objetivo_proximo_paso, p.fecha_ultima_actualizacion,
            c.nombre AS comunidad
@@ -1193,11 +1265,10 @@ proyectos = rows("""
       CASE p.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
       COALESCE(p.fecha_objetivo_proximo_paso, '') ASC,
       p.nombre ASC
-    LIMIT 80
 """, project_params)
 
 tareas = [] if hide_tasks else rows("""
-    SELECT t.id_tarea, t.titulo, t.categoria, t.estado, t.prioridad,
+    SELECT t.id_tarea, t.id_comunidad, t.titulo, t.categoria, t.estado, t.prioridad,
            t.responsable, t.responsable_proximo_paso, t.proximo_paso,
            t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso,
            t.fecha_ultima_actualizacion, p.nombre AS proyecto, c.nombre AS comunidad
@@ -1210,7 +1281,6 @@ tareas = [] if hide_tasks else rows("""
       CASE t.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
       COALESCE(t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso, '') ASC,
       t.titulo ASC
-    LIMIT 120
 """, task_params)
 
 estados_tareas = [] if hide_tasks else rows("SELECT COALESCE(estado, 'Sin estado') AS estado, COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter + " GROUP BY COALESCE(estado, 'Sin estado') ORDER BY total DESC", task_params)
@@ -1232,7 +1302,7 @@ print(json.dumps({
 }
 
 function queryWorkflow(session) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -1249,8 +1319,6 @@ def rows(sql, params=()):
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 def community_filter(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1 = 0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -1282,8 +1350,8 @@ actions = rows("""
 """ + action_user_sql + action_filter + " ORDER BY a.fecha_creacion, a.id_accion", tuple(action_user_params + action_community_params))
 
 notification_filter, notification_community_params = community_filter("n")
-notification_user_sql = "" if role == "Superusuario" else f" AND n.usuario_destino IN ({alias_marks})"
-notification_user_params = [] if role == "Superusuario" else aliases
+notification_user_sql = "" if role == "Superusuario" else f" AND (n.id_usuario_destino=? OR (n.id_usuario_destino IS NULL AND n.usuario_destino IN ({alias_marks})))"
+notification_user_params = [] if role == "Superusuario" else [session.get('id_usuario')] + aliases
 notifications = rows("""
     SELECT n.*, c.nombre AS comunidad,
            CASE WHEN n.id_tarea IS NOT NULL THEN 'task' WHEN n.id_proyecto IS NOT NULL THEN 'project' ELSE '' END AS entity_type,
@@ -1296,6 +1364,8 @@ notifications = rows("""
 president_filter, president_params = community_filter("s")
 president_requests = []
 if role == "Presidente":
+    president_filter += " AND s.id_usuario_presidente=?"
+    president_params.append(session.get('id_usuario'))
     president_requests = rows("""
         SELECT s.*, c.nombre AS comunidad,
                CASE WHEN s.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
@@ -1389,10 +1459,11 @@ print(json.dumps({
 }
 
 function queryDailyOperations(session) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import date, datetime, timedelta
+from access_control import install_document_views
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -1401,13 +1472,12 @@ user_name = str(session.get("nombre") or "")
 allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+install_document_views(conn, session)
 
 def rows(sql, params=()):
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 def community_filter(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1=0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -1573,9 +1643,10 @@ print(json.dumps({"metrics":metrics,"map":{"items":items,"counts":section_counts
 function queryGlobalSearch(session, term, typeFilter, communityId) {
   const cleanTerm = String(term || "").trim().slice(0, 160);
   if (!cleanTerm) return Promise.resolve({ results: [], term: "" });
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
+from access_control import install_document_views
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -1584,17 +1655,17 @@ type_filter = ${JSON.stringify(typeFilter || "all")}
 requested_community = int(${JSON.stringify(Number(communityId) || 0)})
 role = str(session.get("rol") or "")
 allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
-if requested_community and role != "Superusuario" and requested_community not in allowed_ids:
+if requested_community and requested_community not in allowed_ids:
     raise PermissionError("No tienes permiso para buscar en esa comunidad.")
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+install_document_views(conn, session)
 like = f"%{term}%"
 results = []
 
 def rows(sql, params=()): return [dict(r) for r in conn.execute(sql, params).fetchall()]
 def scope(alias):
     ids = [requested_community] if requested_community else allowed_ids
-    if role == "Superusuario" and not requested_community: return "", []
     if not ids: return " AND 1=0", []
     return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in ids)})", ids
 def include(*kinds): return type_filter in {"", "all", *kinds}
@@ -1683,7 +1754,7 @@ print(json.dumps({"term":term,"results":results[:200]}, ensure_ascii=False))
 }
 
 function markNotifications(session, notificationId, markAll, pc) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
@@ -1725,7 +1796,7 @@ print(json.dumps({"ok": True, "changed": changed}, ensure_ascii=False))
 }
 
 function saveReviewSummary(session, payload, pc) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import date, datetime
@@ -1762,7 +1833,7 @@ print(json.dumps({"ok": True, "review_id": review_id}, ensure_ascii=False))
 }
 
 function respondPresidentRequest(session, requestId, decision, comment, pc) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime
@@ -1782,9 +1853,11 @@ now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 conn = sqlite3.connect(path)
 conn.row_factory = sqlite3.Row
 try:
+    conn.execute("BEGIN IMMEDIATE")
     with conn:
         req = conn.execute("SELECT * FROM solicitudes_presidente WHERE id_solicitud=?", (request_id,)).fetchone()
         if not req or req["estado"] != "Pendiente": raise ValueError("La solicitud ya no esta pendiente.")
+        if req["id_usuario_presidente"] != session.get("id_usuario"): raise PermissionError("Esta solicitud no esta dirigida a ti.")
         if not allowed_ids or int(req["id_comunidad"] or 0) not in allowed_ids: raise PermissionError("No tienes permiso para esta comunidad.")
         return_owner = str(req["responsable_retorno"] or req["solicitante"] or "").strip()
         requested_step = str(req["proximo_paso_solicitado"] or "").strip()
@@ -1845,7 +1918,7 @@ try:
                     VALUES (?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?)
                 """, (req["id_comunidad"],entity_type,req["id_tarea"],req["id_proyecto"],record_id,
                       "Gestionar respuesta de presidencia",requester,user,title,next_step,now,pc))
-        conn.execute("UPDATE notificaciones SET leida=1, fecha_lectura=? WHERE id_solicitud=? AND usuario_destino='Presidente' AND leida=0", (now,request_id))
+        conn.execute("UPDATE notificaciones SET leida=1, fecha_lectura=? WHERE id_solicitud=? AND id_usuario_destino=? AND leida=0", (now,request_id,session.get('id_usuario')))
         conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
                      (now,user,pc,"Responder solicitud presidente web","solicitud_presidente",request_id,f"{decision}: {comment}"))
     print(json.dumps({"ok": True, "decision": decision, "type": "task" if req["id_tarea"] else "project", "id": entity_id}, ensure_ascii=False))
@@ -1856,7 +1929,7 @@ finally:
 }
 
 function queryAiContext(session) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 
@@ -1867,8 +1940,6 @@ conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 
 def community_filter(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1 = 0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -2847,7 +2918,8 @@ async function analyzeImportBatch(session, text, mode = "updates") {
 }
 
 function writeHistoricalRecords(session, type, id, records, pc) {
-  const script = `
+  session = sessionForPermission(session, "puede_actualizar");
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime, timedelta
@@ -2910,7 +2982,7 @@ print(json.dumps({"ok":True,"records":len(valid)},ensure_ascii=False))
 }
 
 function saveImportTrace(session, sourceName, sourceText, communityId, proposals, results, pc) {
-  const script = `
+  const script = pythonScript`
 import json,sqlite3
 from datetime import datetime
 path=${JSON.stringify(databasePath)}
@@ -3431,12 +3503,13 @@ async function externalAssemblyMinutes(detail, minutes) {
 }
 
 function querySmartAssistant(session, text) {
-  const script = `
+  const script = pythonScript`
 import json
 import re
 import sqlite3
 import unicodedata
 from datetime import datetime
+from access_control import install_scoped_views
 
 path = ${JSON.stringify(databasePath)}
 question = ${JSON.stringify(text)}
@@ -3572,8 +3645,6 @@ def response(answer, confidence=0.75, candidates=None, questions=None, facts=Non
     return clean_value(payload)
 
 def community_scope(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1=0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -4558,6 +4629,10 @@ QUERY_HANDLERS = {
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 conn.create_function("NORMTXT", 1, norm)
+scoped_tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'cf_%'")]
+install_scoped_views(conn, allowed_ids, scoped_tables + ['informes_contables'])
+security_ids = allowed_ids if role == 'Superusuario' else [r[0] for r in conn.execute('SELECT id_comunidad FROM usuario_comunidad_permisos WHERE id_usuario=? AND activo=1 AND puede_gestionar_seguridad=1', (session_user_id,)) if r[0] in allowed_ids]
+install_scoped_views(conn, security_ids, ['seguridad_incidencias','seguridad_documentos'])
 q_norm = norm(question)
 
 try:
@@ -4975,26 +5050,27 @@ function buildDebtEmailBody(debtResult, ownerName, requestedList) {
   ].filter((line) => line !== null && line !== undefined).join("\n");
 }
 
-async function queryOwnerEmailForDraft(ownerId) {
+async function queryOwnerEmailForDraft(session, ownerId) {
   if (!ownerId) return {};
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 
 path = ${JSON.stringify(databasePath)}
 owner_id = int(${JSON.stringify(Number(ownerId) || 0)})
+allowed_ids = ${JSON.stringify((session.comunidades || []).map(c => Number(c.id_comunidad)))}
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 try:
     row = conn.execute("""
         SELECT valor, principal
         FROM cf_contactos_propietario
-        WHERE id_propietario=?
+        WHERE id_propietario=? AND id_comunidad IN (""" + ','.join('?' for _ in allowed_ids) + """)
           AND COALESCE(activo,1)=1
           AND INSTR(valor, '@') > 0
         ORDER BY COALESCE(principal,0) DESC, valor
         LIMIT 1
-    """, (owner_id,)).fetchone()
+    """, (owner_id, *allowed_ids)).fetchone()
     print(json.dumps({"email": row["valor"] if row else "", "principal": bool(row["principal"]) if row else False}, ensure_ascii=False))
 finally:
     conn.close()
@@ -5073,7 +5149,7 @@ async function prepareAgentEmailDraft(session, text) {
   const debtResult = await querySmartAssistant(session, debtQuery);
   const ownerName = debtResult?.display?.title || target;
   const ownerId = Number(debtResult?.facts?.id_propietario || 0);
-  const contact = await queryOwnerEmailForDraft(ownerId);
+  const contact = await queryOwnerEmailForDraft(session, ownerId);
   const hasDebt = Number(debtResult?.facts?.deuda || 0) > 0;
   const subject = hasDebt
     ? `Deuda pendiente - ${ownerName}`
@@ -5954,10 +6030,11 @@ function selectAgentTool(session, text, intent) {
 }
 
 function queryAgentDocumentsReports(session, text) {
-  const script = `
+  const script = pythonScript`
 import json
 import os
 import sqlite3
+from access_control import install_document_views
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -5966,6 +6043,7 @@ role = str(session.get("rol") or "")
 allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+install_document_views(conn, session)
 
 def rows(sql, params=()):
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -5974,8 +6052,6 @@ def table_exists(name):
     return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone())
 
 def scope(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1=0", []
     return f" AND {alias}.id_comunidad IN ({','.join('?' for _ in allowed_ids)})", allowed_ids
@@ -6693,7 +6769,7 @@ async function answerAiCenterMessage(session, body) {
 }
 
 function queryActionOptions(session) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
 
@@ -6707,8 +6783,6 @@ def values(sql, params=()):
     return [row[0] for row in conn.execute(sql, params).fetchall() if row[0]]
 
 def community_filter(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1 = 0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -6752,21 +6826,22 @@ print(json.dumps({
 }
 
 async function queryEntityDetail(session, type, id) {
-  const script = `
+  const script = pythonScript`
 import json
 import sqlite3
+from access_control import require_president_entity
 
 path = ${JSON.stringify(databasePath)}
 role = ${JSON.stringify(session?.rol || "")}
 allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
 entity_type = ${JSON.stringify(type)}
 entity_id = int(${JSON.stringify(id)})
+session = ${JSON.stringify(session)}
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
+require_president_entity(conn, session, entity_type, entity_id)
 
 def allowed(alias):
-    if role == "Superusuario":
-        return "", []
     if not allowed_ids:
         return " AND 1 = 0", []
     marks = ",".join("?" for _ in allowed_ids)
@@ -6782,13 +6857,12 @@ if entity_type == "task":
         WHERE t.id_tarea = ?
     """ + f, tuple([entity_id] + params)).fetchone()
     if not item:
-        raise SystemExit(json.dumps({"error": "No encontrado o sin permiso."}, ensure_ascii=False))
+        raise PermissionError("No encontrado o sin permiso.")
     history = [dict(r) for r in conn.execute("""
         SELECT *
         FROM registros
         WHERE id_tarea = ?
         ORDER BY fecha_hora DESC, id_registro DESC
-        LIMIT 80
     """, (entity_id,))]
     attachments = [dict(r) for r in conn.execute("""
         SELECT *
@@ -6805,13 +6879,12 @@ else:
         WHERE p.id_proyecto = ?
     """ + f, tuple([entity_id] + params)).fetchone()
     if not item:
-        raise SystemExit(json.dumps({"error": "No encontrado o sin permiso."}, ensure_ascii=False))
+        raise PermissionError("No encontrado o sin permiso.")
     history = [dict(r) for r in conn.execute("""
         SELECT *
         FROM registros_proyectos
         WHERE id_proyecto = ?
         ORDER BY fecha_hora DESC, id_registro_proyecto DESC
-        LIMIT 80
     """, (entity_id,))]
     attachments = [dict(r) for r in conn.execute("""
         SELECT *
@@ -6848,6 +6921,10 @@ conn.close()
 print(json.dumps({"item": dict(item), "history": history, "attachments": attachments, "reports": reports}, ensure_ascii=False))
 `;
   const result = await runPythonJson(script);
+  const community = (session.comunidades || []).find(row => Number(row.id_comunidad) === Number(result.item?.id_comunidad));
+  result.permissions = community || {};
+  if (!community?.puede_ver_documentos && session.rol !== "Superusuario") result.attachments = [];
+  if (!community?.puede_generar_informes && session.rol !== "Superusuario") result.reports = [];
   result.attachments = (result.attachments || []).map((row) => {
     const filePath = resolveAttachmentPath(row.ruta_archivo);
     const extension = path.extname(row.nombre_archivo || row.ruta_archivo || "").toLowerCase();
@@ -6861,10 +6938,12 @@ print(json.dumps({"item": dict(item), "history": history, "attachments": attachm
 }
 
 function writeEntityRecord(session, type, id, payload, pc) {
-  const script = `
+  session = sessionForPermission(session, "puede_actualizar");
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime, date
+from access_control import president_for
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -6894,8 +6973,6 @@ def check_can_write():
         raise PermissionError("Tu perfil no tiene permiso de escritura.")
 
 def ensure_allowed(cid):
-    if is_superuser():
-        return
     if not allowed_ids or int(cid or 0) not in allowed_ids:
         raise PermissionError("No tienes permiso para modificar esta comunidad.")
 
@@ -6928,16 +7005,17 @@ def user_for_responsible(conn, value):
     return ""
 
 def is_president_responsible(value):
-    return str(value or "").strip().lower() in {"presidente", "presidencia"}
+    name = str(value or "").strip()
+    return name.lower() in {"presidente", "presidencia"} or bool(conn.execute("SELECT 1 FROM usuarios WHERE nombre=? AND rol='Presidente' AND activo=1", (name,)).fetchone())
 
 def create_notification(conn, usuario_destino, tipo, titulo, mensaje, id_comunidad, id_tarea=None, id_proyecto=None, id_solicitud=None):
     conn.execute(
         """
         INSERT INTO notificaciones
-        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, leida, fecha_creacion)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, leida, fecha_creacion,id_usuario_destino)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, (SELECT id_usuario FROM usuarios WHERE nombre=?))
         """,
-        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, now_iso()),
+        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, now_iso(),usuario_destino),
     )
 
 def close_pending_actions_for_entity(conn, tipo_entidad, entity_id_value, comment):
@@ -7028,6 +7106,7 @@ def create_pending_action(conn, tipo_entidad, entity_id_value, usuario_destino, 
     return action_id
 
 def create_president_request(conn, entity_kind, item, record_id, comentario, proximo_paso):
+    president = president_for(conn, item['id_comunidad'])
     if entity_kind == "tarea":
         cur = conn.execute(
             """
@@ -7044,7 +7123,7 @@ def create_president_request(conn, entity_kind, item, record_id, comentario, pro
             ),
         )
         request_id = int(cur.lastrowid)
-        create_notification(conn, "Presidente", "Solicitud presidente", f"Aprobacion pendiente: {item['titulo']}", comentario, item["id_comunidad"], item["id_tarea"], item["id_proyecto"], request_id)
+        create_notification(conn, president['nombre'], "Solicitud presidente", f"Aprobacion pendiente: {item['titulo']}", comentario, item["id_comunidad"], item["id_tarea"], item["id_proyecto"], request_id)
     else:
         cur = conn.execute(
             """
@@ -7061,7 +7140,8 @@ def create_president_request(conn, entity_kind, item, record_id, comentario, pro
             ),
         )
         request_id = int(cur.lastrowid)
-        create_notification(conn, "Presidente", "Solicitud presidente", f"Aprobacion pendiente: {item['nombre']}", comentario, item["id_comunidad"], None, item["id_proyecto"], request_id)
+        create_notification(conn, president['nombre'], "Solicitud presidente", f"Aprobacion pendiente: {item['nombre']}", comentario, item["id_comunidad"], None, item["id_proyecto"], request_id)
+    conn.execute("UPDATE solicitudes_presidente SET id_usuario_presidente=? WHERE id_solicitud=?", (president['id_usuario'],request_id))
     audit(conn, "Crear solicitud para presidente", "solicitud_presidente", request_id, comentario)
     return request_id
 
@@ -7190,7 +7270,8 @@ finally:
 }
 
 function createEntity(session, type, payload, pc) {
-  const script = `
+  session = sessionForPermission(session, "puede_crear");
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime, date
@@ -7231,14 +7312,13 @@ def choose_community(conn):
     requested = data.get("id_comunidad")
     if requested:
         cid = int(requested)
-    elif not is_superuser() and len(allowed_ids) == 1:
+    elif len(allowed_ids) == 1:
         cid = allowed_ids[0]
     else:
-        row = conn.execute("SELECT id_comunidad FROM comunidades WHERE nombre = 'Macrocomunidad San Roque Club' AND COALESCE(activo, 1) = 1").fetchone()
-        cid = int(row["id_comunidad"]) if row else (allowed_ids[0] if allowed_ids else 0)
+        raise ValueError("Selecciona la comunidad del nuevo elemento.")
     if not cid:
         raise ValueError("No hay comunidad disponible para crear el elemento.")
-    if not is_superuser() and cid not in allowed_ids:
+    if cid not in allowed_ids:
         raise PermissionError("No tienes permiso para crear en esta comunidad.")
     return cid
 
@@ -7278,14 +7358,7 @@ try:
             audit(conn, "Crear proyecto web IA", "proyecto", new_id, titulo)
             print(json.dumps({"ok": True, "type": "project", "id": new_id}, ensure_ascii=False))
         elif entity_type == "task":
-            project_id = int(data.get("id_proyecto") or 0)
-            if not project_id:
-                raise ValueError("Para crear una tarea desde la web debes seleccionar un proyecto contenedor.")
-            project = conn.execute("SELECT * FROM proyectos WHERE id_proyecto = ?", (project_id,)).fetchone()
-            if not project:
-                raise ValueError("El proyecto seleccionado no existe.")
-            if not is_superuser() and int(project["id_comunidad"] or 0) not in allowed_ids:
-                raise PermissionError("No tienes permiso para usar ese proyecto.")
+            project_id = None
             cur = conn.execute(
                 """
                 INSERT INTO tareas
@@ -7297,7 +7370,7 @@ try:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    int(project["id_comunidad"]), project_id, titulo,
+                    cid, project_id, titulo,
                     str(data.get("descripcion") or data.get("comentario") or "").strip(),
                     str(data.get("categoria") or "General").strip(),
                     str(data.get("estado_nuevo") or data.get("estado") or "Pendiente").strip(),
@@ -7322,7 +7395,8 @@ finally:
 }
 
 function updateEntity(session, type, id, payload, pc, archive = false) {
-  const script = `
+  session = sessionForPermission(session, "puede_actualizar");
+  const script = pythonScript`
 import json
 import sqlite3
 from datetime import datetime, date
@@ -7893,6 +7967,11 @@ function homePage() {
     .securityUploader { border:2px dashed #64748b; border-radius:8px; padding:16px; background:#f8fafc; display:grid; gap:10px; }
     .securityUploader h3 { margin:0; font-size:18px; }
     .securityUploader input { background:white; }
+    .communityPermissionRow { padding:12px 0; border-bottom:1px solid #dce3e8; min-width:0; }
+    .communityPermissionRow select { max-width:100%; }
+    .permissionChecks { display:flex; flex-wrap:wrap; gap:12px; padding-top:10px; }
+    .permissionChecks label { display:flex; align-items:center; gap:6px; }
+    .permissionChecks input[type="checkbox"] { width:18px; height:18px; flex:0 0 18px; }
     .securityReceipts { display:grid; gap:7px; }
     .securityReceipt { border:1px solid #cbd5e1; border-left:5px solid #15803d; border-radius:7px; padding:9px; background:white; font-size:13px; }
     .securityReceipt.error { border-left-color:#b91c1c; }
@@ -8935,9 +9014,9 @@ function homePage() {
         '</div>' +
         '<div class="cardActions">' +
           '<button class="ghost" data-action="detail" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Abrir ficha</button>' +
-          '<button class="green" data-action="record" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Seguimiento</button>' +
-          (canWrite() ? '<button data-action="attach" data-title="' + html(title) + '" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Adjuntar</button>' : '') +
-          ((state.usuario || {}).rol !== "Presidente" ? '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' : '') +
+          (communityCan(row.id_comunidad, 'puede_actualizar') ? '<button class="green" data-action="record" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Seguimiento</button>' : '') +
+          (communityCan(row.id_comunidad, 'puede_actualizar') && communityCan(row.id_comunidad, 'puede_ver_documentos') ? '<button data-action="attach" data-title="' + html(title) + '" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Adjuntar</button>' : '') +
+          (communityCan(row.id_comunidad, 'puede_generar_informes') ? '<button data-action="report" data-type="' + (currentView === "projects" ? "project" : "task") + '" data-id="' + html(id) + '">Informe</button>' : '') +
         '</div>' +
         '</article>';
     }
@@ -8987,7 +9066,11 @@ function homePage() {
 
     function canWrite() {
       const role = (state.usuario || {}).rol;
-      return ["Superusuario", "Administrador", "Usuario"].includes(role);
+      return ["Superusuario", "Administrador", "Usuario"].includes(role) && (role === "Superusuario" || (state.usuario.comunidades || []).some(row => row.puede_actualizar));
+    }
+
+    function communityCan(communityId, permission) {
+      return (state.usuario?.comunidades || []).some(row => Number(row.id_comunidad) === Number(communityId) && (state.usuario.rol === "Superusuario" || row[permission]));
     }
 
     async function loadUsers() {
@@ -9347,7 +9430,7 @@ function homePage() {
 
     async function openEntity(type, id, focusRecord = false) {
       $("recordMessage").textContent = "";
-      await loadOptions();
+      if (state.usuario?.rol !== "Presidente") await loadOptions();
       const detail = await api("/api/entity/detail?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id));
       selectedEntity = { type, id, item: detail.item };
       const item = detail.item;
@@ -9364,8 +9447,8 @@ function homePage() {
         detailValue("Ultima actualizacion", item.fecha_ultima_actualizacion) +
         detailValue(type === "task" ? "Proyecto" : "Inicio", type === "task" ? item.proyecto : item.fecha_inicio);
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
-      const writable = canWrite();
-      const reportsAllowed = (state.usuario || {}).rol !== "Presidente";
+      const writable = canWrite() && communityCan(item.id_comunidad, "puede_actualizar");
+      const reportsAllowed = (state.usuario || {}).rol !== "Presidente" && communityCan(item.id_comunidad, "puede_generar_informes");
       $("entityBrief").innerHTML = entityBriefHtml(item, type, detail.history || [], detail.attachments || [], detail.reports || [], reportsAllowed);
       $("generateReportButton").classList.toggle("hidden", !reportsAllowed);
       $("entityReportSection").classList.toggle("hidden", !reportsAllowed);
@@ -9401,9 +9484,9 @@ function homePage() {
       $("recordBlockReason").value = "";
       $("quickRecordText").value = "";
       $("quickRecordMessage").textContent = "";
-      $("quickRecordBox").classList.toggle("hidden", !canWrite());
+      $("quickRecordBox").classList.toggle("hidden", !writable);
       updateBlockReasonVisibility();
-      $("recordSection").classList.toggle("hidden", (state.usuario || {}).rol === "Presidente");
+      $("recordSection").classList.toggle("hidden", !writable);
       renderHistory(detail.history || []);
       renderAttachments(detail.attachments || []);
       renderEntityReports(detail.reports || [], reportsAllowed);
@@ -9543,7 +9626,8 @@ function homePage() {
       $("createDescription").value = "";
       $("createNextStep").value = "";
       $("createMessage").textContent = "";
-      $("createCommunity").innerHTML = '<option value="">Automatico / Macrocomunidad</option>' + optionRows(options.comunidades || [], "id", "nombre", "");
+      const creatable = (options.comunidades || []).filter(row => communityCan(row.id, "puede_crear"));
+      $("createCommunity").innerHTML = (creatable.length === 1 ? '' : '<option value="">Seleccionar comunidad...</option>') + optionRows(creatable, "id", "nombre", "");
       $("createProject").innerHTML = projectOptions("");
       updateCreateForm();
       $("createModal").classList.remove("hidden");
@@ -9554,7 +9638,7 @@ function homePage() {
       const type = $("createType").value;
       $("createTitle").textContent = type === "project" ? "Nuevo proyecto" : "Nueva tarea";
       $("createSubtitle").textContent = type === "project" ? "Crea un proyecto operativo." : "Crea una tarea vinculada a un proyecto.";
-      $("createProjectWrap").classList.toggle("hidden", type !== "task");
+      $("createProjectWrap").classList.add("hidden");
       fillOptions($("createState"), type === "project" ? options.estados_proyecto : options.estados_tarea, type === "project" ? "En curso" : "Pendiente");
       fillOptions($("createPriority"), options.prioridades || [], "Media");
     }
@@ -9569,7 +9653,7 @@ function homePage() {
         titulo: $("createName").value,
         nombre: $("createName").value,
         id_comunidad: $("createCommunity").value,
-        id_proyecto: $("createProject").value,
+        id_proyecto: null,
         descripcion: $("createDescription").value,
         comentario: $("createDescription").value,
         categoria: $("createCategory").value,
@@ -10422,7 +10506,12 @@ function homePage() {
       const user = adminData.users.find(row => Number(row.id_usuario) === Number(selectedAdminUserId)) || null;
       const roles = (adminData.roles || []).map(role => '<option value="' + html(role) + '"' + ((user?.rol || "Usuario") === role ? " selected" : "") + '>' + html(role) + '</option>').join("");
       const assigned = new Set((user?.community_ids || []).map(Number));
-      const checks = (adminData.communities || []).map(community => '<label class="communityCheck"><input type="checkbox" data-admin-user-community="' + community.id_comunidad + '"' + (assigned.has(Number(community.id_comunidad)) ? " checked" : "") + ' /><span><strong>' + html(community.nombre) + '</strong>' + (community.activo ? '' : '<small class="dangerText" style="display:block">Inactiva</small>') + '</span></label>').join("");
+      const checks = (adminData.communities || []).map(community => {
+        const cid = community.id_comunidad;
+        const permissions = (user?.community_permissions || []).find(row => Number(row.id_comunidad) === Number(cid)) || {};
+        const permissionFields = [['puede_ver_documentos','Documentos'],['puede_generar_informes','Informes'],['puede_gestionar_asambleas','Gestionar asambleas'],['puede_gestionar_seguridad','Revisar Seguridad']];
+        return '<div class="communityPermissionRow"><label class="communityCheck"><input type="checkbox" data-admin-user-community="' + cid + '"' + (assigned.has(Number(cid)) ? ' checked' : '') + ' /><strong>' + html(community.nombre) + '</strong></label><div data-community-permission-panel="' + cid + '"' + (assigned.has(Number(cid)) ? '' : ' hidden') + '><label>Acceso en esta comunidad<select data-community-role="' + cid + '"><option value="base">Perfil general del usuario</option><option value="Consulta"' + (permissions.rol_en_comunidad === 'Consulta' ? ' selected' : '') + '>Solo lectura</option></select></label><div class="permissionChecks">' + permissionFields.map(([key,label]) => '<label><input type="checkbox" data-permission-community="' + cid + '" data-permission-field="' + key + '"' + ((permissions[key] ?? (key !== 'puede_gestionar_seguridad')) ? ' checked' : '') + ' /> ' + html(label) + '</label>').join('') + '</div></div></div>';
+      }).join('');
       return '<div class="assemblyPane" id="adminUserEditor"><h3>' + (user ? "Editar usuario" : "Nuevo usuario") + '</h3>' + temporaryKeyHtml() + '<div class="formGrid"><div><label>Nombre</label><input id="adminUserName" value="' + html(user?.nombre || "") + '" /></div><div><label>Rol</label><select id="adminUserRole">' + roles + '</select></div></div><label><input type="checkbox" id="adminUserActive"' + (user ? (user.activo ? " checked" : "") : " checked") + ' /> Usuario activo</label><label><input type="checkbox" id="adminUserSecurity"' + (user?.gestionar_seguridad ? " checked" : "") + ' /> Gestionar Seguridad: revisar partes, ver documentos protegidos y convertir incidencias</label><h3>Comunidades asignadas</h3><div class="communityChecks">' + (checks || '<div class="empty">Crea primero una comunidad.</div>') + '</div><p class="muted">El perfil Seguridad solo carga partes. El permiso Gestionar Seguridad se reserva para Luis, Elena y usuarios autorizados expresamente.</p><div class="toolbar"><button class="green" id="saveAdminUser">Guardar usuario y asignaciones</button>' + (user ? '<button class="ghost" id="resetAdminPassword">Generar nueva clave temporal</button>' : '') + (user?.bloqueado ? '<button id="unlockAdminUser">Desbloquear</button>' : '') + '<span class="muted" id="adminUserMessage"></span></div></div>';
     }
 
@@ -10443,6 +10532,15 @@ function homePage() {
 
     function bindAdminPanel() {
       if (!adminData.loaded || adminData.error) return;
+      $('adminUserSecurity').closest('label').hidden = true;
+      document.querySelectorAll('[data-admin-user-community]').forEach(input => input.addEventListener('change', () => {
+        document.querySelector('[data-community-permission-panel="' + input.dataset.adminUserCommunity + '"]').hidden = !input.checked;
+      }));
+      if (selectedAdminCommunityId) {
+        const community = adminData.communities.find(row => Number(row.id_comunidad) === Number(selectedAdminCommunityId));
+        const candidates = adminData.users.filter(row => row.activo && row.rol === 'Presidente' && (row.community_ids || []).map(Number).includes(Number(selectedAdminCommunityId)));
+        $('adminCommunityDescription').insertAdjacentHTML('afterend', '<label for="adminCommunityPresident">Presidente de esta comunidad</label><select id="adminCommunityPresident"><option value="">Sin asignar</option>' + candidates.map(row => '<option value="' + row.id_usuario + '"' + (Number(row.id_usuario) === Number(community?.id_usuario_presidente) ? ' selected' : '') + '>' + html(row.nombre) + '</option>').join('') + '</select>');
+      }
       document.querySelectorAll("[data-admin-user]").forEach(button => button.addEventListener("click", () => { selectedAdminUserId=Number(button.dataset.adminUser); lastTemporaryKey=null; render(); }));
       document.querySelectorAll("[data-admin-user-edit]").forEach(button => button.addEventListener("click", () => document.querySelector("#adminUserEditor")?.scrollIntoView({ behavior:"smooth", block:"start" })));
       document.querySelectorAll("[data-admin-user-quick-reset]").forEach(button => button.addEventListener("click", () => { selectedAdminUserId=Number(button.dataset.adminUserQuickReset); resetAdminPassword(); }));
@@ -10460,6 +10558,13 @@ function homePage() {
     async function saveAdminUser() {
       const communityIds = [...document.querySelectorAll("[data-admin-user-community]:checked")].map(row => Number(row.dataset.adminUserCommunity));
       const data = { id_usuario:selectedAdminUserId || null, nombre:$("adminUserName").value, rol:$("adminUserRole").value, activo:$("adminUserActive").checked, gestionar_seguridad:$("adminUserSecurity").checked, community_ids:communityIds };
+      data.community_permissions = communityIds.map(cid => {
+        const localRole = document.querySelector('[data-community-role="' + cid + '"]').value;
+        const entry = {id_comunidad:cid,rol_en_comunidad:localRole === 'Consulta' ? 'Consulta' : data.rol};
+        document.querySelectorAll('[data-permission-community="' + cid + '"]').forEach(input => entry[input.dataset.permissionField] = input.checked);
+        return entry;
+      });
+      data.gestionar_seguridad = data.community_permissions.some(row => row.puede_gestionar_seguridad);
       if (!safe(data.nombre)) { $("adminUserMessage").textContent="El nombre es obligatorio."; return; }
       if (!confirm((selectedAdminUserId ? "Guardar los cambios del usuario" : "Crear el nuevo usuario") + "?")) return;
       try {
@@ -10473,6 +10578,7 @@ function homePage() {
 
     async function saveAdminCommunity() {
       const data = { id_comunidad:selectedAdminCommunityId || null, nombre:$("adminCommunityName").value, descripcion:$("adminCommunityDescription").value, activo:$("adminCommunityActive").checked };
+      if ($('adminCommunityPresident')) data.id_usuario_presidente = Number($('adminCommunityPresident').value || 0);
       if (!safe(data.nombre)) { $("adminCommunityMessage").textContent="El nombre es obligatorio."; return; }
       if (!confirm((selectedAdminCommunityId ? "Guardar los cambios de la comunidad" : "Crear la nueva comunidad") + "?")) return;
       try {
@@ -11016,7 +11122,11 @@ function homePage() {
     }
 
     function bindSecurityPanel() {
-      if ($('securityUploadButton')) $('securityUploadButton').addEventListener('click', uploadSecurityFiles);
+      if ($('securityUploadButton')) {
+        $('securityUploadButton').addEventListener('click', uploadSecurityFiles);
+        const communities = securityData.access?.communities || [];
+        $('securityFiles').insertAdjacentHTML('beforebegin', '<label for="securityUploadCommunity">Comunidad gestora</label><select id="securityUploadCommunity">' + (communities.length > 1 ? '<option value="">Seleccionar...</option>' : '') + communities.map(row => '<option value="' + row.id_comunidad + '">' + html(row.nombre) + '</option>').join('') + '</select>');
+      }
       if ($('securityOwnerLookupButton')) $('securityOwnerLookupButton').addEventListener('click', runSecurityOwnerLookup);
       if ($('securityOwnerLookupQuery')) $('securityOwnerLookupQuery').addEventListener('keydown', event => { if(event.key === 'Enter') runSecurityOwnerLookup(); });
       ['securityStatus','securitySeverity','securityCategory'].forEach(id => {
@@ -11056,7 +11166,7 @@ function homePage() {
         const file = files[index];
         $('securityUploadMessage').textContent = 'Procesando ' + (index + 1) + ' de ' + files.length + ': ' + file.name;
         try {
-          const response = await fetch('/api/security/upload',{method:'POST',body:file,credentials:'same-origin',headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type || 'application/octet-stream'}});
+          const response = await fetch('/api/security/upload?community=' + encodeURIComponent($('securityUploadCommunity').value),{method:'POST',body:file,credentials:'same-origin',headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type || 'application/octet-stream'}});
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || 'No se pudo cargar el documento.');
           const message = result.duplicate_document ? 'Ya estaba cargado; no se ha duplicado.' : (result.new_incidents || 0) + ' incidencia(s) nueva(s), ' + (result.duplicate_incidents || 0) + ' repetida(s).';
@@ -12906,7 +13016,8 @@ function homePage() {
           return;
         }
         const firstSessionLoad = !state.usuario;
-        const [data, workflow, daily, securityAccess] = await Promise.all([api("/api/overview"), api("/api/workflow"), api("/api/daily-operations"), api("/api/security/access")]);
+        const presidentOnly = sessionInfo.usuario?.rol === "Presidente";
+        const [data, workflow, daily, securityAccess] = await Promise.all([api("/api/overview"), api("/api/workflow"), presidentOnly ? Promise.resolve({metrics:{},map:{items:[],counts:{}},documents:[],communities:sessionInfo.usuario.comunidades}) : api("/api/daily-operations"), api("/api/security/access")]);
         data.workflow = workflow;
         data.daily = daily;
         state = data;
@@ -12921,12 +13032,14 @@ function homePage() {
         const user = data.usuario || {};
         const assignedCommunities = user.comunidades_asignadas || user.comunidades || [];
         const activeCommunities = user.comunidades || [];
-        const scopeLabel = user.rol === "Superusuario" || user.alcance_comunidades !== "seleccion" ? "Todas mis comunidades" : (activeCommunities[0]?.nombre || "Sin comunidad");
+        const scopeLabel = user.alcance_comunidades !== "seleccion" ? "Todas mis comunidades" : (activeCommunities[0]?.nombre || "Sin comunidad");
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - " + html(scopeLabel);
-        $("changeCommunityTop").classList.toggle("hidden", user.rol === "Superusuario" || assignedCommunities.length <= 1);
+        $("changeCommunityTop").classList.toggle("hidden", assignedCommunities.length <= 1);
         if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai"].includes(currentView))) currentView = "work";
         if (currentView === "admin" && user.rol !== "Superusuario") currentView = user.rol === "Presidente" ? "work" : "home";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("documentsTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("globalSearchTab").classList.toggle("hidden", user.rol === "Presidente");
         $("mapTab").classList.toggle("hidden", user.rol === "Presidente");
         $("assemblyTab").classList.toggle("hidden", user.rol === "Presidente");
         $("workTab").classList.toggle("hidden", user.rol !== "Presidente");
@@ -13184,6 +13297,18 @@ function homePage() {
 
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  if (url.pathname.startsWith("/api/") && !["/api/login", "/api/auth/users", "/api/auth/first-access"].includes(url.pathname)) {
+    req.validatedSession = await refreshSession(req);
+    if (!req.validatedSession) {
+      clearSessionCookie(res);
+      return sendJson(res, 401, { ok: false, authenticated: false, error: "No autenticado. Vuelve a iniciar sesion." });
+    }
+    if (req.validatedSession.rol === "Presidente" && !new Set([
+      "/api/me", "/api/logout", "/api/session/community-scope", "/api/security/access",
+      "/api/overview", "/api/workflow", "/api/entity/detail", "/api/attachment",
+      "/api/notifications/read", "/api/president/respond"
+    ]).has(url.pathname)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente solo accede a sus solicitudes y al contexto autorizado." });
+  }
   if (req.method === "GET" && url.pathname === "/") {
     return sendHtml(res, 200, homePage());
   }
@@ -13208,16 +13333,20 @@ async function handle(req, res) {
       return sendJson(res, 401, { ok: false, error: "Usa Primer acceso o contrasena reseteada para crear tu contrasena." });
     }
     if (!verifyPassword(password, user.password_hash)) {
+      await accessEvent(user, "Contrasena incorrecta web", req);
       return sendJson(res, 401, { ok: false, error: "Contrasena incorrecta." });
     }
+    const { user: current } = await runAccessCommand({ action: "profile", id_usuario: user.id_usuario });
     const publicUser = {
       id_usuario: user.id_usuario,
       nombre: user.nombre,
       rol: user.rol,
-      comunidades: auth.comunidades || [],
-      comunidades_asignadas: auth.comunidades || [],
+      auth_version: current.auth_version,
+      comunidades: current.comunidades || [],
+      comunidades_asignadas: current.comunidades || [],
       alcance_comunidades: "todas"
     };
+    await accessEvent(publicUser, "Acceso correcto web", req);
     setSessionCookie(res, publicUser);
     return sendJson(res, 200, { ok: true, usuario: publicUser });
   }
@@ -13238,7 +13367,7 @@ async function handle(req, res) {
     const assigned = Array.isArray(session.comunidades_asignadas) ? session.comunidades_asignadas : session.comunidades || [];
     let selected = assigned;
     let scope = "todas";
-    if (session.rol !== "Superusuario" && body.scope !== "all" && assigned.length > 1) {
+    if (body.scope !== "all") {
       const communityId = Number(body.id_comunidad || 0);
       const match = assigned.find(row => Number(row.id_comunidad) === communityId);
       if (!match) return sendJson(res, 403, { ok: false, error: "La comunidad seleccionada no esta asignada a tu usuario." });
@@ -13251,6 +13380,7 @@ async function handle(req, res) {
       comunidades_asignadas: assigned,
       alcance_comunidades: scope
     };
+    await accessEvent(session, "Cambiar comunidad web", req, scope === "todas" ? "Todas las comunidades asignadas" : String(selected[0].id_comunidad));
     setSessionCookie(res, updated);
     return sendJson(res, 200, {
       ok: true,
@@ -13260,6 +13390,7 @@ async function handle(req, res) {
     });
   }
   if (req.method === "POST" && url.pathname === "/api/logout") {
+    await accessEvent(readSession(req), "Cerrar sesion web", req);
     clearSessionCookie(res);
     return sendJson(res, 200, { ok: true });
   }
@@ -13291,11 +13422,13 @@ async function handle(req, res) {
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     const access = await runSecurityCommand(session, "access", {}, String(req.socket.remoteAddress || "web"));
     if (!access.can_upload) return sendJson(res, 403, { ok: false, error: "Tu perfil no puede subir partes de Seguridad." });
+    const communityId = Number(url.searchParams.get("community") || (access.communities.length === 1 ? access.communities[0].id_comunidad : 0));
+    if (!access.communities.some(row => Number(row.id_comunidad) === communityId)) return sendJson(res, 400, { ok: false, error: "Selecciona la comunidad gestora del parte." });
     const fileName = safeUploadName(req.headers["x-file-name"] || "parte");
     const bytes = await readRawBody(req);
     if (!bytes.length) return sendJson(res, 400, { ok: false, error: "El archivo esta vacio." });
     const fileHash = crypto.createHash("sha256").update(bytes).digest("hex");
-    const existing = await runSecurityCommand(session, "file_exists", { hash_archivo: fileHash }, String(req.socket.remoteAddress || "web"));
+    const existing = await runSecurityCommand(session, "file_exists", { hash_archivo: fileHash, id_comunidad: communityId }, String(req.socket.remoteAddress || "web"));
     if (existing.exists) return sendJson(res, 200, { ok: true, duplicate_document: true, document: existing.document });
     const extraction = await extractSecurityDocument(fileName, bytes);
     const analysis = analyzeSecurityText(fileName, extraction.text);
@@ -13310,6 +13443,7 @@ async function handle(req, res) {
     fs.writeFileSync(target, bytes, { flag: "wx" });
     try {
       const result = await runSecurityCommand(session, "register_upload", {
+        id_comunidad: communityId,
         document: {
           hash_archivo: fileHash,
           nombre_original: fileName,
@@ -13920,6 +14054,7 @@ const server = http.createServer((req, res) => {
   handle(req, res).catch((error) => sendError(res, error));
 });
 
+await runAccessCommand({ action: "migrate" });
 server.listen(port, host, () => {
   console.log(`${appName} escuchando en http://${host}:${port}`);
 });

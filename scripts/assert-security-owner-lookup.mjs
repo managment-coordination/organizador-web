@@ -14,7 +14,7 @@ const pythonCandidates = [
   "python",
 ].filter(Boolean);
 
-function runBridge(action, data, session = { id_usuario: 999, nombre: "Seguridad", rol: "Seguridad" }) {
+function runBridge(action, data, session = { id_usuario: 999, nombre: "Seguridad", rol: "Seguridad", comunidades: [{id_comunidad: 1}] }) {
   const request = JSON.stringify({ session, action, data, pc: "test" });
   const errors = [];
   for (const candidate of pythonCandidates) {

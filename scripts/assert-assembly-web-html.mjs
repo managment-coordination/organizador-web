@@ -41,7 +41,9 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), "organizador-assembly-html-")
 const database = path.join(temp, "test.db");
 fs.copyFileSync(sourceDb, database);
 
-const session = { nombre: "Prueba automatica", rol: "Superusuario", comunidades: [] };
+const communityResult = runPython(['-c', "import sqlite3,json,sys; c=sqlite3.connect(sys.argv[1]); print(json.dumps([{'id_comunidad':r[0]} for r in c.execute('SELECT id_comunidad FROM comunidades')]))", database]);
+if (communityResult.status !== 0) throw new Error(communityResult.stderr);
+const session = { nombre: "Prueba automatica", rol: "Superusuario", comunidades: JSON.parse(communityResult.stdout) };
 function command(action, data = {}) {
   const result = runPython([bridge, database, JSON.stringify({ session, action, data, pc: "assert-assembly-web-html" })]);
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || `Fallo en ${action}`);
