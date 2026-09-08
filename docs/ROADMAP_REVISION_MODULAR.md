@@ -2,7 +2,7 @@
 
 ## Punto de continuidad: 08/09/2026
 
-Modulo 01 implementado y publicado en Ubuntu, con pruebas HTTP de roles, comunidades, presidencia, documentos, Seguridad, asambleas y Centro IA. Ver `CIERRE_OPERATIVO_2026-09-08.md`. Verificados los cinco usuarios activos mediante consultas de solo lectura y acceso por navegador Tailscale. Los modulos 02-10 no quedan cerrados por esta entrega; continuar por orden y con sus preguntas de contexto.
+Modulos 01 y 02 implementados y publicados en Ubuntu. Ver `CIERRE_OPERATIVO_2026-09-08.md` y `MODULO_02_TAREAS_PROYECTOS.md`. Verificados cinco usuarios activos mediante consultas de solo lectura, integridad de datos y acceso por navegador Tailscale. Los modulos 03-10 siguen pendientes de su revision propia; continuar por orden y con sus preguntas de contexto.
 
 ## Proposito
 
@@ -163,13 +163,16 @@ Una mejora solo se acepta si cumple al menos una de estas condiciones:
 
 Si una mejora solo hace la app mas grande, mas vistosa o mas compleja sin resolver un problema real, se aparca o se rechaza.
 
-## Estado inicial del proceso
+## Estado actual del proceso
 
-El siguiente modulo a revisar es:
+Punto de continuidad:
 
 ```text
-Modulo activo: Usuarios, roles y comunidades
-Porcentaje de revision modular global: 4%
-Objetivo inmediato: cerrar la base de permisos, alcance por comunidad y perfiles especiales antes de revisar tareas/proyectos.
-Ficha activa: docs/MODULO_01_USUARIOS_ROLES_COMUNIDADES.md
+Siguiente modulo: 03 - Trabajo Hoy, mapa de trabajo y dashboard.
+Modulo anterior: 02 publicado; ver ficha de cierre y limites documentados.
+Avance de definicion del modulo 02: 100% del bloque funcional, confirmado el 08/09/2026.
+Implementacion de la revision del modulo 02: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
+Porcentaje global: no recalculado; los modulos tienen alcances diferentes.
+Objetivo inmediato: preguntas de contexto del modulo 03. No iniciar cambios ni nuevas ramificaciones sin confirmacion.
+Ficha de ultimo cierre: docs/MODULO_02_TAREAS_PROYECTOS.md
 ```

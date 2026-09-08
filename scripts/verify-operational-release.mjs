@@ -25,8 +25,12 @@ source=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True)
 target=sqlite3.connect(sys.argv[2]); target.row_factory=sqlite3.Row
 source.backup(target); source.close()
 before={r[0]:target.execute('SELECT COUNT(*) FROM "'+r[0]+'"').fetchone()[0] for r in target.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
+previous_migrations=set(tuple(r) for r in target.execute('SELECT * FROM web_migrations')) if 'web_migrations' in before else set()
 migrate(target)
 for table,count in before.items():
+    if table=='web_migrations':
+        assert previous_migrations.issubset(set(tuple(r) for r in target.execute('SELECT * FROM web_migrations')))
+        continue
     assert target.execute('SELECT COUNT(*) FROM "'+table+'"').fetchone()[0]==count, table
 assert target.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
 salt='release-fixture'; digest=hashlib.pbkdf2_hmac('sha256',sys.argv[3].encode(),salt.encode(),260000).hex()
@@ -82,7 +86,7 @@ try {
   for(const u of [admin,worker.cookie,other.cookie,read.cookie]) for(const url of ['/api/overview','/api/workflow','/api/daily-operations','/api/options','/api/reports-center','/api/assemblies']) await request(url,u);
   await request('/api/overview',president.cookie);
   results.push('Role boundaries and all primary read endpoints');
-  const create = async (u,type,cid,title)=> (await request('/api/entity/create',u,{type,payload:{id_comunidad:cid,titulo:title,comentario:'Initial context',categoria:'Mantenimiento',estado_nuevo:'Pendiente',prioridad_nueva:'Media',extra:null,flag:false}})).value.id;
+  const create = async (u,type,cid,title)=> (await request('/api/entity/create',u,{type,payload:{id_comunidad:cid,titulo:title,comentario:'Initial context',responsable:worker.name,categoria:'Mantenimiento',estado_nuevo:'Pendiente',prioridad_nueva:'Media',extra:null,flag:false}})).value.id;
   const task=await create(worker.cookie,'task',communityA,'Independent verification task');
   const project=await create(worker.cookie,'project',communityA,'Verification project A');
   const projectB=await create(other.cookie,'project',communityB,'Verification project B');
@@ -166,6 +170,76 @@ try {
   assert.ok(JSON.stringify(ownMemory).includes('Private community A preference'));
   assert.ok(!JSON.stringify((await request('/api/ai/rules',other.cookie)).value).includes('Private community A preference'));
   results.push('AI center response, JSON history persistence and private memory isolation');
+  for (const kind of ['task','project']) {
+    const payload={id_comunidad:communityA,titulo:'Module02 '+kind,descripcion:'Operational definition',responsable:worker.name,estado_nuevo:'Pendiente'};
+    for(const field of ['titulo','descripcion','responsable']){
+      await request('/api/entity/create',worker.cookie,{type:kind,payload:{...payload,[field]:''}},400);
+    }
+    const id=(await request('/api/entity/create',worker.cookie,{type:kind,payload})).value.id;
+    const readDetail=async()=> (await request(`/api/entity/detail?type=${kind}&id=${id}`,worker.cookie)).value;
+    const record=async(data,status=200)=>request('/api/entity/record',worker.cookie,{type:kind,id,payload:{comentario:'Context note',responsable_proximo_paso:'Supplier fixture',...data}},status);
+    assert.ok((await readDetail()).history.some(r=>r.tipo_registro==='Creacion'));
+    if(kind==='project'){
+      assert.equal((await readDetail()).item.fase_aprobacion,'Propuesta');
+      await request('/api/entity/update',worker.cookie,{type:kind,id,payload:{fase_aprobacion:'Aprobado'}});
+      assert.equal((await readDetail()).item.descripcion,'Operational definition');
+    }
+    await record({responsable_proximo_paso:''},400);
+    await record({comentario:''},400);
+    await record({proximo_paso:'Estimate',fecha_objetivo_proximo_paso:'2026-02-30'},400);
+    await record({proximo_paso:'Send estimate',fecha_objetivo_proximo_paso:'2026-09-15'});
+    await record({proximo_paso:'Visit installation'});
+    await record({proximo_paso:'Review specification',responsable_proximo_paso:worker.name});
+    await record({proximo_paso:'',responsable_proximo_paso:'Administration'});
+    let current=await readDetail();
+    assert.equal(current.commitments.filter(r=>r.estado==='Pendiente').length,3);
+    assert.equal(current.item[kind==='task'?'responsable':'responsable_principal'],worker.name);
+    assert.equal(current.history[0].proximo_paso,'');
+    if(kind==='project')assert.equal(current.item.fase_aprobacion,'Aprobado');
+    const closed=kind==='task'?'Terminada':'Finalizado';
+    await record({estado_nuevo:closed},400);
+    await request('/api/entity/update',worker.cookie,{type:kind,id,payload:{estado:closed,comentario:'Completed'}},400);
+    await request('/api/entity/archive',worker.cookie,{type:kind,id,payload:{comentario:'Archived'}},400);
+    for(const action of current.commitments.filter(r=>r.estado==='Pendiente')){
+      const body={type:kind,id,payload:{id:action.id,kind:action.kind,estado:'Resuelta',comentario:'Result verified'}};
+      await request('/api/entity/commitment/resolve',other.cookie,body,403);
+      await request('/api/entity/commitment/resolve',read.cookie,body,403);
+      await request('/api/entity/commitment/resolve',worker.cookie,{...body,payload:{...body.payload,comentario:''}},400);
+      await request('/api/entity/commitment/resolve',worker.cookie,body);
+      await request('/api/entity/commitment/resolve',worker.cookie,body,400);
+    }
+    await record({estado_nuevo:closed,comentario:'Work completed'});
+    current=await readDetail();
+    assert.ok(current.commitments.every(r=>r.estado!=='Pendiente'));
+    await record({estado_nuevo:'En curso'},400);
+    await request('/api/entity/update',worker.cookie,{type:kind,id,payload:{estado:'En curso'}},400);
+    await record({estado_nuevo:'En curso',motivo_reapertura:'New issue confirmed'});
+    await request('/api/entity/archive',worker.cookie,{type:kind,id,payload:{comentario:'Archive after review'}});
+    const overview=(await request('/api/overview?include_closed=1',worker.cookie)).value;
+    assert.ok(overview[kind==='task'?'tareas':'proyectos'].some(r=>r[kind==='task'?'id_tarea':'id_proyecto']===id));
+    await request('/api/entity/update',worker.cookie,{type:kind,id,payload:{estado:'En curso',motivo_reapertura:'Resume works'}});
+    current=await readDetail();
+    if(kind==='task')assert.equal(current.item.archivada,0);
+    assert.ok(current.history.some(r=>r.tipo_registro==='Reapertura'));
+  }
+  results.push('Module02: required fields, independent approval, multiple commitments, explicit resolution, closing and reopening');
+  for(const kind of ['task','project']){
+    const payload={titulo:'Historical '+kind,descripcion:'Reviewed source',responsable:worker.name,
+      id_comunidad:communityA,estado:'En curso',proximo_paso:'Current estimate',responsable_proximo_paso:'External supplier',
+      historical_records:[{fecha:'2026-01-02',comentario:'Site inspected',proximo_paso:'Old step'},
+        {fecha:'',comentario:'Undated historical event'}]};
+    const created=(await request('/api/entity/create',worker.cookie,{type:kind,payload})).value;
+    const detail=(await request(`/api/entity/detail?type=${kind}&id=${created.id}`,worker.cookie)).value;
+    assert.equal(detail.commitments.filter(r=>r.estado==='Pendiente').length,1);
+    assert.ok(detail.history.some(r=>r.fecha_hora.startsWith('2026-01-02') && r.comentario==='Site inspected'));
+    assert.ok(detail.history.some(r=>r.comentario.includes('Fecha de la actuacion no indicada')));
+    await request('/api/entity/create',worker.cookie,{type:kind,payload:{...payload,historical_records:[{fecha:'2026-02-30',comentario:'Invalid'}]}},400);
+    const decision=(await request('/api/entity/create',worker.cookie,{type:kind,payload:{...payload,
+      historical_records:[],proximo_paso:'Approve specification',responsable_proximo_paso:'Presidente'}})).value;
+    const decisions=(await request(`/api/entity/detail?type=${kind}&id=${decision.id}`,worker.cookie)).value.commitments;
+    assert.ok(decisions.some(r=>r.kind==='decision' && r.estado==='Pendiente'));
+  }
+  results.push('Module02: atomic historical creation, explicit undated evidence, initial presidency commitment');
   await adminAction('save_user',{id_usuario:worker.id,nombre:worker.name,rol:'Usuario',activo:false,community_ids:[communityA,communityB]});
   await request('/api/me',worker.cookie,undefined,401);
   await adminAction('reset_password',{id_usuario:other.id});

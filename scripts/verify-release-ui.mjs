@@ -57,6 +57,32 @@ try {
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);
       assert.ok(!overflow, `Horizontal overflow in ${view} at ${viewport.width}`);
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
+      if(['tasks','projects'].includes(view)){
+        await page.locator(view==='tasks'?'#newTaskButton':'#newProjectButton').click();
+        await page.locator('#createName').fill(`UI ${view} ${viewport.width}`);
+        await page.locator('#createDescription').fill('Reviewed operational description');
+        const community=await page.locator('#createCommunity option').evaluateAll(rows=>rows.find(r=>r.value)?.value);
+        await page.locator('#createCommunity').selectOption(community);
+        await page.locator('#createNextStep').fill('Supplier to inspect installation');
+        await page.locator('#createNextOwner').fill('External supplier');
+        await page.locator('#saveCreateEntity').click();
+        await page.locator('#entityModal').waitFor({state:'visible'});
+        assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),1);
+        await page.locator('#recordComment').fill('Additional information without a new commitment.');
+        await page.locator('#recordNextOwner').fill('Administration');
+        page.once('dialog',dialog=>dialog.accept());
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#saveRecord').click()]);
+        await page.waitForTimeout(300);
+        assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),1);
+        assert.equal(await page.locator('#recordNextStep').inputValue(),'');
+        await page.locator('#commitmentSection').scrollIntoViewIfNeeded();
+        await page.screenshot({path:path.join(output,`${viewport.width}-${view}-commitments.png`),fullPage:true});
+        page.once('dialog',dialog=>dialog.accept('Inspection completed and checked.'));
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#commitmentList [data-resolution="Resuelta"]').click()]);
+        await page.waitForTimeout(300);
+        assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),0);
+        await page.locator('#closeModal').click();
+      }
     }
     assert.deepEqual(errors,[]);
     await context.close();

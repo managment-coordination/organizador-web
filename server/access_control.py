@@ -38,6 +38,8 @@ def migrate(conn):
     conn.execute("CREATE TABLE IF NOT EXISTS web_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     if conn.execute("SELECT 1 FROM web_migrations WHERE version='access_v1'").fetchone():
         migrate_data_scope(conn)
+        from work_domain import migrate as migrate_work
+        migrate_work(conn)
         return
     with conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS usuario_comunidad_permisos (
@@ -88,6 +90,8 @@ def migrate(conn):
             WHERE usuario_destino IN ('Presidente','Presidencia') AND id_solicitud IS NOT NULL""")
         conn.execute("INSERT INTO web_migrations VALUES ('access_v1',?)", (stamp(),))
     migrate_data_scope(conn)
+    from work_domain import migrate as migrate_work
+    migrate_work(conn)
 
 
 def migrate_data_scope(conn):

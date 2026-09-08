@@ -925,7 +925,7 @@ async function generateEntityReport(session, type, id, pc) {
   const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
   fs.mkdirSync(folder, { recursive: true });
   const attachments = (detail.attachments || []).map((row) => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }));
-  const report = await buildEntityReport({ type, item: detail.item, history: [...(detail.history || [])].reverse(), attachments });
+  const report = await buildEntityReport({ type, item: detail.item, history: [...(detail.history || [])].reverse(), attachments, commitments: detail.commitments || [] });
   const outputPath = path.join(folder, report.filename);
   fs.writeFileSync(outputPath, report.buffer, { flag: "wx" });
   try {
@@ -1023,6 +1023,7 @@ async function generateCollectionReport(session, selections, title, pc) {
     type: normalized[index].type,
     item: detail.item,
     history: [...(detail.history || [])].reverse(),
+    commitments: detail.commitments || [],
     attachments: (detail.attachments || []).map(row => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }))
   }));
   const report = await buildCollectionReport({ title: String(title || "Informe conjunto").trim(), entries });
@@ -1211,7 +1212,7 @@ print(json.dumps(payload, ensure_ascii=False))
   return runPythonJson(script);
 }
 
-function queryOverview(session) {
+function queryOverview(session, includeClosed = false) {
   const script = pythonScript`
 import json
 import sqlite3
@@ -1220,6 +1221,7 @@ from access_control import install_scoped_views
 path = ${JSON.stringify(databasePath)}
 role = ${JSON.stringify(session?.rol || "")}
 user_name = ${JSON.stringify(session?.nombre || "")}
+include_closed = ${includeClosed ? "True" : "False"}
 allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
 conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
@@ -1253,19 +1255,19 @@ counts = {
 }
 
 proyectos = rows("""
-    SELECT p.id_proyecto, p.id_comunidad, p.nombre, p.categoria, p.estado_general, p.prioridad, p.observaciones AS proximo_paso,
+    SELECT p.id_proyecto, p.id_comunidad, p.nombre, p.categoria, p.estado_general, p.fase_aprobacion, p.prioridad, COALESCE(p.proximo_paso_actual,p.observaciones) AS proximo_paso,
            p.responsable_principal, p.responsable_proximo_paso,
            p.fecha_objetivo_proximo_paso, p.fecha_ultima_actualizacion,
            c.nombre AS comunidad
     FROM proyectos p
     LEFT JOIN comunidades c ON c.id_comunidad = p.id_comunidad
-    WHERE COALESCE(p.activo, 1) = 1
+    WHERE (? OR COALESCE(p.activo, 1) = 1)
 """ + project_filter + """
     ORDER BY
       CASE p.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
       COALESCE(p.fecha_objetivo_proximo_paso, '') ASC,
       p.nombre ASC
-""", project_params)
+""", [include_closed] + project_params)
 
 tareas = [] if hide_tasks else rows("""
     SELECT t.id_tarea, t.id_comunidad, t.titulo, t.categoria, t.estado, t.prioridad,
@@ -1275,13 +1277,13 @@ tareas = [] if hide_tasks else rows("""
     FROM tareas t
     LEFT JOIN proyectos p ON p.id_proyecto = t.id_proyecto
     LEFT JOIN comunidades c ON c.id_comunidad = t.id_comunidad
-    WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0
+    WHERE (? OR (COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0))
 """ + task_filter + """
     ORDER BY
       CASE t.prioridad WHEN 'Urgente' THEN 1 WHEN 'Alta' THEN 2 WHEN 'Media' THEN 3 ELSE 4 END,
       COALESCE(t.fecha_proxima_revision, t.fecha_objetivo_proximo_paso, '') ASC,
       t.titulo ASC
-""", task_params)
+""", [include_closed] + task_params)
 
 estados_tareas = [] if hide_tasks else rows("SELECT COALESCE(estado, 'Sin estado') AS estado, COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter + " GROUP BY COALESCE(estado, 'Sin estado') ORDER BY total DESC", task_params)
 estados_proyectos = rows("SELECT COALESCE(estado_general, 'Sin estado') AS estado, COUNT(*) AS total FROM proyectos p WHERE COALESCE(p.activo, 1) = 1" + project_filter + " GROUP BY COALESCE(estado_general, 'Sin estado') ORDER BY total DESC", project_params)
@@ -1331,8 +1333,8 @@ aliases = list(dict.fromkeys([a for a in aliases if a]))
 alias_marks = ",".join("?" for _ in aliases) or "?"
 
 action_filter, action_community_params = community_filter("a")
-action_user_sql = "" if role == "Superusuario" else f" AND a.usuario_destino IN ({alias_marks})"
-action_user_params = [] if role == "Superusuario" else aliases
+action_user_sql = "" if role == "Superusuario" else f" AND (a.usuario_destino IN ({alias_marks}) OR (a.solicitante IN ({alias_marks}) AND NOT EXISTS(SELECT 1 FROM usuarios u WHERE u.nombre=a.usuario_destino AND u.activo=1)))"
+action_user_params = [] if role == "Superusuario" else aliases + aliases
 actions = rows("""
     SELECT a.*, c.nombre AS comunidad,
            COALESCE(t.titulo, p.nombre, a.titulo) AS elemento,
@@ -1340,8 +1342,8 @@ actions = rows("""
            COALESCE(a.id_tarea, a.id_proyecto) AS entity_id,
            COALESCE(t.estado, p.estado_general, '') AS estado_entidad,
            COALESCE(t.prioridad, p.prioridad, '') AS prioridad_entidad,
-           COALESCE(t.responsable_proximo_paso, p.responsable_proximo_paso, a.usuario_destino) AS responsable_proximo_paso,
-           COALESCE(t.fecha_objetivo_proximo_paso, t.fecha_proxima_revision, p.fecha_objetivo_proximo_paso, '') AS fecha_objetivo
+           a.usuario_destino AS responsable_proximo_paso,
+           CASE WHEN a.tipo_accion='Compromiso' THEN a.fecha_objetivo ELSE COALESCE(t.fecha_objetivo_proximo_paso, t.fecha_proxima_revision, p.fecha_objetivo_proximo_paso, '') END AS fecha_objetivo
     FROM acciones_pendientes a
     LEFT JOIN tareas t ON t.id_tarea=a.id_tarea
     LEFT JOIN proyectos p ON p.id_proyecto=a.id_proyecto
@@ -1402,7 +1404,7 @@ if role != "Presidente":
         SELECT 'project' AS entity_type, p.id_proyecto AS entity_id, p.id_comunidad,
                p.nombre AS elemento, p.estado_general AS estado, p.prioridad,
                p.responsable_principal AS responsable, p.responsable_proximo_paso,
-               p.observaciones AS proximo_paso, COALESCE(p.fecha_objetivo_proximo_paso,'') AS fecha_objetivo,
+               COALESCE(p.proximo_paso_actual,p.observaciones) AS proximo_paso, COALESCE(p.fecha_objetivo_proximo_paso,'') AS fecha_objetivo,
                p.fecha_ultima_actualizacion, '' AS proyecto, c.nombre AS comunidad,
                (SELECT r.comentario FROM registros_proyectos r WHERE r.id_proyecto=p.id_proyecto ORDER BY r.fecha_hora DESC, r.id_registro_proyecto DESC LIMIT 1) AS ultimo_comentario
         FROM proyectos p
@@ -1530,8 +1532,8 @@ def classify(state, priority, owner, target_date, updated_at, has_action):
 
 task_filter, task_params = community_filter("t")
 project_filter, project_params = community_filter("p")
-action_user_sql = "" if role == "Superusuario" else f" AND a.usuario_destino IN ({alias_marks})"
-action_user_params = [] if role == "Superusuario" else aliases
+action_user_sql = "" if role == "Superusuario" else f" AND (a.usuario_destino IN ({alias_marks}) OR (a.solicitante IN ({alias_marks}) AND NOT EXISTS(SELECT 1 FROM usuarios u WHERE u.nombre=a.usuario_destino AND u.activo=1)))"
+action_user_params = [] if role == "Superusuario" else aliases + aliases
 tasks = []
 if role != "Presidente":
     tasks = rows("""
@@ -1553,7 +1555,7 @@ projects = rows("""
            p.nombre AS titulo, p.descripcion, p.categoria, p.estado_general AS estado, p.prioridad,
            p.responsable_principal AS responsable, p.responsable_proximo_paso,
            COALESCE(p.fecha_objetivo_proximo_paso,p.fecha_prevista_finalizacion,'') AS fecha_objetivo,
-           p.fecha_ultima_actualizacion, p.observaciones AS proximo_paso, c.nombre AS comunidad,
+           p.fecha_ultima_actualizacion, COALESCE(p.proximo_paso_actual,p.observaciones) AS proximo_paso, c.nombre AS comunidad,
            (SELECT r.comentario FROM registros_proyectos r WHERE r.id_proyecto=p.id_proyecto ORDER BY r.fecha_hora DESC,r.id_registro_proyecto DESC LIMIT 1) AS ultimo_comentario,
            EXISTS(SELECT 1 FROM acciones_pendientes a WHERE a.id_proyecto=p.id_proyecto AND a.estado='Pendiente'""" + action_user_sql + """) AS has_action
     FROM proyectos p
@@ -1879,11 +1881,12 @@ try:
                  fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (item["id_tarea"],item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",
-                  item["estado"],item["estado"],item["prioridad"],item["prioridad"],item["responsable"],return_owner,
+                  item["estado"],item["estado"],item["prioridad"],item["prioridad"],item["responsable"],item["responsable"],
                   next_step,item["fecha_proxima_revision"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
             record_id = int(cur.lastrowid)
-            conn.execute("UPDATE tareas SET responsable=?, responsable_proximo_paso=?, proximo_paso=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_tarea=?",
-                         (return_owner,return_owner,next_step,now,user,pc,item["id_tarea"]))
+            if item['responsable_proximo_paso'] in {user,'Presidente','Presidencia'}:
+                conn.execute("UPDATE tareas SET responsable_proximo_paso=?, proximo_paso=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_tarea=?",
+                             (return_owner,next_step,now,user,pc,item["id_tarea"]))
             entity_type, entity_id, title = "tarea", int(item["id_tarea"]), str(item["titulo"])
         else:
             item = conn.execute("SELECT * FROM proyectos WHERE id_proyecto=?", (req["id_proyecto"],)).fetchone()
@@ -1894,11 +1897,12 @@ try:
                  motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",item["estado_general"],
-                  item["estado_general"],item["prioridad"],item["prioridad"],item["responsable_principal"],return_owner,
+                  item["estado_general"],item["prioridad"],item["prioridad"],item["responsable_principal"],item["responsable_principal"],
                   next_step,item["fecha_objetivo_proximo_paso"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
             record_id = int(cur.lastrowid)
-            conn.execute("UPDATE proyectos SET responsable_principal=?, responsable_proximo_paso=?, observaciones=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_proyecto=?",
-                         (return_owner,return_owner,next_step,now,user,pc,item["id_proyecto"]))
+            if item['responsable_proximo_paso'] in {user,'Presidente','Presidencia'}:
+                conn.execute("UPDATE proyectos SET responsable_proximo_paso=?, proximo_paso_actual=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_proyecto=?",
+                             (return_owner,next_step,now,user,pc,item["id_proyecto"]))
             entity_type, entity_id, title = "proyecto", int(item["id_proyecto"]), str(item["nombre"])
         requester = str(req["solicitante"] or return_owner).strip()
         conn.execute("""
@@ -1908,8 +1912,8 @@ try:
         """, (req["id_comunidad"],requester,"Respuesta presidente",f"{decision}: {title}",comment,request_id,
               req["id_tarea"],req["id_proyecto"],now))
         if requester:
-            existing = conn.execute("SELECT id_accion FROM acciones_pendientes WHERE tipo_entidad=? AND COALESCE(id_tarea,0)=? AND COALESCE(id_proyecto,0)=? AND usuario_destino=? AND estado='Pendiente' LIMIT 1",
-                                    (entity_type, int(req["id_tarea"] or 0), int(req["id_proyecto"] or 0), requester)).fetchone()
+            existing = conn.execute("SELECT id_accion FROM acciones_pendientes WHERE tipo_entidad=? AND id_registro_origen=? AND tipo_accion='Gestionar respuesta de presidencia'",
+                                    (entity_type, record_id)).fetchone()
             if not existing:
                 conn.execute("""
                     INSERT INTO acciones_pendientes
@@ -2917,69 +2921,6 @@ async function analyzeImportBatch(session, text, mode = "updates") {
   return { mode, source: "local", structured: Boolean(blocks.length), proposals };
 }
 
-function writeHistoricalRecords(session, type, id, records, pc) {
-  session = sessionForPermission(session, "puede_actualizar");
-  const script = pythonScript`
-import json
-import sqlite3
-from datetime import datetime, timedelta
-path = ${JSON.stringify(databasePath)}
-session = ${JSON.stringify(session || {})}
-entity_type = ${JSON.stringify(type)}
-entity_id = int(${JSON.stringify(id)})
-records = json.loads(${JSON.stringify(JSON.stringify(records || []))})
-user = str(session.get("nombre") or "web")
-role = str(session.get("rol") or "")
-pc = ${JSON.stringify(pc || "web")}
-allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
-conn = sqlite3.connect(path)
-conn.row_factory = sqlite3.Row
-table = "tareas" if entity_type == "task" else "proyectos"
-id_column = "id_tarea" if entity_type == "task" else "id_proyecto"
-item = conn.execute(f"SELECT * FROM {table} WHERE {id_column}=?", (entity_id,)).fetchone()
-if not item: raise ValueError("El elemento historico no existe.")
-if role != "Superusuario" and int(item["id_comunidad"] or 0) not in allowed_ids: raise PermissionError("Comunidad no permitida.")
-
-def timestamp(value, index):
-    text = str(value or "").strip()[:10]
-    try: day = datetime.strptime(text, "%Y-%m-%d")
-    except ValueError: day = datetime.now()
-    return (day + timedelta(minutes=index)).strftime("%Y-%m-%d %H:%M:%S")
-
-valid = [r for r in records[:50] if str(r.get("comentario") or "").strip()]
-if not valid: raise ValueError("No hay seguimientos historicos validos.")
-first_ts = timestamp(valid[0].get("fecha"), 0)
-last = valid[-1]
-with conn:
-    if entity_type == "task":
-        conn.execute("UPDATE registros SET fecha_hora=?, comentario=? WHERE id_registro=(SELECT id_registro FROM registros WHERE id_tarea=? AND tipo_registro='Creación' ORDER BY id_registro DESC LIMIT 1)",
-                     (first_ts, "Ficha incorporada mediante importacion historica revisada.", entity_id))
-        for index, row in enumerate(valid, 1):
-            conn.execute("""INSERT INTO registros
-                (id_tarea,id_proyecto,fecha_hora,tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,proximo_paso,fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (entity_id,item["id_proyecto"],timestamp(row.get("fecha"),index),str(row.get("tipo_registro") or "Seguimiento"),str(row.get("comentario") or ""),str(row.get("estado_nuevo") or "Pendiente"),str(row.get("prioridad_nueva") or "Media"),str(row.get("responsable_nuevo") or user),str(row.get("proximo_paso") or ""),str(row.get("fecha") or ""),str(row.get("motivo_bloqueo") or ""),user,pc,item["id_comunidad"],str(row.get("responsable_proximo_paso") or row.get("responsable_nuevo") or user),str(row.get("fecha_objetivo_proximo_paso") or "")))
-        conn.execute("""UPDATE tareas SET estado=?,prioridad=?,responsable=?,responsable_proximo_paso=?,proximo_paso=?,fecha_ultima_actualizacion=?,usuario_ultima_actualizacion=?,pc_ultima_actualizacion=? WHERE id_tarea=?""",
-                     (str(last.get("estado_nuevo") or "Pendiente"),str(last.get("prioridad_nueva") or "Media"),str(last.get("responsable_nuevo") or user),str(last.get("responsable_proximo_paso") or last.get("responsable_nuevo") or user),str(last.get("proximo_paso") or ""),timestamp(last.get("fecha"),len(valid)),user,pc,entity_id))
-    else:
-        conn.execute("UPDATE registros_proyectos SET fecha_hora=?, comentario=? WHERE id_registro_proyecto=(SELECT id_registro_proyecto FROM registros_proyectos WHERE id_proyecto=? AND tipo_registro='Creación' ORDER BY id_registro_proyecto DESC LIMIT 1)",
-                     (first_ts, "Ficha incorporada mediante importacion historica revisada.", entity_id))
-        for index, row in enumerate(valid, 1):
-            state = str(row.get("estado_nuevo") or "En curso").replace("Bloqueada","Bloqueado").replace("Terminada","Finalizado")
-            conn.execute("""INSERT INTO registros_proyectos
-                (id_proyecto,fecha_hora,tipo_registro,comentario,estado_nuevo,prioridad_nueva,responsable_nuevo,proximo_paso,fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (entity_id,timestamp(row.get("fecha"),index),str(row.get("tipo_registro") or "Seguimiento"),str(row.get("comentario") or ""),state,str(row.get("prioridad_nueva") or "Media"),str(row.get("responsable_nuevo") or user),str(row.get("proximo_paso") or ""),str(row.get("fecha") or ""),str(row.get("motivo_bloqueo") or ""),user,pc,item["id_comunidad"],str(row.get("responsable_proximo_paso") or row.get("responsable_nuevo") or user),str(row.get("fecha_objetivo_proximo_paso") or "")))
-        final_state = str(last.get("estado_nuevo") or "En curso").replace("Bloqueada","Bloqueado").replace("Terminada","Finalizado")
-        conn.execute("""UPDATE proyectos SET estado_general=?,prioridad=?,responsable_principal=?,responsable_proximo_paso=?,observaciones=?,fecha_ultima_actualizacion=?,usuario_ultima_actualizacion=?,pc_ultima_actualizacion=? WHERE id_proyecto=?""",
-                     (final_state,str(last.get("prioridad_nueva") or "Media"),str(last.get("responsable_nuevo") or user),str(last.get("responsable_proximo_paso") or last.get("responsable_nuevo") or user),str(last.get("proximo_paso") or ""),timestamp(last.get("fecha"),len(valid)),user,pc,entity_id))
-    conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
-                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),user,pc,"Importar historico web",entity_type,entity_id,f"{len(valid)} seguimientos historicos"))
-conn.close()
-print(json.dumps({"ok":True,"records":len(valid)},ensure_ascii=False))
-`;
-  return runPythonJson(script);
-}
 
 function saveImportTrace(session, sourceName, sourceText, communityId, proposals, results, pc) {
   const script = pythonScript`
@@ -3057,8 +2998,8 @@ async function applyImportBatch(session, body, pc) {
     } else if (["crear_tarea", "crear_proyecto"].includes(action)) {
       const type = action === "crear_tarea" ? "task" : "project";
       if (!String(payload.titulo || "").trim()) throw new Error(`Falta el titulo de la propuesta ${item.client_id || ""}.`);
+      if (item.historical && Array.isArray(item.records)) payload.historical_records = item.records;
       result = await createEntity(session, type, payload, pc);
-      if (item.historical && Array.isArray(item.records)) await writeHistoricalRecords(session, type, result.id, item.records, pc);
       results.push({ ...result, created: true });
     } else {
       throw new Error(`Revisa la accion de la propuesta ${item.client_id || ""}.`);
@@ -6830,6 +6771,7 @@ async function queryEntityDetail(session, type, id) {
 import json
 import sqlite3
 from access_control import require_president_entity
+from work_domain import commitments
 
 path = ${JSON.stringify(databasePath)}
 role = ${JSON.stringify(session?.rol || "")}
@@ -6917,8 +6859,11 @@ if role != "Presidente":
             reports.append(report)
         if len(reports) >= 12:
             break
+pending = commitments(conn, entity_type, entity_id)
+item = dict(item)
+if entity_type == 'project': item['proximo_paso'] = item.get('proximo_paso_actual') if item.get('proximo_paso_actual') is not None else item.get('observaciones')
 conn.close()
-print(json.dumps({"item": dict(item), "history": history, "attachments": attachments, "reports": reports}, ensure_ascii=False))
+print(json.dumps({"item": item, "history": history, "attachments": attachments, "reports": reports, "commitments": pending}, ensure_ascii=False))
 `;
   const result = await runPythonJson(script);
   const community = (session.comunidades || []).find(row => Number(row.id_comunidad) === Number(result.item?.id_comunidad));
@@ -6937,11 +6882,30 @@ print(json.dumps({"item": dict(item), "history": history, "attachments": attachm
   return result;
 }
 
+function resolveWorkCommitment(session, type, id, payload, pc) {
+  const script = pythonScript`
+import json, sqlite3
+from work_domain import resolve
+session = ${JSON.stringify(session)}
+session['pc'] = ${JSON.stringify(pc || 'web')}
+conn = sqlite3.connect(${JSON.stringify(databasePath)})
+conn.row_factory = sqlite3.Row
+try:
+    conn.execute('BEGIN IMMEDIATE')
+    with conn:
+        result = resolve(conn, session, ${JSON.stringify(type)}, ${JSON.stringify(Number(id))}, ${JSON.stringify(payload)})
+    print(json.dumps(result))
+finally: conn.close()
+`;
+  return runPythonJson(script);
+}
+
 function writeEntityRecord(session, type, id, payload, pc) {
   session = sessionForPermission(session, "puede_actualizar");
   const script = pythonScript`
 import json
 import sqlite3
+from work_domain import validate_change, synchronize, add_commitment
 from datetime import datetime, date
 from access_control import president_for
 
@@ -7018,92 +6982,6 @@ def create_notification(conn, usuario_destino, tipo, titulo, mensaje, id_comunid
         (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, now_iso(),usuario_destino),
     )
 
-def close_pending_actions_for_entity(conn, tipo_entidad, entity_id_value, comment):
-    aliases = responsible_aliases(user)
-    if not aliases:
-        return
-    task_id = entity_id_value if tipo_entidad == "tarea" else None
-    project_id = entity_id_value if tipo_entidad == "proyecto" else None
-    marks = ",".join("?" for _ in aliases)
-    conn.execute(
-        f"""
-        UPDATE acciones_pendientes
-        SET estado = 'Completada',
-            fecha_cierre = ?,
-            usuario_cierre = ?,
-            comentario_cierre = ?,
-            pc_cierre = ?
-        WHERE estado = 'Pendiente'
-          AND tipo_entidad = ?
-          AND COALESCE(id_tarea, 0) = COALESCE(?, 0)
-          AND COALESCE(id_proyecto, 0) = COALESCE(?, 0)
-          AND usuario_destino IN ({marks})
-        """,
-        tuple([now_iso(), user, str(comment or "")[:500], pc, tipo_entidad, task_id, project_id] + aliases),
-    )
-
-def cancel_stale_pending_actions(conn, tipo_entidad, entity_id_value, keep_user, comment):
-    task_id = entity_id_value if tipo_entidad == "tarea" else None
-    project_id = entity_id_value if tipo_entidad == "proyecto" else None
-    params = [now_iso(), user, str(comment or "")[:500], pc, tipo_entidad, task_id, project_id]
-    extra = ""
-    if keep_user:
-        extra = " AND usuario_destino <> ?"
-        params.append(keep_user)
-    conn.execute(
-        f"""
-        UPDATE acciones_pendientes
-        SET estado = 'Cancelada',
-            fecha_cierre = ?,
-            usuario_cierre = ?,
-            comentario_cierre = ?,
-            pc_cierre = ?
-        WHERE estado = 'Pendiente'
-          AND tipo_entidad = ?
-          AND COALESCE(id_tarea, 0) = COALESCE(?, 0)
-          AND COALESCE(id_proyecto, 0) = COALESCE(?, 0)
-          {extra}
-        """,
-        tuple(params),
-    )
-
-def create_pending_action(conn, tipo_entidad, entity_id_value, usuario_destino, titulo, detalle, id_comunidad, record_id, tipo_accion):
-    if not usuario_destino or usuario_destino == user:
-        return None
-    if usuario_destino not in active_users(conn):
-        return None
-    task_id = entity_id_value if tipo_entidad == "tarea" else None
-    project_id = entity_id_value if tipo_entidad == "proyecto" else None
-    existing = conn.execute(
-        """
-        SELECT id_accion
-        FROM acciones_pendientes
-        WHERE estado = 'Pendiente'
-          AND tipo_entidad = ?
-          AND COALESCE(id_tarea, 0) = COALESCE(?, 0)
-          AND COALESCE(id_proyecto, 0) = COALESCE(?, 0)
-          AND usuario_destino = ?
-        ORDER BY fecha_creacion DESC, id_accion DESC
-        LIMIT 1
-        """,
-        (tipo_entidad, task_id, project_id, usuario_destino),
-    ).fetchone()
-    if existing:
-        return int(existing["id_accion"])
-    cur = conn.execute(
-        """
-        INSERT INTO acciones_pendientes
-        (id_comunidad, tipo_entidad, id_tarea, id_proyecto, id_registro_origen,
-         tipo_accion, usuario_destino, solicitante, titulo, detalle, estado,
-         fecha_creacion, pc_creacion)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?)
-        """,
-        (id_comunidad, tipo_entidad, task_id, project_id, record_id, tipo_accion, usuario_destino, user, titulo, detalle, now_iso(), pc),
-    )
-    action_id = int(cur.lastrowid)
-    create_notification(conn, usuario_destino, "Accion pendiente", f"{tipo_accion} pendiente: {titulo}", detalle, id_comunidad, task_id, project_id)
-    audit(conn, "Crear accion pendiente", "accion_pendiente", action_id, f"{usuario_destino}: {titulo}")
-    return action_id
 
 def create_president_request(conn, entity_kind, item, record_id, comentario, proximo_paso):
     president = president_for(conn, item['id_comunidad'])
@@ -7155,6 +7033,7 @@ conn = sqlite3.connect(path)
 conn.row_factory = sqlite3.Row
 try:
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN IMMEDIATE")
     with conn:
         if entity_type == "task":
             task = conn.execute("""
@@ -7166,15 +7045,16 @@ try:
             if not task:
                 raise ValueError("La tarea no existe.")
             ensure_allowed(task["id_comunidad"])
+            validate_change(conn, 'task', dict(task), data)
             estado_nuevo = str(data.get("estado_nuevo") or task["estado"] or "Pendiente").strip()
             if estado_nuevo == "Bloqueada" and not motivo_bloqueo:
                 raise ValueError("El motivo del bloqueo es obligatorio.")
             prioridad_nueva = str(data.get("prioridad_nueva") or task["prioridad"] or "Media").strip()
             responsable_nuevo = str(data.get("responsable_nuevo") or task["responsable"] or user).strip()
-            proximo_paso = str(data.get("proximo_paso") or task["proximo_paso"] or "").strip()
+            proximo_paso = str(data.get("proximo_paso") or "").strip()
             fecha_revision = str(data.get("fecha_proxima_revision") or task["fecha_proxima_revision"] or "").strip()
             next_owner = str(data.get("responsable_proximo_paso") or responsable_nuevo).strip()
-            next_date = str(data.get("fecha_objetivo_proximo_paso") or fecha_revision).strip()
+            next_date = str(data.get("fecha_objetivo_proximo_paso") or "").strip()
             ts = now_iso()
             cur = conn.execute(
                 """
@@ -7204,19 +7084,23 @@ try:
                 (estado_nuevo, prioridad_nueva, responsable_nuevo, proximo_paso, next_owner, next_date,
                  fecha_revision, ts, activa, archivada, user, pc, entity_id),
             )
-            close_pending_actions_for_entity(conn, "tarea", entity_id, comentario)
+            if not proximo_paso:
+                conn.execute('UPDATE tareas SET proximo_paso=? WHERE id_tarea=?',(task['proximo_paso'], entity_id))
             target_user = user_for_responsible(conn, next_owner)
             if is_president_responsible(next_owner):
                 create_president_request(conn, "tarea", task, record_id, comentario, proximo_paso)
-            elif target_user:
-                create_pending_action(conn, "tarea", entity_id, target_user, task["titulo"], proximo_paso or comentario, task["id_comunidad"], record_id, str(data.get("tipo_accion") or "Actualizacion"))
-            cancel_stale_pending_actions(conn, "tarea", entity_id, target_user, f"Responsable proximo paso: {next_owner}")
+            elif proximo_paso:
+                add_commitment(conn, {'nombre':user,'pc':pc}, 'task',dict(task),proximo_paso,next_owner,str(data.get('fecha_objetivo_proximo_paso') or ''),record_id)
+                if target_user and target_user != user:
+                    create_notification(conn,target_user,'Accion pendiente',task['titulo'],proximo_paso,task['id_comunidad'],entity_id,None)
+            synchronize(conn, {'nombre':user,'pc':pc}, 'task',dict(task),data)
             audit(conn, "Seguimiento de tarea web", "tarea", entity_id, f"{task['estado']} -> {estado_nuevo}")
         else:
             project = conn.execute("SELECT * FROM proyectos WHERE id_proyecto = ?", (entity_id,)).fetchone()
             if not project:
                 raise ValueError("El proyecto no existe.")
             ensure_allowed(project["id_comunidad"])
+            validate_change(conn, 'project', dict(project), data)
             estado_nuevo = str(data.get("estado_nuevo") or project["estado_general"] or "En curso").strip()
             if estado_nuevo == "Bloqueado" and not motivo_bloqueo:
                 raise ValueError("El motivo del bloqueo es obligatorio.")
@@ -7225,7 +7109,7 @@ try:
             proximo_paso = str(data.get("proximo_paso") or "").strip()
             fecha_revision = str(data.get("fecha_proxima_revision") or "").strip()
             next_owner = str(data.get("responsable_proximo_paso") or responsable_nuevo).strip()
-            next_date = str(data.get("fecha_objetivo_proximo_paso") or fecha_revision).strip()
+            next_date = str(data.get("fecha_objetivo_proximo_paso") or "").strip()
             ts = now_iso()
             cur = conn.execute(
                 """
@@ -7254,13 +7138,14 @@ try:
                 """,
                 (estado_nuevo, prioridad_nueva, responsable_nuevo, next_owner, next_date, activo, final_date, ts, user, pc, entity_id),
             )
-            close_pending_actions_for_entity(conn, "proyecto", entity_id, comentario)
             target_user = user_for_responsible(conn, next_owner)
             if is_president_responsible(next_owner):
                 create_president_request(conn, "proyecto", project, record_id, comentario, proximo_paso)
-            elif target_user:
-                create_pending_action(conn, "proyecto", entity_id, target_user, project["nombre"], proximo_paso or comentario, project["id_comunidad"], record_id, str(data.get("tipo_accion") or "Actualizacion"))
-            cancel_stale_pending_actions(conn, "proyecto", entity_id, target_user, f"Responsable proximo paso: {next_owner}")
+            elif proximo_paso:
+                add_commitment(conn, {'nombre':user,'pc':pc}, 'project',dict(project),proximo_paso,next_owner,str(data.get('fecha_objetivo_proximo_paso') or ''),record_id)
+                if target_user and target_user != user:
+                    create_notification(conn,target_user,'Accion pendiente',project['nombre'],proximo_paso,project['id_comunidad'],None,entity_id)
+            synchronize(conn, {'nombre':user,'pc':pc}, 'project',dict(project),data)
             audit(conn, "Seguimiento de proyecto web", "proyecto", entity_id, f"{project['estado_general']} -> {estado_nuevo}")
     print(json.dumps({"ok": True, "record_id": record_id}, ensure_ascii=False))
 finally:
@@ -7275,6 +7160,7 @@ function createEntity(session, type, payload, pc) {
 import json
 import sqlite3
 from datetime import datetime, date
+from work_domain import validate_creation, initialize_created
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -7332,6 +7218,7 @@ try:
     conn.execute("PRAGMA foreign_keys = ON")
     with conn:
         cid = choose_community(conn)
+        validate_creation(data, entity_type)
         if entity_type == "project":
             cur = conn.execute(
                 """
@@ -7355,6 +7242,7 @@ try:
                 ),
             )
             new_id = int(cur.lastrowid)
+            initialize_created(conn, {'nombre':user,'pc':pc}, entity_type, new_id, data)
             audit(conn, "Crear proyecto web IA", "proyecto", new_id, titulo)
             print(json.dumps({"ok": True, "type": "project", "id": new_id}, ensure_ascii=False))
         elif entity_type == "task":
@@ -7384,6 +7272,7 @@ try:
                 ),
             )
             new_id = int(cur.lastrowid)
+            initialize_created(conn, {'nombre':user,'pc':pc}, entity_type, new_id, data)
             audit(conn, "Crear tarea web IA", "tarea", new_id, titulo)
             print(json.dumps({"ok": True, "type": "task", "id": new_id}, ensure_ascii=False))
         else:
@@ -7400,6 +7289,7 @@ function updateEntity(session, type, id, payload, pc, archive = false) {
 import json
 import sqlite3
 from datetime import datetime, date
+from work_domain import validate_change, synchronize, merge_edit
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -7444,6 +7334,7 @@ conn = sqlite3.connect(path)
 conn.row_factory = sqlite3.Row
 try:
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN IMMEDIATE")
     with conn:
         ts = now_iso()
         if entity_type == "task":
@@ -7451,6 +7342,8 @@ try:
             if not item:
                 raise ValueError("La tarea no existe.")
             ensure_allowed(item["id_comunidad"])
+            data = merge_edit(dict(item),'task',data)
+            validate_change(conn, 'task', dict(item), data, 'edit', archive)
             if archive:
                 conn.execute("""
                     UPDATE tareas
@@ -7494,6 +7387,8 @@ try:
             if not item:
                 raise ValueError("El proyecto no existe.")
             ensure_allowed(item["id_comunidad"])
+            data = merge_edit(dict(item),'project',data)
+            validate_change(conn, 'project', dict(item), data, 'edit', archive)
             if archive:
                 conn.execute("""
                     UPDATE proyectos
@@ -7536,6 +7431,7 @@ try:
                 print(json.dumps({"ok": True, "type": "project", "id": entity_id}, ensure_ascii=False))
         else:
             raise ValueError("Tipo de entidad no valido.")
+        synchronize(conn, {'nombre':user,'pc':pc}, entity_type, dict(item), data, 'edit', archive)
 finally:
     conn.close()
 `;
@@ -8653,6 +8549,7 @@ function homePage() {
             <div>
               <div class="muted" id="visibleCount"></div>
               <div class="toolbar" id="viewActions">
+                <label><input type="checkbox" id="includeClosed" /> Incluir cerrados y archivados</label>
                 <button id="newProjectButton">Nuevo proyecto</button>
                 <button class="green" id="newTaskButton">Nueva tarea</button>
               </div>
@@ -8680,6 +8577,7 @@ function homePage() {
         </div>
         <div class="modalBody">
           <section class="entityBrief" id="entityBrief"></section>
+          <section id="commitmentSection"><h2>Compromisos y decisiones</h2><div id="commitmentList"></div></section>
           <section>
             <h2>Resumen</h2>
             <div class="detailGrid" id="detailGrid"></div>
@@ -8690,6 +8588,7 @@ function homePage() {
               <div><label>Titulo / nombre</label><input id="editTitle" /></div>
               <div><label>Categoria</label><input id="editCategory" /></div>
               <div><label>Estado</label><select id="editState"></select></div>
+              <div id="editApprovalWrap"><label>Fase de aprobacion</label><select id="editApproval"></select></div>
               <div><label>Prioridad</label><select id="editPriority"></select></div>
               <div><label>Responsable</label><input id="editOwner" list="responsiblesList" /></div>
               <div><label>Proximo responsable</label><input id="editNextOwner" list="responsiblesList" /></div>
@@ -8698,8 +8597,9 @@ function homePage() {
             </div>
             <label>Descripcion</label>
             <textarea id="editDescription"></textarea>
-            <label>Proximo paso / observaciones</label>
+            <label>Proximo paso (opcional)</label>
             <textarea id="editNextStep"></textarea>
+            <label>Motivo del cambio / cierre / reapertura</label><textarea id="editReason"></textarea>
             <div class="toolbar">
               <button class="green" id="saveEntityEdit">Guardar cambios</button>
               <button class="ghost" id="cancelEntityEdit">Cancelar</button>
@@ -8733,7 +8633,7 @@ function homePage() {
                 <select id="recordPriority"></select>
               </div>
               <div>
-                <label>Responsable actual</label>
+                <label>Responsable general</label>
                 <input id="recordOwner" list="responsiblesList" />
               </div>
               <div>
@@ -8747,7 +8647,8 @@ function homePage() {
             </div>
             <label>Comentario</label>
             <textarea id="recordComment" placeholder="Resumen claro de la actualizacion realizada..."></textarea>
-            <label>Proximo paso</label>
+            <div id="recordReopenWrap" class="hidden"><label>Motivo de reapertura</label><input id="recordReopenReason" /></div>
+            <label>Proximo paso (opcional)</label>
             <textarea id="recordNextStep" placeholder="Que debe pasar ahora y quien debe hacerlo..."></textarea>
             <div id="blockReasonWrap" class="hidden">
               <label>Motivo del bloqueo</label>
@@ -8757,7 +8658,6 @@ function homePage() {
               <button class="green" id="saveRecord">Guardar seguimiento</button>
               <span class="muted" id="recordMessage"></span>
             </div>
-            <p class="muted">Al guardar se actualiza la ficha, se crea historial, auditoria y accion pendiente si el proximo responsable es otro usuario.</p>
           </section>
           <section>
             <h2>Historial</h2>
@@ -8839,6 +8739,7 @@ function homePage() {
               <div><label>Titulo / nombre</label><input id="createName" /></div>
               <div><label>Categoria</label><input id="createCategory" value="General" /></div>
               <div><label>Estado</label><select id="createState"></select></div>
+              <div id="createApprovalWrap"><label>Fase de aprobacion</label><select id="createApproval"></select></div>
               <div><label>Prioridad</label><select id="createPriority"></select></div>
               <div><label>Responsable</label><input id="createOwner" list="responsiblesList" /></div>
               <div><label>Proximo responsable</label><input id="createNextOwner" list="responsiblesList" /></div>
@@ -9001,6 +8902,7 @@ function homePage() {
         '<h3>' + html(title) + '</h3>' +
         '<div class="meta">' +
           '<span class="pill state-' + slug(stateText) + '">' + html(stateText || "Sin estado") + '</span>' +
+          (currentView === 'projects' ? '<span class="pill">Aprobacion: ' + html(row.fase_aprobacion || 'Sin clasificar') + '</span>' : '') +
           '<span class="pill">' + html(row.prioridad || "Sin prioridad") + '</span>' +
           '<span class="pill">' + html(row.comunidad || "Sin comunidad") + '</span>' +
         '</div>' +
@@ -9197,6 +9099,26 @@ function homePage() {
 
     function detailValue(label, value) {
       return '<div class="detailBox"><strong>' + html(label) + '</strong>' + html(value || "Sin dato") + '</div>';
+    }
+
+    const approvalPhases = ['Propuesta','Pendiente de aprobacion','Aprobado','No aprobado'];
+    const closedStates = ['Terminada','Finalizada','Finalizado','Archivada','Archivado','Cancelada','Cancelado'];
+    function commitmentListHtml(rows, writable) {
+      const renderRow = row => '<div class="historyItem"><strong>' + html(row.descripcion || 'Compromiso') + '</strong><div class="meta"><span>' + html(row.responsable || 'Sin responsable') + '</span><span>' + html(row.fecha_objetivo || 'Sin fecha acordada') + '</span><span class="pill">' + html(row.estado) + '</span></div>' + (row.comentario_cierre ? '<p>' + html(row.comentario_cierre) + '</p>' : '') + (writable && row.estado === 'Pendiente' ? '<div class="toolbar">' + (row.kind === 'action' ? '<button class="green" data-commitment-id="' + row.id + '" data-commitment-kind="action" data-resolution="Resuelta">Resolver</button>' : '') + '<button class="ghost" data-commitment-id="' + row.id + '" data-commitment-kind="' + row.kind + '" data-resolution="Cancelada">Cancelar compromiso</button></div>' : '') + '</div>';
+      const pending = rows.filter(r => r.estado === 'Pendiente');
+      const closed = rows.filter(r => r.estado !== 'Pendiente');
+      return (pending.map(renderRow).join('') || '<p class="muted">Sin compromisos pendientes.</p>') + (closed.length ? '<details><summary>Resueltos y cancelados (' + closed.length + ')</summary>' + closed.map(renderRow).join('') + '</details>' : '');
+    }
+    async function resolveSelectedCommitment(button) {
+      if (!selectedEntity) return;
+      const comment = prompt(button.dataset.resolution === 'Resuelta' ? 'Indica el resultado del compromiso:' : 'Indica el motivo de cancelacion:');
+      if (!safe(comment)) return;
+      button.disabled = true;
+      try {
+        await api('/api/entity/commitment/resolve', {method:'POST',body:JSON.stringify({type:selectedEntity.type,id:selectedEntity.id,payload:{id:Number(button.dataset.commitmentId),kind:button.dataset.commitmentKind,estado:button.dataset.resolution,comentario:comment}})});
+        await loadOverview();
+        await openEntity(selectedEntity.type,selectedEntity.id,false);
+      } catch(error) { alert(error.message); button.disabled=false; }
     }
 
     function briefStat(label, value) {
@@ -9432,13 +9354,14 @@ function homePage() {
       $("recordMessage").textContent = "";
       if (state.usuario?.rol !== "Presidente") await loadOptions();
       const detail = await api("/api/entity/detail?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id));
-      selectedEntity = { type, id, item: detail.item };
+      selectedEntity = { type, id, item: detail.item, commitments: detail.commitments || [] };
       const item = detail.item;
       $("modalTitle").textContent = itemTitle(item, type);
       $("modalSubtitle").textContent = (type === "project" ? "Proyecto" : "Tarea") + " - " + safe(item.comunidad);
       $("detailGrid").innerHTML =
         detailValue("Comunidad", item.comunidad) +
         detailValue("Estado", itemState(item, type)) +
+        (type === 'project' ? detailValue('Aprobacion',item.fase_aprobacion || 'Sin clasificar (historico)') : '') +
         detailValue("Prioridad", item.prioridad) +
         detailValue("Responsable", itemOwner(item, type)) +
         detailValue("Proximo responsable", item.responsable_proximo_paso) +
@@ -9448,6 +9371,13 @@ function homePage() {
         detailValue(type === "task" ? "Proyecto" : "Inicio", type === "task" ? item.proyecto : item.fecha_inicio);
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
       const writable = canWrite() && communityCan(item.id_comunidad, "puede_actualizar");
+      $('commitmentList').innerHTML = commitmentListHtml(detail.commitments || [], writable);
+      $('commitmentList').querySelectorAll('[data-commitment-id]').forEach(button => button.addEventListener('click', () => resolveSelectedCommitment(button)));
+      $('editApprovalWrap').classList.toggle('hidden',type !== 'project');
+      fillOptions($('editApproval'), [''].concat(approvalPhases), item.fase_aprobacion || '');
+      $('editApproval').options[0].textContent = 'Sin clasificar (historico)';
+      $('editReason').value = '';
+      $('recordReopenReason').value = '';
       const reportsAllowed = (state.usuario || {}).rol !== "Presidente" && communityCan(item.id_comunidad, "puede_generar_informes");
       $("entityBrief").innerHTML = entityBriefHtml(item, type, detail.history || [], detail.attachments || [], detail.reports || [], reportsAllowed);
       $("generateReportButton").classList.toggle("hidden", !reportsAllowed);
@@ -9472,15 +9402,15 @@ function homePage() {
       $("editProjectDateWrap").classList.toggle("hidden", type !== "project");
       $("editProjectDate").value = (item.fecha_prevista_finalizacion || "").slice(0, 10);
       $("editDescription").value = item.descripcion || "";
-      $("editNextStep").value = type === "project" ? (item.observaciones || "") : (item.proximo_paso || "");
+      $("editNextStep").value = item.proximo_paso || "";
       fillOptions($("recordType"), options.tipos_registro || ["Seguimiento"], "Seguimiento");
       fillOptions($("recordState"), states || [], itemState(item, type));
       fillOptions($("recordPriority"), options.prioridades || [], item.prioridad);
       $("recordOwner").value = itemOwner(item, type) || "";
       $("recordNextOwner").value = item.responsable_proximo_paso || itemOwner(item, type) || "";
-      $("recordNextDate").value = (item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision || "").slice(0, 10);
+      $("recordNextDate").value = '';
       $("recordComment").value = "";
-      $("recordNextStep").value = item.proximo_paso || "";
+      $("recordNextStep").value = "";
       $("recordBlockReason").value = "";
       $("quickRecordText").value = "";
       $("quickRecordMessage").textContent = "";
@@ -9568,6 +9498,9 @@ function homePage() {
       if (!selectedEntity) return;
       const payload = {
         titulo: $("editTitle").value,
+        comentario: $('editReason').value,
+        motivo_reapertura: $('editReason').value,
+        ...(selectedEntity.type === 'project' ? {fase_aprobacion:$('editApproval').value} : {}),
         nombre: $("editTitle").value,
         descripcion: $("editDescription").value,
         categoria: $("editCategory").value,
@@ -9603,10 +9536,12 @@ function homePage() {
       if (!selectedEntity) return;
       const label = selectedEntity.type === "project" ? "proyecto" : "tarea";
       if (!confirm("Se archivara esta " + label + " y dejara de aparecer en los paneles activos.\\n\\n¿Continuar?")) return;
+      const comment = prompt('Motivo de archivo:');
+      if (!safe(comment)) return;
       try {
         await api("/api/entity/archive", {
           method: "POST",
-          body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id })
+          body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id, payload:{comentario:comment} })
         });
         closeModal();
         await loadOverview();
@@ -9637,9 +9572,11 @@ function homePage() {
     function updateCreateForm() {
       const type = $("createType").value;
       $("createTitle").textContent = type === "project" ? "Nuevo proyecto" : "Nueva tarea";
-      $("createSubtitle").textContent = type === "project" ? "Crea un proyecto operativo." : "Crea una tarea vinculada a un proyecto.";
+      $("createSubtitle").textContent = type === "project" ? "Trabajo extraordinario o propuesta." : "Gestion cotidiana o incidencia.";
       $("createProjectWrap").classList.add("hidden");
       fillOptions($("createState"), type === "project" ? options.estados_proyecto : options.estados_tarea, type === "project" ? "En curso" : "Pendiente");
+      $('createApprovalWrap').classList.toggle('hidden',type !== 'project');
+      fillOptions($('createApproval'), approvalPhases, 'Propuesta');
       fillOptions($("createPriority"), options.prioridades || [], "Media");
     }
 
@@ -9659,6 +9596,7 @@ function homePage() {
         categoria: $("createCategory").value,
         estado: $("createState").value,
         estado_nuevo: $("createState").value,
+        ...(type === 'project' ? {fase_aprobacion:$('createApproval').value} : {}),
         prioridad: $("createPriority").value,
         prioridad_nueva: $("createPriority").value,
         responsable: $("createOwner").value,
@@ -9670,10 +9608,6 @@ function homePage() {
       };
       if (!safe(payload.titulo)) {
         $("createMessage").innerHTML = '<span class="dangerText">El titulo es obligatorio.</span>';
-        return;
-      }
-      if (type === "task" && !safe(payload.id_proyecto)) {
-        $("createMessage").innerHTML = '<span class="dangerText">Selecciona el proyecto contenedor.</span>';
         return;
       }
       $("createMessage").textContent = "Creando...";
@@ -9694,6 +9628,7 @@ function homePage() {
 
     function updateBlockReasonVisibility() {
       const value = $("recordState").value;
+      $('recordReopenWrap').classList.toggle('hidden', !selectedEntity || !closedStates.includes(itemState(selectedEntity.item,selectedEntity.type)) || closedStates.includes(value));
       $("blockReasonWrap").classList.toggle("hidden", value !== "Bloqueada" && value !== "Bloqueado");
     }
 
@@ -9709,7 +9644,8 @@ function homePage() {
         fecha_proxima_revision: $("recordNextDate").value,
         comentario: $("recordComment").value,
         proximo_paso: $("recordNextStep").value,
-        motivo_bloqueo: $("recordBlockReason").value
+        motivo_bloqueo: $("recordBlockReason").value,
+        motivo_reapertura: $('recordReopenReason').value
       };
       if (!safe(payload.comentario)) {
         $("recordMessage").innerHTML = '<span class="dangerText">El comentario es obligatorio.</span>';
@@ -13017,7 +12953,7 @@ function homePage() {
         }
         const firstSessionLoad = !state.usuario;
         const presidentOnly = sessionInfo.usuario?.rol === "Presidente";
-        const [data, workflow, daily, securityAccess] = await Promise.all([api("/api/overview"), api("/api/workflow"), presidentOnly ? Promise.resolve({metrics:{},map:{items:[],counts:{}},documents:[],communities:sessionInfo.usuario.comunidades}) : api("/api/daily-operations"), api("/api/security/access")]);
+        const [data, workflow, daily, securityAccess] = await Promise.all([api("/api/overview?include_closed=" + ($('includeClosed').checked ? '1' : '0')), api("/api/workflow"), presidentOnly ? Promise.resolve({metrics:{},map:{items:[],counts:{}},documents:[],communities:sessionInfo.usuario.comunidades}) : api("/api/daily-operations"), api("/api/security/access")]);
         data.workflow = workflow;
         data.daily = daily;
         state = data;
@@ -13282,6 +13218,7 @@ function homePage() {
     $("loginPassword").addEventListener("keydown", event => { if (event.key === "Enter") login(); });
     $("firstAccessButton").addEventListener("click", configureFirstAccess);
     $("firstAccessConfirm").addEventListener("keydown", event => { if (event.key === "Enter") configureFirstAccess(); });
+    $('includeClosed').addEventListener('change',loadOverview);
     $("changeCommunityTop").addEventListener("click", () => openCommunityScope(state.usuario, false));
     $("confirmCommunityScope").addEventListener("click", confirmCommunityScope);
     $("closeCommunityScope").addEventListener("click", closeCommunityScope);
@@ -13545,7 +13482,7 @@ async function handle(req, res) {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
-    return sendJson(res, 200, await queryOverview(session));
+    return sendJson(res, 200, await queryOverview(session, url.searchParams.get('include_closed') === '1'));
   }
   if (req.method === "GET" && url.pathname === "/api/workflow") {
     const session = readSession(req);
@@ -13794,7 +13731,14 @@ async function handle(req, res) {
     if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
-    return sendJson(res, 200, await updateEntity(session, type, id, {}, String(pc), true));
+    return sendJson(res, 200, await updateEntity(session, type, id, body.payload || {}, String(pc), true));
+  }
+  if (req.method === 'POST' && url.pathname === '/api/entity/commitment/resolve') {
+    const session = readSession(req);
+    if (!session) return sendJson(res,401,{ok:false,error:'No autenticado.'});
+    const body = await readBody(req);
+    if (!['task','project'].includes(body.type) || !Number(body.id)) return sendJson(res,400,{ok:false,error:'Expediente no valido.'});
+    return sendJson(res,200,await resolveWorkCommitment(session,body.type,body.id,body.payload || {},String(req.socket.remoteAddress || 'web')));
   }
   if (req.method === "POST" && url.pathname === "/api/notifications/read") {
     const session = readSession(req);

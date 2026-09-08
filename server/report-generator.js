@@ -166,7 +166,15 @@ function conclusionFor(state) {
   return "El expediente continua activo. La situacion vigente y el siguiente paso quedan recogidos en este informe para facilitar su seguimiento.";
 }
 
-export async function buildEntityReport({ type, item, history = [], attachments = [] }) {
+function commitmentBlocks(rows) {
+  const pending = rows.filter(row => row.estado === 'Pendiente');
+  return pending.length ? pending.flatMap(row => [
+    textParagraph(row.descripcion),
+    textParagraph(`${row.responsable || 'Sin responsable'} | ${row.fecha_objetivo || 'Sin fecha acordada'}`, 'Responsable y plazo: ')
+  ]) : [textParagraph('No hay compromisos pendientes registrados.')];
+}
+
+export async function buildEntityReport({ type, item, history = [], attachments = [], commitments = [] }) {
   const isTask = type === "task";
   const entityLabel = isTask ? "tarea" : "proyecto";
   const title = clean(isTask ? item.titulo : item.nombre);
@@ -174,7 +182,7 @@ export async function buildEntityReport({ type, item, history = [], attachments 
   const owner = clean(isTask ? item.responsable : item.responsable_principal);
   const nextOwner = clean(item.responsable_proximo_paso);
   const nextDate = clean(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision);
-  const nextStep = clean(isTask ? item.proximo_paso : item.observaciones);
+  const nextStep = clean(item.proximo_paso ?? item.proximo_paso_actual ?? item.observaciones);
   const firstDate = history.length ? clean(history[0].fecha_hora) : "sin seguimientos";
   const lastDate = history.length ? clean(history.at(-1).fecha_hora) : clean(item.fecha_ultima_actualizacion);
   const generatedAt = new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date());
@@ -188,12 +196,12 @@ export async function buildEntityReport({ type, item, history = [], attachments 
     sectionHeading("Situacion actual"),
     infoTable([
       ["Estado", state],
+      ...(!isTask ? [["Fase de aprobacion",item.fase_aprobacion || 'Sin clasificar (historico)']] : []),
       ["Prioridad", item.prioridad],
       ["Responsable actual", owner],
       ["Responsable del proximo paso", nextOwner],
       ["Fecha objetivo", nextDate],
       ["Categoria", item.categoria],
-      ...(isTask ? [["Proyecto de referencia", item.proyecto]] : [])
     ]),
     ...(clean(item.descripcion) ? [sectionHeading("Contexto"), textParagraph(item.descripcion)] : []),
     sectionHeading("Actuaciones cronologicas"),
@@ -204,6 +212,8 @@ export async function buildEntityReport({ type, item, history = [], attachments 
       ["Responsable", nextOwner || owner || "Sin asignar"],
       ["Fecha objetivo", nextDate || "Sin fecha"]
     ]),
+    sectionHeading("Compromisos pendientes"),
+    ...commitmentBlocks(commitments),
     sectionHeading("Conclusion"),
     textParagraph(conclusionFor(state)),
     sectionHeading("Anexos"),
@@ -259,7 +269,7 @@ export async function buildCollectionReport({ title = "Informe conjunto", entrie
     const owner = clean(isTask ? item.responsable : item.responsable_principal);
     const nextOwner = clean(item.responsable_proximo_paso);
     const nextDate = clean(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision);
-    const nextStep = clean(isTask ? item.proximo_paso : item.observaciones);
+    const nextStep = clean(item.proximo_paso ?? item.proximo_paso_actual ?? item.observaciones);
     children.push(new Paragraph({
       pageBreakBefore: index > 0,
       children: [new TextRun({ text: `${index + 1}. ${isTask ? "TAREA" : "PROYECTO"}: ${entityTitle}`, bold: true, color: COLORS.blue, size: 28 })],
@@ -269,6 +279,7 @@ export async function buildCollectionReport({ title = "Informe conjunto", entrie
     children.push(infoTable([
       ["Comunidad", item.comunidad],
       ["Estado", state],
+      ...(!isTask ? [["Fase de aprobacion",item.fase_aprobacion || 'Sin clasificar (historico)']] : []),
       ["Prioridad", item.prioridad],
       ["Responsable actual", owner],
       ["Responsable del pr\u00f3ximo paso", nextOwner],
@@ -283,6 +294,7 @@ export async function buildCollectionReport({ title = "Informe conjunto", entrie
       ["Fecha objetivo", nextDate || "Sin fecha"]
     ]));
     children.push(textParagraph(conclusionFor(state), "Conclusi\u00f3n: ", { after: 120 }));
+    children.push(sectionHeading('Compromisos pendientes',2), ...commitmentBlocks(entry.commitments || []));
     children.push(sectionHeading("Anexos", 2), ...attachmentBlocks(entry.attachments || []));
   });
 
