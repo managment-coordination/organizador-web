@@ -61,7 +61,7 @@ try {
         await page.locator(view==='tasks'?'#newTaskButton':'#newProjectButton').click();
         await page.locator('#createName').fill(`UI ${view} ${viewport.width}`);
         await page.locator('#createDescription').fill('Reviewed operational description');
-        const community=await page.locator('#createCommunity option').evaluateAll(rows=>rows.find(r=>r.value)?.value);
+        const community=await page.locator('#createCommunity option').evaluateAll(rows=>rows.find(r=>r.textContent==='Verification A')?.value);
         await page.locator('#createCommunity').selectOption(community);
         await page.locator('#createNextStep').fill('Supplier to inspect installation');
         await page.locator('#createNextOwner').fill('External supplier');
@@ -81,6 +81,59 @@ try {
         await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#commitmentList [data-resolution="Resuelta"]').click()]);
         await page.waitForTimeout(300);
         assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),0);
+        await page.locator('#newPresidentRequest').click();
+        await page.locator('#requestQuestion').fill('Approve the inspection estimate');
+        await page.locator('#requestContext').fill('Please review the proposal and confirm whether we should proceed.');
+        await page.locator('#requestDue').fill('2026-10-15');
+        page.once('dialog',dialog=>dialog.accept());
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#sendPresidentRequest').click()]);
+        await page.locator('#requestList [data-request-open]').waitFor();
+        await page.locator('#requestList [data-request-open]').click();
+        await page.locator('#presidentDecisionModal').waitFor({state:'visible'});
+        assert.ok((await page.locator('#presidentDecisionContext').innerText()).includes('Verification President A'));
+        assert.equal(await page.locator('#presidentApprove').isVisible(),false);
+        await page.screenshot({path:path.join(output,`${viewport.width}-${view}-request.png`)});
+        if(view==='projects'){
+          const rid=await page.locator('#requestList [data-request-open]').getAttribute('data-request-open');
+          await page.locator('#closePresidentDecision').click();
+          const pc=await browser.newContext({viewport});
+          const pp=await pc.newPage();
+          await pp.goto(base);
+          await pp.locator('#loginUser option').first().waitFor({state:'attached'});
+          await pp.locator('#loginUser').selectOption({label:'Verification President A'});
+          await pp.locator('#loginPassword').fill('Only-local-fixture-629');
+          await pp.locator('#loginButton').click();
+          await pp.locator('#appView').waitFor({state:'visible'});
+          await pp.locator(`[data-work-action="president"][data-request-id="${rid}"]`).first().click();
+          await pp.locator('#presidentDecisionComment').fill('Please confirm whether VAT is included.');
+          await pp.screenshot({path:path.join(output,`${viewport.width}-president-respond.png`)});
+          pp.once('dialog',dialog=>dialog.accept());
+          await Promise.all([pp.waitForResponse(r=>r.url().includes('/api/president/respond') && r.status()===200),pp.locator('#presidentClarify').click()]);
+          await page.locator('#requestList [data-request-open]').click();
+          await page.locator('#requestReply').waitFor({state:'visible'});
+          await page.locator('#presidentDecisionComment').fill('VAT is included in the estimate.');
+          page.once('dialog',dialog=>dialog.accept());
+          await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#requestReply').click()]);
+          await pp.reload();
+          await pp.locator(`[data-work-action="president"][data-request-id="${rid}"]`).first().click();
+          await pp.locator('#presidentDecisionComment').fill('Approved on this basis.');
+          pp.once('dialog',dialog=>dialog.accept());
+          await Promise.all([pp.waitForResponse(r=>r.url().includes('/api/president/respond') && r.status()===200),pp.locator('#presidentApprove').click()]);
+          await page.locator('#requestList [data-request-open]').click();
+          await page.locator('#requestManage').waitFor({state:'visible'});
+          assert.ok((await page.locator('#presidentDecisionContext').innerText()).includes('VAT is included'));
+          await page.locator('#presidentDecisionComment').fill('Approval communicated to the supplier.');
+          await page.screenshot({path:path.join(output,`${viewport.width}-request-manage.png`)});
+          page.once('dialog',dialog=>dialog.accept());
+          await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#requestManage').click()]);
+          await pc.close();
+        } else {
+          await page.locator('#presidentDecisionComment').fill('Withdrawn after review.');
+          page.once('dialog',dialog=>dialog.accept());
+          await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#requestCancel').click()]);
+        }
+        await page.waitForTimeout(300);
+        assert.ok((await page.locator('#requestList').innerText()).includes(view==='projects'?'Gestionada':'Cancelada'));
         await page.locator('#closeModal').click();
       }
     }

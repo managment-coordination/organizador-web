@@ -1288,9 +1288,18 @@ tareas = [] if hide_tasks else rows("""
 estados_tareas = [] if hide_tasks else rows("SELECT COALESCE(estado, 'Sin estado') AS estado, COUNT(*) AS total FROM tareas t WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0" + task_filter + " GROUP BY COALESCE(estado, 'Sin estado') ORDER BY total DESC", task_params)
 estados_proyectos = rows("SELECT COALESCE(estado_general, 'Sin estado') AS estado, COUNT(*) AS total FROM proyectos p WHERE COALESCE(p.activo, 1) = 1" + project_filter + " GROUP BY COALESCE(estado_general, 'Sin estado') ORDER BY total DESC", project_params)
 
+from presidency_domain import request_row,next_action
+for kind,items,field in [('tarea',tareas,'id_tarea'),('proyecto',proyectos,'id_proyecto')]:
+    for item in items:
+        item['solicitudes_activas']=[]
+        for row in conn.execute(f"SELECT id_solicitud FROM solicitudes_presidente WHERE {field}=? AND tipo_origen=? AND estado<>'Cancelada' AND gestion_estado<>'Gestionada'",(item[field],kind)).fetchall():
+            req=request_row(conn,row[0])
+            if role=='Presidente' and req['id_usuario_presidente']!=${JSON.stringify(session?.id_usuario || null)}:continue
+            owner,action=next_action(req)
+            item['solicitudes_activas'].append({'id':row[0],'responsable':owner,'accion':action,'titulo':req['titulo']})
 conn.close()
 print(json.dumps({
-    "usuario": {"nombre": user_name, "rol": role, "comunidades": ${JSON.stringify(session?.comunidades || [])},
+    "usuario": {"id_usuario": ${JSON.stringify(session?.id_usuario || null)}, "nombre": user_name, "rol": role, "comunidades": ${JSON.stringify(session?.comunidades || [])},
                 "comunidades_asignadas": ${JSON.stringify(session?.comunidades_asignadas || session?.comunidades || [])},
                 "alcance_comunidades": ${JSON.stringify(session?.alcance_comunidades || "todas")}},
     "counts": counts,
@@ -1362,6 +1371,14 @@ notifications = rows("""
     LEFT JOIN comunidades c ON c.id_comunidad=n.id_comunidad
     WHERE 1=1
 """ + notification_user_sql + notification_filter + " ORDER BY n.leida, n.fecha_creacion DESC, n.id_notificacion DESC LIMIT 100", tuple(notification_user_params + notification_community_params))
+from presidency_domain import request_row,next_action
+for notification in notifications:
+    if notification.get('id_solicitud'):
+        try:
+            req=request_row(conn,notification['id_solicitud'])
+            if int(req['id_comunidad'] or 0) not in allowed_ids:continue
+            notification['siguiente_responsable'],notification['siguiente_accion']=next_action(req)
+        except PermissionError:pass
 
 president_filter, president_params = community_filter("s")
 president_requests = []
@@ -1834,100 +1851,23 @@ print(json.dumps({"ok": True, "review_id": review_id}, ensure_ascii=False))
   return runPythonJson(script);
 }
 
-function respondPresidentRequest(session, requestId, decision, comment, pc) {
+function presidencyOperation(session, action, data, pc = "web") {
   const script = pythonScript`
-import json
-import sqlite3
-from datetime import datetime
-path = ${JSON.stringify(databasePath)}
-session = ${JSON.stringify(session || {})}
-request_id = int(${JSON.stringify(requestId)})
-decision = ${JSON.stringify(decision)}
-comment = ${JSON.stringify(comment)}.strip()
-pc = ${JSON.stringify(pc || "web")}
-user = str(session.get("nombre") or "")
-role = str(session.get("rol") or "")
-allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
-if role != "Presidente": raise PermissionError("Solo el perfil Presidente puede responder estas solicitudes.")
-if decision not in {"Aprobada", "Rechazada", "Solicita aclaracion"}: raise ValueError("Respuesta no valida.")
-if not comment: raise ValueError("El comentario es obligatorio.")
-now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-conn = sqlite3.connect(path)
-conn.row_factory = sqlite3.Row
+import json,sqlite3
+from presidency_domain import create,transition,view
+session = ${JSON.stringify({...session,pc})}
+action = ${JSON.stringify(action)}
+data = ${JSON.stringify(data)}
+conn=sqlite3.connect(${JSON.stringify(databasePath)})
+conn.row_factory=sqlite3.Row
 try:
-    conn.execute("BEGIN IMMEDIATE")
-    with conn:
-        req = conn.execute("SELECT * FROM solicitudes_presidente WHERE id_solicitud=?", (request_id,)).fetchone()
-        if not req or req["estado"] != "Pendiente": raise ValueError("La solicitud ya no esta pendiente.")
-        if req["id_usuario_presidente"] != session.get("id_usuario"): raise PermissionError("Esta solicitud no esta dirigida a ti.")
-        if not allowed_ids or int(req["id_comunidad"] or 0) not in allowed_ids: raise PermissionError("No tienes permiso para esta comunidad.")
-        return_owner = str(req["responsable_retorno"] or req["solicitante"] or "").strip()
-        requested_step = str(req["proximo_paso_solicitado"] or "").strip()
-        if decision == "Aprobada": next_step = requested_step or "Continuar con la actuacion aprobada por el presidente."
-        elif decision == "Rechazada": next_step = "Revisar una alternativa tras el rechazo del presidente."
-        else: next_step = "Preparar y remitir la aclaracion solicitada por el presidente."
-        conn.execute("""
-            UPDATE solicitudes_presidente
-            SET estado=?, fecha_respuesta=?, usuario_respuesta=?, comentario_respuesta=?
-            WHERE id_solicitud=?
-        """, (decision, now, user, comment, request_id))
-        record_id = None
-        if req["id_tarea"]:
-            item = conn.execute("SELECT * FROM tareas WHERE id_tarea=?", (req["id_tarea"],)).fetchone()
-            cur = conn.execute("""
-                INSERT INTO registros
-                (id_tarea,id_proyecto,fecha_hora,tipo_registro,comentario,estado_anterior,estado_nuevo,
-                 prioridad_anterior,prioridad_nueva,responsable_anterior,responsable_nuevo,proximo_paso,
-                 fecha_proxima_revision,motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (item["id_tarea"],item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",
-                  item["estado"],item["estado"],item["prioridad"],item["prioridad"],item["responsable"],item["responsable"],
-                  next_step,item["fecha_proxima_revision"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
-            record_id = int(cur.lastrowid)
-            if item['responsable_proximo_paso'] in {user,'Presidente','Presidencia'}:
-                conn.execute("UPDATE tareas SET responsable_proximo_paso=?, proximo_paso=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_tarea=?",
-                             (return_owner,next_step,now,user,pc,item["id_tarea"]))
-            entity_type, entity_id, title = "tarea", int(item["id_tarea"]), str(item["titulo"])
-        else:
-            item = conn.execute("SELECT * FROM proyectos WHERE id_proyecto=?", (req["id_proyecto"],)).fetchone()
-            cur = conn.execute("""
-                INSERT INTO registros_proyectos
-                (id_proyecto,fecha_hora,tipo_registro,comentario,estado_anterior,estado_nuevo,prioridad_anterior,
-                 prioridad_nueva,responsable_anterior,responsable_nuevo,proximo_paso,fecha_proxima_revision,
-                 motivo_bloqueo,usuario,pc,id_comunidad,responsable_proximo_paso,fecha_objetivo_proximo_paso)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (item["id_proyecto"],now,"Decision de presidencia",f"{decision}: {comment}",item["estado_general"],
-                  item["estado_general"],item["prioridad"],item["prioridad"],item["responsable_principal"],item["responsable_principal"],
-                  next_step,item["fecha_objetivo_proximo_paso"],"",user,pc,item["id_comunidad"],return_owner,item["fecha_objetivo_proximo_paso"]))
-            record_id = int(cur.lastrowid)
-            if item['responsable_proximo_paso'] in {user,'Presidente','Presidencia'}:
-                conn.execute("UPDATE proyectos SET responsable_proximo_paso=?, proximo_paso_actual=?, fecha_ultima_actualizacion=?, usuario_ultima_actualizacion=?, pc_ultima_actualizacion=? WHERE id_proyecto=?",
-                             (return_owner,next_step,now,user,pc,item["id_proyecto"]))
-            entity_type, entity_id, title = "proyecto", int(item["id_proyecto"]), str(item["nombre"])
-        requester = str(req["solicitante"] or return_owner).strip()
-        conn.execute("""
-            INSERT INTO notificaciones
-            (id_comunidad,usuario_destino,tipo,titulo,mensaje,id_solicitud,id_tarea,id_proyecto,leida,fecha_creacion)
-            VALUES (?,?,?,?,?,?,?,?,0,?)
-        """, (req["id_comunidad"],requester,"Respuesta presidente",f"{decision}: {title}",comment,request_id,
-              req["id_tarea"],req["id_proyecto"],now))
-        if requester:
-            existing = conn.execute("SELECT id_accion FROM acciones_pendientes WHERE tipo_entidad=? AND id_registro_origen=? AND tipo_accion='Gestionar respuesta de presidencia'",
-                                    (entity_type, record_id)).fetchone()
-            if not existing:
-                conn.execute("""
-                    INSERT INTO acciones_pendientes
-                    (id_comunidad,tipo_entidad,id_tarea,id_proyecto,id_registro_origen,tipo_accion,usuario_destino,
-                     solicitante,titulo,detalle,estado,fecha_creacion,pc_creacion)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?)
-                """, (req["id_comunidad"],entity_type,req["id_tarea"],req["id_proyecto"],record_id,
-                      "Gestionar respuesta de presidencia",requester,user,title,next_step,now,pc))
-        conn.execute("UPDATE notificaciones SET leida=1, fecha_lectura=? WHERE id_solicitud=? AND id_usuario_destino=? AND leida=0", (now,request_id,session.get('id_usuario')))
-        conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",
-                     (now,user,pc,"Responder solicitud presidente web","solicitud_presidente",request_id,f"{decision}: {comment}"))
-    print(json.dumps({"ok": True, "decision": decision, "type": "task" if req["id_tarea"] else "project", "id": entity_id}, ensure_ascii=False))
-finally:
-    conn.close()
+    if action=='view': result=view(conn,session,int(data.get('id') or 0))
+    else:
+        conn.execute('BEGIN IMMEDIATE')
+        with conn:
+            result=create(conn,session,data.get('type'),int(data.get('id') or 0),data) if action=='create' else transition(conn,session,int(data.get('id') or 0),action,data)
+    print(json.dumps({'ok':True,'request':result},ensure_ascii=False))
+finally: conn.close()
 `;
   return runPythonJson(script);
 }
@@ -6772,6 +6712,7 @@ import json
 import sqlite3
 from access_control import require_president_entity
 from work_domain import commitments
+from presidency_domain import entity_requests,recipients
 
 path = ${JSON.stringify(databasePath)}
 role = ${JSON.stringify(session?.rol || "")}
@@ -6860,10 +6801,12 @@ if role != "Presidente":
         if len(reports) >= 12:
             break
 pending = commitments(conn, entity_type, entity_id)
+requests = entity_requests(conn,session,entity_type,entity_id)
+mention_users=recipients(conn,item['id_comunidad']) if role in {'Superusuario','Administrador','Usuario'} else []
 item = dict(item)
 if entity_type == 'project': item['proximo_paso'] = item.get('proximo_paso_actual') if item.get('proximo_paso_actual') is not None else item.get('observaciones')
 conn.close()
-print(json.dumps({"item": item, "history": history, "attachments": attachments, "reports": reports, "commitments": pending}, ensure_ascii=False))
+print(json.dumps({"item": item, "history": history, "attachments": attachments, "reports": reports, "commitments": pending, "requests":requests, "mention_users":mention_users}, ensure_ascii=False))
 `;
   const result = await runPythonJson(script);
   const community = (session.comunidades || []).find(row => Number(row.id_comunidad) === Number(result.item?.id_comunidad));
@@ -6906,8 +6849,8 @@ function writeEntityRecord(session, type, id, payload, pc) {
 import json
 import sqlite3
 from work_domain import validate_change, synchronize, add_commitment
+from presidency_domain import notify_mentions
 from datetime import datetime, date
-from access_control import president_for
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -6949,79 +6892,13 @@ def audit(conn, action, entity="", entity_id_value=None, detail=""):
         (now_iso(), user, pc, action, entity, entity_id_value, str(detail or "")[:1000]),
     )
 
-def active_users(conn):
-    return [r["nombre"] for r in conn.execute("SELECT nombre FROM usuarios WHERE COALESCE(activo, 1) = 1 ORDER BY nombre")]
-
-def responsible_aliases(name):
-    return {
-        "Luis Gallardo": ["Luis Gallardo", "Luis"],
-        "Elena Cuenca": ["Elena Cuenca"],
-        "Presidente": ["Presidente"],
-    }.get(name, [name])
-
-def user_for_responsible(conn, value):
-    target = str(value or "").strip().lower()
-    if not target:
-        return ""
-    for candidate in active_users(conn):
-        if target in {alias.lower() for alias in responsible_aliases(candidate)}:
-            return candidate
-    return ""
 
 def is_president_responsible(value):
     name = str(value or "").strip()
     return name.lower() in {"presidente", "presidencia"} or bool(conn.execute("SELECT 1 FROM usuarios WHERE nombre=? AND rol='Presidente' AND activo=1", (name,)).fetchone())
 
-def create_notification(conn, usuario_destino, tipo, titulo, mensaje, id_comunidad, id_tarea=None, id_proyecto=None, id_solicitud=None):
-    conn.execute(
-        """
-        INSERT INTO notificaciones
-        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, leida, fecha_creacion,id_usuario_destino)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, (SELECT id_usuario FROM usuarios WHERE nombre=?))
-        """,
-        (id_comunidad, usuario_destino, tipo, titulo, mensaje, id_solicitud, id_tarea, id_proyecto, now_iso(),usuario_destino),
-    )
 
 
-def create_president_request(conn, entity_kind, item, record_id, comentario, proximo_paso):
-    president = president_for(conn, item['id_comunidad'])
-    if entity_kind == "tarea":
-        cur = conn.execute(
-            """
-            INSERT INTO solicitudes_presidente
-            (id_comunidad, tipo_origen, id_tarea, id_proyecto, id_registro_tarea,
-             titulo, detalle, solicitante, ultimo_comentario, proximo_paso_solicitado,
-             responsable_original, responsable_retorno, estado, fecha_creacion, usuario_creacion, pc_creacion)
-            VALUES (?, 'tarea', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?, ?)
-            """,
-            (
-                item["id_comunidad"], item["id_tarea"], item["id_proyecto"], record_id,
-                f"Aprobacion solicitada: {item['titulo']}", comentario, user, comentario, proximo_paso,
-                item["responsable_proximo_paso"] or item["responsable"] or user, user, now_iso(), user, pc,
-            ),
-        )
-        request_id = int(cur.lastrowid)
-        create_notification(conn, president['nombre'], "Solicitud presidente", f"Aprobacion pendiente: {item['titulo']}", comentario, item["id_comunidad"], item["id_tarea"], item["id_proyecto"], request_id)
-    else:
-        cur = conn.execute(
-            """
-            INSERT INTO solicitudes_presidente
-            (id_comunidad, tipo_origen, id_proyecto, id_registro_proyecto,
-             titulo, detalle, solicitante, ultimo_comentario, proximo_paso_solicitado,
-             responsable_original, responsable_retorno, estado, fecha_creacion, usuario_creacion, pc_creacion)
-            VALUES (?, 'proyecto', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?, ?, ?)
-            """,
-            (
-                item["id_comunidad"], item["id_proyecto"], record_id,
-                f"Aprobacion solicitada: {item['nombre']}", comentario, user, comentario, proximo_paso,
-                item["responsable_proximo_paso"] or item["responsable_principal"] or user, user, now_iso(), user, pc,
-            ),
-        )
-        request_id = int(cur.lastrowid)
-        create_notification(conn, president['nombre'], "Solicitud presidente", f"Aprobacion pendiente: {item['nombre']}", comentario, item["id_comunidad"], None, item["id_proyecto"], request_id)
-    conn.execute("UPDATE solicitudes_presidente SET id_usuario_presidente=? WHERE id_solicitud=?", (president['id_usuario'],request_id))
-    audit(conn, "Crear solicitud para presidente", "solicitud_presidente", request_id, comentario)
-    return request_id
 
 check_can_write()
 comentario = str(data.get("comentario") or "").strip()
@@ -7086,13 +6963,9 @@ try:
             )
             if not proximo_paso:
                 conn.execute('UPDATE tareas SET proximo_paso=? WHERE id_tarea=?',(task['proximo_paso'], entity_id))
-            target_user = user_for_responsible(conn, next_owner)
-            if is_president_responsible(next_owner):
-                create_president_request(conn, "tarea", task, record_id, comentario, proximo_paso)
-            elif proximo_paso:
+            if proximo_paso and not is_president_responsible(next_owner):
                 add_commitment(conn, {'nombre':user,'pc':pc}, 'task',dict(task),proximo_paso,next_owner,str(data.get('fecha_objetivo_proximo_paso') or ''),record_id)
-                if target_user and target_user != user:
-                    create_notification(conn,target_user,'Accion pendiente',task['titulo'],proximo_paso,task['id_comunidad'],entity_id,None)
+            notify_mentions(conn,session,dict(task),data)
             synchronize(conn, {'nombre':user,'pc':pc}, 'task',dict(task),data)
             audit(conn, "Seguimiento de tarea web", "tarea", entity_id, f"{task['estado']} -> {estado_nuevo}")
         else:
@@ -7138,13 +7011,9 @@ try:
                 """,
                 (estado_nuevo, prioridad_nueva, responsable_nuevo, next_owner, next_date, activo, final_date, ts, user, pc, entity_id),
             )
-            target_user = user_for_responsible(conn, next_owner)
-            if is_president_responsible(next_owner):
-                create_president_request(conn, "proyecto", project, record_id, comentario, proximo_paso)
-            elif proximo_paso:
+            if proximo_paso and not is_president_responsible(next_owner):
                 add_commitment(conn, {'nombre':user,'pc':pc}, 'project',dict(project),proximo_paso,next_owner,str(data.get('fecha_objetivo_proximo_paso') or ''),record_id)
-                if target_user and target_user != user:
-                    create_notification(conn,target_user,'Accion pendiente',project['nombre'],proximo_paso,project['id_comunidad'],None,entity_id)
+            notify_mentions(conn,session,dict(project),data)
             synchronize(conn, {'nombre':user,'pc':pc}, 'project',dict(project),data)
             audit(conn, "Seguimiento de proyecto web", "proyecto", entity_id, f"{project['estado_general']} -> {estado_nuevo}")
     print(json.dumps({"ok": True, "record_id": record_id}, ensure_ascii=False))
@@ -8578,6 +8447,17 @@ function homePage() {
         <div class="modalBody">
           <section class="entityBrief" id="entityBrief"></section>
           <section id="commitmentSection"><h2>Compromisos y decisiones</h2><div id="commitmentList"></div></section>
+          <section id="requestSection"><div class="toolbar"><h2>Solicitudes al presidente</h2><button id="newPresidentRequest">Solicitar decision al presidente</button></div>
+            <div id="requestList"></div>
+            <div id="requestForm" class="hidden">
+              <label>Que debe decidir</label><textarea id="requestQuestion"></textarea>
+              <label>Contexto</label><textarea id="requestContext"></textarea>
+              <label>Fecha limite (opcional)</label><input id="requestDue" type="date" />
+              <label>Documentos del expediente</label><div id="requestDocuments"></div>
+              <div class="toolbar"><button class="green" id="sendPresidentRequest">Enviar solicitud</button><button class="ghost" id="cancelPresidentRequest">Cancelar</button></div>
+              <div id="requestMessage" class="muted"></div>
+            </div>
+          </section>
           <section>
             <h2>Resumen</h2>
             <div class="detailGrid" id="detailGrid"></div>
@@ -8647,6 +8527,7 @@ function homePage() {
             </div>
             <label>Comentario</label>
             <textarea id="recordComment" placeholder="Resumen claro de la actualizacion realizada..."></textarea>
+            <details><summary>Mencionar a un usuario</summary><div id="recordMentions"></div></details>
             <div id="recordReopenWrap" class="hidden"><label>Motivo de reapertura</label><input id="recordReopenReason" /></div>
             <label>Proximo paso (opcional)</label>
             <textarea id="recordNextStep" placeholder="Que debe pasar ahora y quien debe hacerlo..."></textarea>
@@ -8771,6 +8652,9 @@ function homePage() {
             <button class="green" id="presidentApprove">Aprobar</button>
             <button class="red" id="presidentReject">Rechazar</button>
             <button class="secondary" id="presidentClarify">Solicitar aclaracion</button>
+            <button class="green hidden" id="requestReply">Enviar aclaracion al presidente</button>
+            <button class="green hidden" id="requestManage">Registrar gestion realizada</button>
+            <button class="red hidden" id="requestCancel">Cancelar solicitud</button>
           </div>
           <div class="muted" id="presidentDecisionMessage"></div>
         </div>
@@ -8907,6 +8791,7 @@ function homePage() {
           '<span class="pill">' + html(row.comunidad || "Sin comunidad") + '</span>' +
         '</div>' +
         project +
+        (row.solicitudes_activas || []).map(r=>'<div class="nextStep"><strong>Debe actuar: ' + html(r.responsable) + '</strong><div>' + html(r.accion) + ': ' + html(r.titulo) + '</div><button class="ghost" data-work-action="president" data-request-id="' + r.id + '">Ver solicitud</button></div>').join('') +
         '<div class="line"><strong>Responsable:</strong> ' + html(owner || "Sin responsable") + '</div>' +
         updated +
         '<div class="nextStep">' +
@@ -9354,7 +9239,7 @@ function homePage() {
       $("recordMessage").textContent = "";
       if (state.usuario?.rol !== "Presidente") await loadOptions();
       const detail = await api("/api/entity/detail?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id));
-      selectedEntity = { type, id, item: detail.item, commitments: detail.commitments || [] };
+      selectedEntity = { type, id, item: detail.item, commitments: detail.commitments || [], requests:detail.requests || [], attachments:detail.attachments || [] };
       const item = detail.item;
       $("modalTitle").textContent = itemTitle(item, type);
       $("modalSubtitle").textContent = (type === "project" ? "Proyecto" : "Tarea") + " - " + safe(item.comunidad);
@@ -9371,7 +9256,12 @@ function homePage() {
         detailValue(type === "task" ? "Proyecto" : "Inicio", type === "task" ? item.proyecto : item.fecha_inicio);
       const states = type === "project" ? options.estados_proyecto : options.estados_tarea;
       const writable = canWrite() && communityCan(item.id_comunidad, "puede_actualizar");
-      $('commitmentList').innerHTML = commitmentListHtml(detail.commitments || [], writable);
+      $('commitmentList').innerHTML = commitmentListHtml((detail.commitments || []).filter(row=>row.kind!=='decision'), writable);
+      $('requestList').innerHTML = (detail.requests || []).map(requestSummaryHtml).join('') || '<p class="muted">Sin solicitudes.</p>';
+      $('requestList').querySelectorAll('[data-request-open]').forEach(button=>button.addEventListener('click',()=>openPresidentDecision(button.dataset.requestOpen).catch(error=>alert(error.message))));
+      $('newPresidentRequest').classList.toggle('hidden',!writable || closedStates.includes(itemState(item,type)));
+      $('requestForm').classList.add('hidden');
+      $('recordMentions').innerHTML=(detail.mention_users || []).map(u=>'<label style="display:block"><input type="checkbox" value="' + u.id_usuario + '" /> ' + html(u.nombre) + '</label>').join('');
       $('commitmentList').querySelectorAll('[data-commitment-id]').forEach(button => button.addEventListener('click', () => resolveSelectedCommitment(button)));
       $('editApprovalWrap').classList.toggle('hidden',type !== 'project');
       fillOptions($('editApproval'), [''].concat(approvalPhases), item.fase_aprobacion || '');
@@ -9643,6 +9533,7 @@ function homePage() {
         fecha_objetivo_proximo_paso: $("recordNextDate").value,
         fecha_proxima_revision: $("recordNextDate").value,
         comentario: $("recordComment").value,
+        menciones: [...$('recordMentions').querySelectorAll('input:checked')].map(el=>Number(el.value)),
         proximo_paso: $("recordNextStep").value,
         motivo_bloqueo: $("recordBlockReason").value,
         motivo_reapertura: $('recordReopenReason').value
@@ -10833,7 +10724,7 @@ function homePage() {
         '<div class="line"><strong>Desde:</strong> ' + html(row.fecha_creacion || "") + '</div>' +
         (row.fecha_objetivo ? '<div class="line"><strong>Fecha objetivo:</strong> ' + html(row.fecha_objetivo) + '</div>' : '') +
         '<div class="nextStep"><div class="line"><strong>Accion solicitada:</strong> ' + html(row.detalle || "Sin detalle") + '</div></div>' +
-        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button><button class="green" data-work-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Resolver / actualizar</button><button data-work-action="attach" data-title="' + html(row.elemento || row.titulo) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Adjuntar</button></div>' +
+        '<div class="cardActions"><button class="ghost" data-work-action="open" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir ficha</button>' + (row.id_solicitud_presidente ? '<button class="green" data-work-action="president" data-request-id="' + row.id_solicitud_presidente + '">Gestionar solicitud</button>' : '<button class="green" data-work-action="record" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Resolver / actualizar</button>') + '<button data-work-action="attach" data-title="' + html(row.elemento || row.titulo) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Adjuntar</button></div>' +
       '</article>';
     }
 
@@ -10901,7 +10792,8 @@ function homePage() {
         '<h3>' + html(row.titulo) + '</h3>' +
         '<div class="meta"><span class="pill">' + html(row.tipo || "Notificacion") + '</span><span class="pill">' + html(row.usuario_destino || "") + '</span><span class="pill">' + html(row.comunidad || "") + '</span></div>' +
         '<div class="line">' + html(row.mensaje || "") + '</div><div class="line muted">' + html(row.fecha_creacion || "") + '</div>' +
-        '<div class="cardActions">' + (hasEntity ? '<button class="ghost" data-work-action="notification-open" data-notification-id="' + html(row.id_notificacion) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir elemento</button>' : '') + (!row.leida ? '<button data-work-action="notification-read" data-notification-id="' + html(row.id_notificacion) + '">Marcar leida</button>' : '') + '</div>' +
+        (row.siguiente_accion ? '<p><strong>Debe actuar: ' + html(row.siguiente_responsable || 'Nadie') + '</strong><br>' + html(row.siguiente_accion) + '</p>' : '') +
+        '<div class="cardActions">' + (row.id_solicitud ? '<button class="green" data-work-action="president" data-request-id="' + row.id_solicitud + '">Ver solicitud</button>' : '') + (hasEntity ? '<button class="ghost" data-work-action="notification-open" data-notification-id="' + html(row.id_notificacion) + '" data-type="' + html(row.entity_type) + '" data-id="' + html(row.entity_id) + '">Abrir elemento</button>' : '') + (!row.leida ? '<button data-work-action="notification-read" data-notification-id="' + html(row.id_notificacion) + '">Marcar leida</button>' : '') + '</div>' +
       '</article>';
     }
 
@@ -10951,12 +10843,44 @@ function homePage() {
       }
     }
 
-    function openPresidentDecision(requestId) {
-      selectedPresidentRequest = (state.workflow.president_requests || []).find(row => String(row.id_solicitud) === String(requestId));
-      if (!selectedPresidentRequest) return;
+    function requestSummaryHtml(row) {
+      return '<div class="historyItem"><strong>' + html(row.titulo) + '</strong><div class="meta"><span class="pill">' + html(row.estado) + '</span></div><p><strong>Debe actuar: ' + html(row.siguiente_responsable || 'Nadie; solicitud cerrada') + '</strong><br>' + html(row.siguiente_accion) + (row.fecha_objetivo ? '<br>Plazo: ' + html(row.fecha_objetivo) : '') + '</p><button class="ghost" data-request-open="' + row.id_solicitud + '">Ver solicitud y conversacion</button></div>';
+    }
+
+    function openRequestForm() {
+      if (!selectedEntity) return;
+      $('requestQuestion').value=''; $('requestContext').value=''; $('requestDue').value=''; $('requestMessage').textContent='';
+      $('requestDocuments').innerHTML=selectedEntity.attachments.map(a=>'<label style="display:block"><input type="checkbox" value="' + a.id_anexo + '" /> ' + html(a.nombre_archivo) + '</label>').join('') || '<p class="muted">Sin documentos adjuntos.</p>';
+      $('requestForm').classList.remove('hidden'); $('requestQuestion').focus();
+    }
+
+    async function sendPresidentRequest() {
+      if (!selectedEntity) return;
+      const data={action:'create',type:selectedEntity.type,id:selectedEntity.id,decision:$('requestQuestion').value,contexto:$('requestContext').value,fecha_objetivo:$('requestDue').value,adjuntos:[...$('requestDocuments').querySelectorAll('input:checked')].map(el=>Number(el.value))};
+      if (!safe(data.decision) || !safe(data.contexto)) { $('requestMessage').textContent='Indica la decision solicitada y el contexto.'; return; }
+      if (!confirm('Enviar esta solicitud al presidente de la comunidad?')) return;
+      $('sendPresidentRequest').disabled=true;
+      try {
+        await api('/api/president/request',{method:'POST',body:JSON.stringify(data)});
+        await loadOverview(); await openEntity(data.type,data.id,false);
+      } catch(error){$('requestMessage').textContent=error.message;}
+      finally{$('sendPresidentRequest').disabled=false;}
+    }
+
+    async function openPresidentDecision(requestId) {
+      const data=await api('/api/president/request?id='+encodeURIComponent(requestId));
+      selectedPresidentRequest=data.request;
+      const row=selectedPresidentRequest;
       $("presidentDecisionTitle").textContent = selectedPresidentRequest.elemento || selectedPresidentRequest.titulo;
-      $("presidentDecisionSubtitle").textContent = selectedPresidentRequest.comunidad || "";
-      $("presidentDecisionContext").innerHTML = '<strong>Solicitud</strong><p>' + html(selectedPresidentRequest.ultimo_comentario || selectedPresidentRequest.detalle || "") + '</p><strong>Proximo paso solicitado</strong><p>' + html(selectedPresidentRequest.proximo_paso_solicitado || "") + '</p>';
+      $("presidentDecisionSubtitle").textContent = 'Solicitud #' + row.id_solicitud + ' · ' + row.estado;
+      $('presidentDecisionContext').innerHTML='<p><strong>Debe actuar: ' + html(row.siguiente_responsable || 'Nadie') + '</strong><br>' + html(row.siguiente_accion) + '</p><p>' + html(row.detalle) + '</p>' + row.conversacion.map(event=>'<div class="historyItem"><strong>' + html(event.tipo) + '</strong><div class="muted">' + html(event.usuario) + ' · ' + html(event.fecha) + '</div><p style="white-space:pre-wrap">' + html(event.comentario) + '</p>' + JSON.parse(event.adjuntos_json || '[]').map(a=>'<a target="_blank" rel="noopener" href="/api/attachment?id=' + a.id_anexo + '">' + html(a.nombre_archivo) + '</a>').join('<br>') + '</div>').join('');
+      const president=(state.usuario || {}).rol==='Presidente' && Number(row.id_usuario_presidente)===Number(state.usuario.id_usuario) && row.estado==='Pendiente';
+      const writable=canWrite() && communityCan(row.id_comunidad,'puede_actualizar');
+      const requester=writable && (state.usuario.rol==='Superusuario' || Number(row.id_usuario_solicitante)===Number(state.usuario.id_usuario));
+      ['presidentApprove','presidentReject','presidentClarify'].forEach(id=>$(id).classList.toggle('hidden',!president));
+      $('requestReply').classList.toggle('hidden',!requester || row.estado!=='Solicita aclaracion');
+      $('requestManage').classList.toggle('hidden',!requester || !['Aprobada','Rechazada'].includes(row.estado) || row.gestion_estado==='Gestionada');
+      $('requestCancel').classList.toggle('hidden',!writable || !['Pendiente','Solicita aclaracion'].includes(row.estado));
       $("presidentDecisionComment").value = "";
       $("presidentDecisionMessage").textContent = "";
       $("presidentDecisionModal").classList.remove("hidden");
@@ -10977,12 +10901,25 @@ function homePage() {
       if (!confirm("Se registrara la decision \\"" + decision + "\\" y se devolvera la responsabilidad al solicitante. Confirmas?")) return;
       $("presidentDecisionMessage").textContent = "Guardando decision...";
       try {
-        await api("/api/president/respond", { method: "POST", body: JSON.stringify({ id: selectedPresidentRequest.id_solicitud, decision, comment }) });
+        await api("/api/president/respond", { method: "POST", body: JSON.stringify({ id: selectedPresidentRequest.id_solicitud, version:selectedPresidentRequest.version, decision, comment }) });
         closePresidentDecision();
         await loadOverview();
+        if(selectedEntity) await openEntity(selectedEntity.type,selectedEntity.id,false).catch(()=>closeModal());
       } catch (error) {
         $("presidentDecisionMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
       }
+    }
+
+    async function submitRequestAction(action) {
+      if(!selectedPresidentRequest) return;
+      const comentario=$('presidentDecisionComment').value;
+      if(!safe(comentario)){$('presidentDecisionMessage').textContent='El comentario es obligatorio.';return;}
+      if(!confirm(action==='clarify'?'Enviar la aclaracion y devolver la solicitud al presidente?':action==='cancel'?'Cancelar esta solicitud?':'Registrar como gestionada esta decision?'))return;
+      try {
+        await api('/api/president/request',{method:'POST',body:JSON.stringify({action,id:selectedPresidentRequest.id_solicitud,version:selectedPresidentRequest.version,comentario})});
+        closePresidentDecision(); await loadOverview();
+        if(selectedEntity) await openEntity(selectedEntity.type,selectedEntity.id,false);
+      } catch(error){$('presidentDecisionMessage').textContent=error.message;}
     }
 
     function securityUploaderHtml() {
@@ -13134,7 +13071,7 @@ function homePage() {
       if (workflowButton) {
         const action = workflowButton.dataset.workAction;
         if (action === "president") {
-          openPresidentDecision(workflowButton.dataset.requestId);
+          openPresidentDecision(workflowButton.dataset.requestId).catch(error=>alert(error.message));
           return;
         }
         if (action === "notification-read") {
@@ -13200,6 +13137,12 @@ function homePage() {
     $("createType").addEventListener("change", updateCreateForm);
     $("saveCreateEntity").addEventListener("click", saveCreateEntity);
     $("closePresidentDecision").addEventListener("click", closePresidentDecision);
+    $('newPresidentRequest').addEventListener('click',openRequestForm);
+    $('sendPresidentRequest').addEventListener('click',sendPresidentRequest);
+    $('cancelPresidentRequest').addEventListener('click',()=>$('requestForm').classList.add('hidden'));
+    $('requestReply').addEventListener('click',()=>submitRequestAction('clarify'));
+    $('requestManage').addEventListener('click',()=>submitRequestAction('manage'));
+    $('requestCancel').addEventListener('click',()=>submitRequestAction('cancel'));
     $("presidentDecisionModal").addEventListener("click", event => { if (event.target.id === "presidentDecisionModal") closePresidentDecision(); });
     $("presidentApprove").addEventListener("click", () => submitPresidentDecision("Aprobada"));
     $("presidentReject").addEventListener("click", () => submitPresidentDecision("Rechazada"));
@@ -13243,7 +13186,7 @@ async function handle(req, res) {
     if (req.validatedSession.rol === "Presidente" && !new Set([
       "/api/me", "/api/logout", "/api/session/community-scope", "/api/security/access",
       "/api/overview", "/api/workflow", "/api/entity/detail", "/api/attachment",
-      "/api/notifications/read", "/api/president/respond"
+      "/api/notifications/read", "/api/president/respond", "/api/president/request"
     ]).has(url.pathname)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente solo accede a sus solicitudes y al contexto autorizado." });
   }
   if (req.method === "GET" && url.pathname === "/") {
@@ -13757,6 +13700,16 @@ async function handle(req, res) {
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
     return sendJson(res, 200, await saveReviewSummary(session, body || {}, String(pc)));
   }
+  if (url.pathname === '/api/president/request') {
+    const session=readSession(req);
+    if (!session) return sendJson(res,401,{ok:false,error:'No autenticado.'});
+    if (req.method === 'GET') return sendJson(res,200,await presidencyOperation(session,'view',{id:Number(url.searchParams.get('id'))}));
+    if (req.method === 'POST') {
+      const body=await readBody(req);
+      if (!['create','clarify','manage','cancel'].includes(body.action)) return sendJson(res,400,{ok:false,error:'Accion no valida.'});
+      return sendJson(res,200,await presidencyOperation(session,body.action,body,String(req.socket.remoteAddress || 'web')));
+    }
+  }
   if (req.method === "POST" && url.pathname === "/api/president/respond") {
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
@@ -13764,7 +13717,7 @@ async function handle(req, res) {
     const id = Number(body.id || 0);
     if (!id) return sendJson(res, 400, { ok: false, error: "Solicitud no valida." });
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
-    return sendJson(res, 200, await respondPresidentRequest(session, id, String(body.decision || ""), String(body.comment || ""), String(pc)));
+    return sendJson(res, 200, await presidencyOperation(session,'respond',{...body,id,comentario:body.comment || body.comentario},String(pc)));
   }
   if (req.method === "POST" && url.pathname === "/api/entity/attachment") {
     const session = readSession(req);

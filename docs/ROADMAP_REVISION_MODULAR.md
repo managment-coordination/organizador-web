@@ -2,7 +2,7 @@
 
 ## Punto de continuidad: 08/09/2026
 
-Modulos 01 y 02 implementados y publicados en Ubuntu. Ver `CIERRE_OPERATIVO_2026-09-08.md` y `MODULO_02_TAREAS_PROYECTOS.md`. Verificados cinco usuarios activos mediante consultas de solo lectura, integridad de datos y acceso por navegador Tailscale. Los modulos 03-10 siguen pendientes de su revision propia; continuar por orden y con sus preguntas de contexto.
+Modulos 01, 02 y 04 implementados y publicados en Ubuntu. Ver `CIERRE_OPERATIVO_2026-09-08.md`, `MODULO_02_TAREAS_PROYECTOS.md` y `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`. Modulo 03 omitido por decision del usuario, sin eliminar su funcionalidad existente. Verificados cinco usuarios activos mediante consultas de solo lectura, integridad de datos y acceso por navegador Tailscale. Los modulos 05-10 siguen pendientes de su revision propia; continuar por orden y con sus preguntas de contexto.
 
 ## Proposito
 
@@ -168,11 +168,13 @@ Si una mejora solo hace la app mas grande, mas vistosa o mas compleja sin resolv
 Punto de continuidad:
 
 ```text
-Siguiente modulo: 03 - Trabajo Hoy, mapa de trabajo y dashboard.
+Siguiente modulo: 05 - Informes y documentos.
+Modulo 04: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
+Modulo 03: revision omitida por decision expresa del usuario. Su flujo principal consiste en revisar y priorizar las tarjetas de Tareas y Proyectos. Conservar Trabajo Hoy, mapa y dashboard existentes sin modificaciones; no se ha autorizado eliminarlos ni se consideran revisados/certificados.
 Modulo anterior: 02 publicado; ver ficha de cierre y limites documentados.
 Avance de definicion del modulo 02: 100% del bloque funcional, confirmado el 08/09/2026.
 Implementacion de la revision del modulo 02: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
 Porcentaje global: no recalculado; los modulos tienen alcances diferentes.
-Objetivo inmediato: preguntas de contexto del modulo 03. No iniciar cambios ni nuevas ramificaciones sin confirmacion.
-Ficha de ultimo cierre: docs/MODULO_02_TAREAS_PROYECTOS.md
+Objetivo inmediato: preguntas de contexto del modulo 05, sin cambios ni nuevas ramificaciones hasta confirmar el alcance.
+Ficha de ultimo cierre: docs/MODULO_04_NOTIFICACIONES_PRESIDENCIA.md
 ```

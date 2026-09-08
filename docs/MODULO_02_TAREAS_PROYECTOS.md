@@ -2,6 +2,8 @@
 
 ## Estado
 
+Actualizacion posterior: el modulo 04 sustituye la solicitud implicita al asignar al presidente por una accion explicita. Ver `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`; los compromisos y el responsable general siguen siendo independientes.
+
 Definicion funcional confirmada por el usuario el 08/09/2026: 100%. Implementacion, pruebas y publicacion en Ubuntu: 100% del alcance confirmado. El porcentaje no certifica toda la aplicacion ni sustituye la aceptacion del usuario durante el uso real.
 
 Implementacion autorizada por el usuario. Copias previas: `backups/before-module02-20260908.tar.gz` local y `/home/coordinador/apps/organizador-web/backups/before-module02-20260908-072728` en Ubuntu. Crear ademas copia coherente justo antes de publicar.

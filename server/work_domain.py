@@ -61,12 +61,19 @@ def commitments(conn, kind, entity_id):
     origin='tarea' if kind=='task' else 'proyecto'
     result=[dict(r) for r in conn.execute(f'''SELECT id_accion AS id, 'action' AS kind, detalle AS descripcion,
         usuario_destino AS responsable, estado, fecha_objetivo, fecha_creacion, comentario_cierre
-        FROM acciones_pendientes WHERE {field}=? AND tipo_entidad=? ORDER BY estado='Pendiente' DESC,id_accion DESC''',(entity_id,origin))]
+        FROM acciones_pendientes WHERE {field}=? AND tipo_entidad=? AND id_solicitud_presidente IS NULL ORDER BY estado='Pendiente' DESC,id_accion DESC''',(entity_id,origin))]
     result.extend(dict(r) for r in conn.execute(f'''SELECT id_solicitud AS id,'decision' AS kind,
         COALESCE(NULLIF(proximo_paso_solicitado,''),ultimo_comentario) AS descripcion,
         COALESCE((SELECT nombre FROM usuarios WHERE id_usuario=s.id_usuario_presidente),'Presidente') AS responsable,
-        estado,NULL AS fecha_objetivo,fecha_creacion,comentario_respuesta AS comentario_cierre
+        CASE WHEN estado='Solicita aclaracion' OR (estado IN ('Aprobada','Rechazada') AND gestion_estado<>'Gestionada') THEN 'Pendiente' ELSE estado END AS estado,
+        fecha_objetivo,fecha_creacion,comentario_respuesta AS comentario_cierre
         FROM solicitudes_presidente s WHERE {field}=? AND tipo_origen=? ORDER BY id_solicitud DESC''',(entity_id,origin)))
+    from presidency_domain import request_row,next_action
+    for r in result:
+        if r['kind']=='decision':
+            req=request_row(conn,r['id'])
+            r['responsable'],action=next_action(req)
+            r['descripcion']=action+': '+(r['descripcion'] or '')
     return result
 
 def validate_date(value):
@@ -155,24 +162,7 @@ def add_commitment(conn, session, kind, item, description, owner, due='', record
     validate_date(due)
     task=kind=='task'
     if clean(owner).lower() in {'presidente','presidencia'} or conn.execute("SELECT 1 FROM usuarios WHERE nombre=? AND rol='Presidente' AND activo=1",(clean(owner),)).fetchone():
-        president=president_for(conn,item['id_comunidad'])
-        title=item['titulo'] if task else item['nombre']
-        cur=conn.execute('''INSERT INTO solicitudes_presidente
-            (id_comunidad,tipo_origen,id_tarea,id_proyecto,id_registro_tarea,id_registro_proyecto,
-             titulo,detalle,solicitante,ultimo_comentario,proximo_paso_solicitado,responsable_original,
-             responsable_retorno,estado,fecha_creacion,usuario_creacion,pc_creacion,id_usuario_presidente)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?,?,?)''',
-            (item['id_comunidad'],'tarea' if task else 'proyecto',item['id_tarea'] if task else None,
-             None if task else item['id_proyecto'],record_id if task else None,None if task else record_id,
-             'Decision solicitada: '+title,clean(description),session['nombre'],clean(description),clean(description),
-             item['responsable'] if task else item['responsable_principal'],session['nombre'],stamp(),session['nombre'],
-             session.get('pc','web'),president['id_usuario']))
-        conn.execute('''INSERT INTO notificaciones
-            (id_comunidad,usuario_destino,id_usuario_destino,tipo,titulo,mensaje,id_solicitud,id_tarea,id_proyecto,leida,fecha_creacion)
-            VALUES (?,?,?,'Solicitud presidente',?,?,?,?,?,0,?)''',
-            (item['id_comunidad'],president['nombre'],president['id_usuario'],'Decision pendiente: '+title,
-             clean(description),cur.lastrowid,item['id_tarea'] if task else None,None if task else item['id_proyecto'],stamp()))
-        return cur.lastrowid
+        return None  # Decisions require the explicit request action.
     cur=conn.execute('''INSERT INTO acciones_pendientes
         (id_comunidad,tipo_entidad,id_tarea,id_proyecto,id_registro_origen,tipo_accion,usuario_destino,
          solicitante,titulo,detalle,estado,fecha_creacion,pc_creacion,fecha_objetivo)
@@ -180,6 +170,8 @@ def add_commitment(conn, session, kind, item, description, owner, due='', record
         (item['id_comunidad'],'tarea' if task else 'proyecto',item['id_tarea'] if task else None,
          None if task else item['id_proyecto'],record_id,clean(owner),session['nombre'],
          item['titulo'] if task else item['nombre'],clean(description),stamp(),session.get('pc','web'),clean(due)))
+    from presidency_domain import notify_assignment
+    notify_assignment(conn,session,item,owner,clean(description))
     return cur.lastrowid
 
 def synchronize(conn, session, kind, item, data, mode='record', archive=False):
@@ -214,6 +206,10 @@ def synchronize(conn, session, kind, item, data, mode='record', archive=False):
             add_commitment(conn,session,kind,item,next_step,data.get('responsable_proximo_paso') or item.get('responsable_proximo_paso'),data.get('fecha_objetivo_proximo_paso'),record_id)
     if state in CLOSED:
         conn.execute(f'UPDATE {table} SET {"proximo_paso" if task else "proximo_paso_actual"}=?,fecha_objetivo_proximo_paso=NULL WHERE {key}=?',('',item[key]))
+    from presidency_domain import notify_assignment
+    owner=data.get('responsable_nuevo') if mode=='record' else data.get('responsable')
+    if owner and owner!=item['responsable' if task else 'responsable_principal']:
+        notify_assignment(conn,session,item,owner,'Responsabilidad general asignada.')
 
 def initialize_created(conn, session, kind, entity_id, data):
     table,key=('tareas','id_tarea') if kind=='task' else ('proyectos','id_proyecto')
@@ -222,6 +218,8 @@ def initialize_created(conn, session, kind, entity_id, data):
         conn.execute('UPDATE proyectos SET fase_aprobacion=?,proximo_paso_actual=? WHERE id_proyecto=?',
             (clean(data.get('fase_aprobacion') or 'Propuesta'),clean(data.get('proximo_paso')),entity_id))
     record_id=history(conn,session,kind,item,clean(data.get('descripcion') or data.get('comentario')),'Creacion')
+    from presidency_domain import notify_assignment
+    notify_assignment(conn,session,item,item['responsable' if kind=='task' else 'responsable_principal'],'Responsabilidad general asignada.')
     state=item['estado' if kind=='task' else 'estado_general']
     if state in CLOSED:
         synchronize(conn,session,kind,item,{'estado_nuevo':state})
@@ -252,7 +250,7 @@ def resolve(conn, session, kind, entity_id, data):
     state=data.get('estado')
     if commitment['kind']=='decision':
         if state!='Cancelada':raise ValueError('Solo el presidente puede responder. Puedes cancelar expresamente la solicitud.')
-        conn.execute("UPDATE solicitudes_presidente SET estado='Cancelada',fecha_respuesta=?,usuario_respuesta=?,comentario_respuesta=? WHERE id_solicitud=?",(stamp(),session['nombre'],comment,commitment['id']))
+        raise ValueError('Cancela la solicitud desde su conversacion para conservar todas las respuestas.')
     else:
         if state not in {'Resuelta','Cancelada'}:raise ValueError('Estado de compromiso no valido.')
         conn.execute('UPDATE acciones_pendientes SET estado=?,fecha_cierre=?,usuario_cierre=?,comentario_cierre=?,pc_cierre=? WHERE id_accion=?',

@@ -32,6 +32,11 @@ for row in conn.execute('SELECT id_usuario FROM usuarios WHERE activo=1').fetcha
         if user['rol'] not in {'Seguridad','Presidente'}:
             routes+=['/api/daily-operations','/api/assemblies','/api/reports-center']
         if user['rol']=='Superusuario':routes+=['/api/admin']
+        if user['rol']!='Seguridad':
+            allowed={int(c['id_comunidad']) for c in user['comunidades']}
+            candidate=next((r for r in conn.execute('SELECT id_solicitud,id_comunidad,id_usuario_presidente FROM solicitudes_presidente ORDER BY id_solicitud DESC')
+                if r['id_comunidad'] in allowed and (user['rol']!='Presidente' or r['id_usuario_presidente']==user['id_usuario'])),None)
+            if candidate:routes+=['/api/president/request?id='+str(candidate['id_solicitud'])]
     for route in routes:
         req=urllib.request.Request('http://127.0.0.1:8771'+route,headers={'Cookie':'organizador_web_session='+token})
         try:

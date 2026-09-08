@@ -40,6 +40,8 @@ def migrate(conn):
         migrate_data_scope(conn)
         from work_domain import migrate as migrate_work
         migrate_work(conn)
+        from presidency_domain import migrate as migrate_presidency
+        migrate_presidency(conn)
         return
     with conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS usuario_comunidad_permisos (
@@ -92,6 +94,8 @@ def migrate(conn):
     migrate_data_scope(conn)
     from work_domain import migrate as migrate_work
     migrate_work(conn)
+    from presidency_domain import migrate as migrate_presidency
+    migrate_presidency(conn)
 
 
 def migrate_data_scope(conn):
