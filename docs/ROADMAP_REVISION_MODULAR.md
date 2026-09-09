@@ -168,13 +168,15 @@ Si una mejora solo hace la app mas grande, mas vistosa o mas compleja sin resolv
 Punto de continuidad:
 
 ```text
-Siguiente modulo: 05 - Informes y documentos.
+Modulo activo: 05 - Informes y documentos. Base funcional publicada y verificada en Ubuntu (09/09/2026): formatos Word, clasificacion, seleccion de anexos, versiones y permisos. No cerrar aun calidad editorial: aceptacion de uso real pendiente y sintesis ejecutiva determinista, no reescritura IA avanzada.
+Ficha de continuidad: docs/MODULO_05_INFORMES_DOCUMENTOS.md (incluye limites de sintesis ejecutiva e incrustacion de anexos).
+Siguiente modulo tras aceptar el 05: 06 - Importadores y Centro IA. Empezar por preguntas, no implementar sin confirmar.
 Modulo 04: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
 Modulo 03: revision omitida por decision expresa del usuario. Su flujo principal consiste en revisar y priorizar las tarjetas de Tareas y Proyectos. Conservar Trabajo Hoy, mapa y dashboard existentes sin modificaciones; no se ha autorizado eliminarlos ni se consideran revisados/certificados.
 Modulo anterior: 02 publicado; ver ficha de cierre y limites documentados.
 Avance de definicion del modulo 02: 100% del bloque funcional, confirmado el 08/09/2026.
 Implementacion de la revision del modulo 02: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
 Porcentaje global: no recalculado; los modulos tienen alcances diferentes.
-Objetivo inmediato: preguntas de contexto del modulo 05, sin cambios ni nuevas ramificaciones hasta confirmar el alcance.
+Objetivo inmediato: aceptar con el usuario los informes y la clasificacion del modulo 05, presentar los limites editoriales/documentales y decidir el cierre sin ampliar el alcance a otros modulos.
 Ficha de ultimo cierre: docs/MODULO_04_NOTIFICACIONES_PRESIDENCIA.md
 ```

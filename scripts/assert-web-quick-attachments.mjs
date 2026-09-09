@@ -17,7 +17,9 @@ requireIncludes("async function uploadEntityFiles", "falta funcion comun de subi
 requireIncludes('data-action="attach"', "falta boton adjuntar en tarjetas de tareas/proyectos");
 requireIncludes('data-daily-action="attach"', "falta boton adjuntar en mapa de trabajo");
 requireIncludes('data-work-action="attach"', "falta boton adjuntar en bandejas/revision");
-requireIncludes("Se adjuntaran", "falta confirmacion previa de archivos");
+requireIncludes("dialog.returnValue==='confirm'", "falta confirmacion previa de archivos");
+requireIncludes('Clasificacion de los archivos', 'falta clasificacion en la confirmacion');
+requireIncludes('if (category===null)', 'cancelar no debe subir documentos');
 requireIncludes("archivo(s) adjuntado(s) correctamente", "falta confirmacion de subida correcta");
 requireIncludes("Tu perfil no tiene permiso para adjuntar archivos.", "falta proteccion visual de permisos");
 

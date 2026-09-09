@@ -1,320 +1,124 @@
-import fs from "node:fs";
-import path from "node:path";
-import {
-  AlignmentType,
-  BorderStyle,
-  Document,
-  Footer,
-  Header,
-  HeadingLevel,
-  ImageRun,
-  Packer,
-  PageNumber,
-  Paragraph,
-  ShadingType,
-  Table,
-  TableCell,
-  TableRow,
-  TextRun,
-  WidthType
-} from "docx";
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { Document, Footer, Header, HeadingLevel, ImageRun, Packer, PageNumber, Paragraph, TextRun, AlignmentType } from 'docx';
+import { currentStep, executiveEvents, readableText as clean, reportOptions } from './report-domain.js';
 
-const COLORS = {
-  blue: "1F4E78",
-  dark: "0F172A",
-  muted: "64748B",
-  line: "D8E0E8",
-  paleBlue: "D9EAF7",
-  paleGrey: "F2F4F7",
-  paleGreen: "E2F0D9",
-  paleAmber: "FFF2CC",
-  paleRed: "FCE4D6"
-};
-
-const clean = (value) => String(value || "").trim();
-
-function safeFilename(value, limit = 90) {
-  return (clean(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || "informe").slice(0, limit);
+const heading = text => new Paragraph({ text, heading:HeadingLevel.HEADING_1, keepNext:true, spacing:{before:180,after:70} });
+function paragraphs(text, prefix = '') {
+  return (clean(text) || 'No consta.').split(/\n+/).map((line,i) => new Paragraph({
+    children:[...(prefix && i===0 ? [new TextRun({text:prefix,bold:true})] : []),new TextRun(line)],
+    spacing:{after:70,line:260}, widowControl:true
+  }));
 }
+const meta = text => new Paragraph({children:[new TextRun({text:clean(text),color:'525252',size:19})],spacing:{after:70},keepNext:true});
+const closed = state => /finalizado|archivado/i.test(state);
 
-function textParagraph(value, prefix = "", options = {}) {
-  const children = [];
-  if (prefix) children.push(new TextRun({ text: prefix, bold: true, color: COLORS.dark }));
-  children.push(new TextRun({ text: clean(value) || "-", color: COLORS.dark }));
-  return new Paragraph({
-    children,
-    spacing: { after: options.after ?? 100, line: 290 },
-    keepNext: Boolean(options.keepNext)
-  });
-}
-
-function sectionHeading(text, level = 1) {
-  return new Paragraph({
-    text,
-    heading: level === 1 ? HeadingLevel.HEADING_1 : HeadingLevel.HEADING_2,
-    spacing: { before: level === 1 ? 260 : 170, after: 100 },
-    keepNext: true
-  });
-}
-
-function cell(value, options = {}) {
-  return new TableCell({
-    shading: { type: ShadingType.CLEAR, fill: options.fill || "FFFFFF", color: "auto" },
-    margins: { top: 100, bottom: 100, left: 120, right: 120 },
-    verticalAlign: "center",
-    children: [new Paragraph({
-      children: [new TextRun({
-        text: clean(value) || "-",
-        bold: Boolean(options.bold),
-        color: options.color || COLORS.dark,
-        size: 19
-      })],
-      spacing: { after: 0 }
-    })]
-  });
-}
-
-function infoTable(rows) {
-  return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    borders: tableBorders(),
-    rows: rows.map(([label, value], index) => new TableRow({
-      children: [
-        cell(label, { fill: COLORS.paleBlue, bold: true, color: COLORS.blue }),
-        cell(value, { fill: index % 2 ? COLORS.paleGrey : "FFFFFF" })
-      ]
-    }))
-  });
-}
-
-function tableBorders() {
-  const border = { style: BorderStyle.SINGLE, size: 1, color: COLORS.line };
-  return { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border };
-}
-
-function isDecision(row) {
-  const content = `${clean(row.tipo_registro)} ${clean(row.comentario)}`.toLowerCase();
-  return ["decision", "acuerdo", "aprobad", "rechazad", "confirmad"].some((word) => content.includes(word));
-}
-
-function timeline(history) {
-  if (!history.length) return [textParagraph("No existen seguimientos registrados.")];
-  const result = [];
-  history.forEach((row, index) => {
-    const fill = isDecision(row) ? COLORS.paleGreen : COLORS.paleBlue;
-    const stateChange = [row.estado_anterior, row.estado_nuevo].map(clean).filter(Boolean).join(" -> ") || "-";
-    const owner = clean(row.responsable_nuevo) || clean(row.responsable_anterior) || "-";
-    result.push(new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      borders: tableBorders(),
-      rows: [
-        new TableRow({ children: [
-          cell(`${index + 1}. ${clean(row.fecha_hora)}`, { fill, bold: true, color: COLORS.blue }),
-          cell(clean(row.tipo_registro) || "Seguimiento", { fill, bold: true, color: COLORS.blue })
-        ] }),
-        new TableRow({ children: [
-          cell(`Estado: ${stateChange}\nResponsable: ${owner}`),
-          cell(`Registrado por: ${clean(row.usuario) || "-"}`)
-        ] })
-      ]
-    }));
-    result.push(textParagraph(row.comentario, "Actuacion: "));
-    if (clean(row.proximo_paso)) result.push(textParagraph(row.proximo_paso, "Proximo paso indicado: ", { after: 180 }));
-  });
-  return result;
-}
-
-function attachmentBlocks(attachments) {
-  if (!attachments.length) return [textParagraph("No existen anexos asociados.")];
-  const result = [];
-  attachments.forEach((row, index) => {
-    const name = clean(row.nombre_archivo) || `Anexo ${index + 1}`;
-    result.push(new Paragraph({
-      children: [
-        new TextRun({ text: `Anexo ${index + 1}. ${name}`, bold: true, color: COLORS.blue }),
-        new TextRun({ text: `\nFecha: ${clean(row.fecha_adjuntado) || "-"}`, color: COLORS.muted })
-      ],
-      spacing: { before: 140, after: 80 },
-      keepNext: true
-    }));
-    const resolvedPath = clean(row.resolvedPath);
-    const extension = path.extname(name).toLowerCase();
-    if (resolvedPath && fs.existsSync(resolvedPath) && [".png", ".jpg", ".jpeg"].includes(extension)) {
-      try {
-        result.push(new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [new ImageRun({ data: fs.readFileSync(resolvedPath), transformation: { width: 560, height: 350 }, type: extension === ".png" ? "png" : "jpg" })],
-          spacing: { after: 140 }
-        }));
-      } catch {
-        result.push(textParagraph("El archivo esta disponible en la ficha web, pero no pudo incrustarse en Word."));
-      }
-    } else if (resolvedPath && fs.existsSync(resolvedPath)) {
-      result.push(textParagraph("Archivo incluido en el expediente digital y disponible desde la ficha web."));
-    } else {
-      result.push(textParagraph("Archivo historico pendiente de disponibilidad en el servidor."));
+function imageDimensions(bytes, extension) {
+  if (extension === '.png' && bytes.length >= 24) return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
+  if (bytes[0]===255 && bytes[1]===216) {
+    let offset=2;
+    while(offset+9<bytes.length) {
+      if(bytes[offset]!==255) break;
+      const marker=bytes[offset+1], length=bytes.readUInt16BE(offset+2);
+      if([192,193,194,195,197,198,199,201,202,203,205,206,207].includes(marker)) return [bytes.readUInt16BE(offset+7),bytes.readUInt16BE(offset+5)];
+      if(length<2) break;
+      offset+=length+2;
     }
+  }
+  throw new Error('Dimensiones no disponibles');
+}
+
+function annexes(attachments) {
+  if (!attachments.length) return paragraphs('No se han seleccionado anexos para esta version.');
+  return attachments.flatMap((row,index) => {
+    const blocks=[heading(`Anexo ${index+1} | ${clean(row.nombre_archivo)}`),meta(`${row.categoria_documental || 'Sin clasificar'} | ${row.fecha_adjuntado || 'Sin fecha'} | ${row.usuario || 'Autor no registrado'}`)];
+    blocks.push(...paragraphs(row.id_registro ? `Vinculado al seguimiento ${row.id_registro}.` : 'Documento general del expediente.'));
+    const extension=path.extname(row.nombre_archivo || '').toLowerCase();
+    if(row.resolvedPath && fs.existsSync(row.resolvedPath) && ['.png','.jpg','.jpeg'].includes(extension)) {
+      try {
+        const bytes=fs.readFileSync(row.resolvedPath);
+        const [width,height]=imageDimensions(bytes,extension);
+        if(!(width>0 && height>0)) throw new Error('Imagen no valida');
+        const scale=Math.min(500/width,500/height,1);
+        blocks.push(new Paragraph({alignment:AlignmentType.CENTER,children:[new ImageRun({data:bytes,type:extension==='.png'?'png':'jpg',transformation:{width:Math.round(width*scale),height:Math.round(height*scale)}})]}));
+      } catch { blocks.push(...paragraphs('No ha sido posible previsualizar la imagen. El original se conserva en Documentos del expediente.')); }
+    } else {
+      blocks.push(...paragraphs(row.resolvedPath ? 'Original conservado en Documentos del expediente. Este anexo contiene su referencia documental; el archivo no esta incrustado en Word.' : 'Original no disponible en el servidor. Pendiente de recuperar.'));
+    }
+    return blocks;
   });
-  return result;
 }
 
-function conclusionFor(state) {
-  const value = clean(state).toLowerCase();
-  if (value.includes("bloque")) return "El expediente permanece bloqueado. Debe resolverse la causa indicada y registrar una nueva decision antes de continuar.";
-  if (value.includes("final") || value.includes("termin")) return "El expediente consta como finalizado. El historial anterior documenta las actuaciones que condujeron a su cierre.";
-  if (value.includes("tercero")) return "El expediente queda pendiente de una actuacion externa. Conviene mantener la fecha objetivo y el responsable del siguiente contacto actualizados.";
-  return "El expediente continua activo. La situacion vigente y el siguiente paso quedan recogidos en este informe para facilitar su seguimiento.";
-}
-
-function commitmentBlocks(rows) {
-  const pending = rows.filter(row => row.estado === 'Pendiente');
-  return pending.length ? pending.flatMap(row => [
-    textParagraph(row.descripcion),
-    textParagraph(`${row.responsable || 'Sin responsable'} | ${row.fecha_objetivo || 'Sin fecha acordada'}`, 'Responsable y plazo: ')
-  ]) : [textParagraph('No hay compromisos pendientes registrados.')];
-}
-
-export async function buildEntityReport({ type, item, history = [], attachments = [], commitments = [] }) {
-  const isTask = type === "task";
-  const entityLabel = isTask ? "tarea" : "proyecto";
-  const title = clean(isTask ? item.titulo : item.nombre);
-  const state = clean(isTask ? item.estado : item.estado_general);
-  const owner = clean(isTask ? item.responsable : item.responsable_principal);
-  const nextOwner = clean(item.responsable_proximo_paso);
-  const nextDate = clean(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision);
-  const nextStep = clean(item.proximo_paso ?? item.proximo_paso_actual ?? item.observaciones);
-  const firstDate = history.length ? clean(history[0].fecha_hora) : "sin seguimientos";
-  const lastDate = history.length ? clean(history.at(-1).fecha_hora) : clean(item.fecha_ultima_actualizacion);
-  const generatedAt = new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date());
-  const summary = `${entityLabel[0].toUpperCase() + entityLabel.slice(1)} en estado ${state || "sin definir"}, con prioridad ${clean(item.prioridad) || "sin definir"} y responsabilidad actual de ${owner || "sin asignar"}. El expediente contiene ${history.length} actuaciones registradas desde ${firstDate}. La ultima actualizacion consta en ${lastDate || "fecha no indicada"}.`;
-  const children = [
-    new Paragraph({ children: [new TextRun({ text: `INFORME DE ${entityLabel.toUpperCase()}`, bold: true, color: COLORS.blue, size: 24 })], spacing: { after: 40 } }),
-    new Paragraph({ children: [new TextRun({ text: title, bold: true, color: COLORS.dark, size: 40 })], spacing: { after: 80 } }),
-    new Paragraph({ children: [new TextRun({ text: `${clean(item.comunidad) || "Sin comunidad"} | Generado: ${generatedAt}`, color: COLORS.muted, size: 18 })], spacing: { after: 220 } }),
-    sectionHeading("Resumen ejecutivo"),
-    textParagraph(summary),
-    sectionHeading("Situacion actual"),
-    infoTable([
-      ["Estado", state],
-      ...(!isTask ? [["Fase de aprobacion",item.fase_aprobacion || 'Sin clasificar (historico)']] : []),
-      ["Prioridad", item.prioridad],
-      ["Responsable actual", owner],
-      ["Responsable del proximo paso", nextOwner],
-      ["Fecha objetivo", nextDate],
-      ["Categoria", item.categoria],
-    ]),
-    ...(clean(item.descripcion) ? [sectionHeading("Contexto"), textParagraph(item.descripcion)] : []),
-    sectionHeading("Actuaciones cronologicas"),
-    ...timeline(history),
-    sectionHeading("Proximos pasos"),
-    infoTable([
-      ["Actuacion prevista", nextStep || "No se ha definido un proximo paso."],
-      ["Responsable", nextOwner || owner || "Sin asignar"],
-      ["Fecha objetivo", nextDate || "Sin fecha"]
-    ]),
-    sectionHeading("Compromisos pendientes"),
-    ...commitmentBlocks(commitments),
-    sectionHeading("Conclusion"),
-    textParagraph(conclusionFor(state)),
-    sectionHeading("Anexos"),
-    ...attachmentBlocks(attachments)
-  ];
-
-  const document = new Document({
-    creator: "Organizador Web",
-    title: `Informe de ${entityLabel}: ${title}`,
-    styles: {
-      default: { document: { run: { font: "Aptos", size: 20, color: COLORS.dark } } },
-      paragraphStyles: [
-        { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 30, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } },
-        { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 23, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } }
-      ]
-    },
-    sections: [{
-      properties: { page: { margin: { top: 900, right: 950, bottom: 900, left: 950 } } },
-      headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "ORGANIZADOR - INFORME DE SEGUIMIENTO", color: COLORS.muted, size: 16 })] })] }) },
-      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "Documento generado desde el historial central del Organizador | Pagina ", color: COLORS.muted, size: 16 }), new TextRun({ children: [PageNumber.CURRENT], color: COLORS.muted, size: 16 })] })] }) },
-      children
-    }]
+function timeline(history, attachments) {
+  if(!history.length) return paragraphs('No hay actuaciones registradas.');
+  return history.flatMap(row=>{
+    const id=row.id_registro ?? row.id_registro_proyecto;
+    const blocks=[new Paragraph({text:`${row.fecha_hora || 'Sin fecha'} | ${row.tipo_registro || 'Seguimiento'}`,heading:HeadingLevel.HEADING_2,keepNext:true}),
+      meta(`Registro ${id ?? '-'} | ${row.usuario || 'Autor no registrado'}`), ...paragraphs(row.comentario)];
+    if(row.estado_nuevo && row.estado_nuevo!==row.estado_anterior) blocks.push(...paragraphs(`${row.estado_anterior || 'Sin estado'} -> ${row.estado_nuevo}`,'Cambio de estado: '));
+    if(row.responsable_nuevo) blocks.push(...paragraphs(row.responsable_nuevo,'Responsable registrado: '));
+    if(row.proximo_paso) blocks.push(...paragraphs(row.proximo_paso,'Proximo paso en esa fecha: '));
+    const linked=attachments.map((a,i)=>({...a,index:i+1})).filter(a=>Number(a.id_registro)>0 && Number(a.id_registro)===Number(id));
+    if(linked.length) blocks.push(...paragraphs(linked.map(a=>`Anexo ${a.index}: ${a.nombre_archivo}`).join('\n'),'Documentos relacionados: '));
+    return blocks;
   });
-  const filename = `Informe_${entityLabel}_${safeFilename(title)}_${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.docx`;
-  return { buffer: await Packer.toBuffer(document), filename };
 }
 
-export async function buildCollectionReport({ title = "Informe conjunto", entries = [] }) {
-  const generatedAt = new Intl.DateTimeFormat("es-ES", { dateStyle: "short", timeStyle: "short" }).format(new Date());
-  const taskCount = entries.filter(entry => entry.type === "task").length;
-  const projectCount = entries.filter(entry => entry.type === "project").length;
-  const attachmentCount = entries.reduce((total, entry) => total + (entry.attachments || []).length, 0);
-  const children = [
-    new Paragraph({ children: [new TextRun({ text: "INFORME OPERATIVO CONJUNTO", bold: true, color: COLORS.blue, size: 24 })], spacing: { after: 40 } }),
-    new Paragraph({ children: [new TextRun({ text: clean(title), bold: true, color: COLORS.dark, size: 40 })], spacing: { after: 80 } }),
-    new Paragraph({ children: [new TextRun({ text: `Generado: ${generatedAt}`, color: COLORS.muted, size: 18 })], spacing: { after: 220 } }),
-    sectionHeading("Resumen ejecutivo"),
-    textParagraph(`El informe re\u00fane ${entries.length} elementos: ${projectCount} proyectos y ${taskCount} tareas. Cada ficha conserva su situaci\u00f3n actual, responsables, pr\u00f3ximo paso y actuaciones cronol\u00f3gicas.`),
-    infoTable([
-      ["Total de elementos", entries.length],
-      ["Proyectos", projectCount],
-      ["Tareas", taskCount],
-      ["Anexos", attachmentCount]
-    ])
-  ];
-
-  entries.forEach((entry, index) => {
-    const isTask = entry.type === "task";
-    const item = entry.item || {};
-    const history = entry.history || [];
-    const entityTitle = clean(isTask ? item.titulo : item.nombre);
-    const state = clean(isTask ? item.estado : item.estado_general);
-    const owner = clean(isTask ? item.responsable : item.responsable_principal);
-    const nextOwner = clean(item.responsable_proximo_paso);
-    const nextDate = clean(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision);
-    const nextStep = clean(item.proximo_paso ?? item.proximo_paso_actual ?? item.observaciones);
-    children.push(new Paragraph({
-      pageBreakBefore: index > 0,
-      children: [new TextRun({ text: `${index + 1}. ${isTask ? "TAREA" : "PROYECTO"}: ${entityTitle}`, bold: true, color: COLORS.blue, size: 28 })],
-      spacing: { before: 260, after: 120 },
-      keepNext: true
-    }));
-    children.push(infoTable([
-      ["Comunidad", item.comunidad],
-      ["Estado", state],
-      ...(!isTask ? [["Fase de aprobacion",item.fase_aprobacion || 'Sin clasificar (historico)']] : []),
-      ["Prioridad", item.prioridad],
-      ["Responsable actual", owner],
-      ["Responsable del pr\u00f3ximo paso", nextOwner],
-      ["Fecha objetivo", nextDate],
-      ["Categor\u00eda", item.categoria]
-    ]));
-    if (clean(item.descripcion)) children.push(sectionHeading("Contexto", 2), textParagraph(item.descripcion));
-    children.push(sectionHeading("Actuaciones", 2), ...timeline(history));
-    children.push(sectionHeading("Situaci\u00f3n y pr\u00f3ximo paso", 2), infoTable([
-      ["Actuaci\u00f3n prevista", nextStep || "No se ha definido un pr\u00f3ximo paso."],
-      ["Responsable", nextOwner || owner || "Sin asignar"],
-      ["Fecha objetivo", nextDate || "Sin fecha"]
-    ]));
-    children.push(textParagraph(conclusionFor(state), "Conclusi\u00f3n: ", { after: 120 }));
-    children.push(sectionHeading('Compromisos pendientes',2), ...commitmentBlocks(entry.commitments || []));
-    children.push(sectionHeading("Anexos", 2), ...attachmentBlocks(entry.attachments || []));
-  });
-
-  const document = new Document({
-    creator: "Organizador Web",
-    title: clean(title),
-    styles: {
-      default: { document: { run: { font: "Aptos", size: 20, color: COLORS.dark } } },
-      paragraphStyles: [
-        { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 30, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } },
-        { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true, run: { size: 23, bold: true, color: COLORS.blue }, paragraph: { keepNext: true } }
-      ]
-    },
-    sections: [{
-      properties: { page: { margin: { top: 900, right: 950, bottom: 900, left: 950 } } },
-      headers: { default: new Header({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: "ORGANIZADOR - INFORME OPERATIVO", color: COLORS.muted, size: 16 })] })] }) },
-      footers: { default: new Footer({ children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: "Informe conjunto | P\u00e1gina ", color: COLORS.muted, size: 16 }), new TextRun({ children: [PageNumber.CURRENT], color: COLORS.muted, size: 16 })] })] }) },
-      children
-    }]
-  });
-  const filename = `Informe_conjunto_${safeFilename(title)}_${new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19)}.docx`;
-  return { buffer: await Packer.toBuffer(document), filename };
+function entityBlocks(entry, mode, index, collection) {
+  const {type,item,attachments=[],commitments=[]}=entry;
+  const history=[...(entry.history || [])].sort((a,b)=>String(a.fecha_hora || '').localeCompare(String(b.fecha_hora || '')) || Number(a.id_registro ?? a.id_registro_proyecto)-Number(b.id_registro ?? b.id_registro_proyecto));
+  const title=clean(type==='task'?item.titulo:item.nombre);
+  const state=clean(type==='task'?item.estado:item.estado_general);
+  const owner=clean(type==='task'?item.responsable:item.responsable_principal);
+  const step=currentStep(item,type);
+  const events=executiveEvents(history);
+  const pending=commitments.filter(row=>row.estado==='Pendiente');
+  const blocks=[new Paragraph({text:collection?`${index+1}. ${title}`:title,heading:HeadingLevel.TITLE,pageBreakBefore:collection && index>0,spacing:{before:160,after:160},keepNext:true}),
+    meta(`${type==='task'?'Tarea':'Proyecto'} | ${item.comunidad || 'Comunidad no indicada'} | ${mode==='ejecutivo'?'Informe ejecutivo':'Informe completo'}`),
+    heading('Resumen ejecutivo'),
+    ...paragraphs(`El expediente consta en estado ${state || 'sin definir'}. ${closed(state)?'No se presentan los pasos historicos como actuaciones pendientes.':step?`La actuacion vigente registrada es: ${step}`:'No consta un proximo paso vigente.'}`),
+    ...paragraphs(item.descripcion || 'No consta una descripcion del expediente.','Objeto: '),
+    heading('Actuaciones y decisiones principales')];
+  if(events.length) events.forEach(row=>blocks.push(...paragraphs(row.comentario,`${row.fecha_hora || 'Sin fecha'}: `)));
+  else blocks.push(...paragraphs('No hay actuaciones registradas.'));
+  blocks.push(heading('Situacion actual'),
+    ...paragraphs(`${state || 'Sin definir'} | Prioridad: ${item.prioridad || 'Sin definir'}`,'Estado: '),
+    ...paragraphs(owner || 'Sin asignar','Responsable general: '),
+    ...paragraphs(item.responsable_proximo_paso || 'Sin asignar','Responsable del proximo paso: '),
+    ...paragraphs(history.at(-1)?.fecha_hora || item.fecha_ultima_actualizacion || 'No consta','Ultima actualizacion: '));
+  if(type==='project') blocks.push(...paragraphs(item.fase_aprobacion || 'Sin clasificar (historico)','Fase de aprobacion: '));
+  if(mode==='completo') blocks.push(heading('Historico completo'),...timeline(history,attachments));
+  blocks.push(heading('Proximos pasos'));
+  if(closed(state)) blocks.push(...paragraphs('El expediente figura cerrado. Los pasos de actuaciones anteriores son historicos, no pendientes actuales.'));
+  else blocks.push(...paragraphs(step || 'No se ha definido un proximo paso.'),...paragraphs(item.fecha_objetivo_proximo_paso || item.fecha_proxima_revision || 'Sin fecha acordada','Fecha prevista: '));
+  if(pending.length) {
+    blocks.push(heading(closed(state)?'Pendientes que requieren revision':'Compromisos y decisiones pendientes'));
+    pending.forEach(row=>blocks.push(...paragraphs(row.descripcion),...paragraphs(`${row.responsable || 'Sin asignar'} | ${row.fecha_objetivo || 'Sin fecha acordada'}`,'Responsable y plazo: ')));
+  }
+  blocks.push(heading('Conclusion'),...paragraphs(closed(state)?`El expediente esta ${state.toLowerCase()} segun el estado registrado. ${pending.length?'Existen pendientes registrados que deben revisarse antes de dar por concluida la gestion.':'No constan compromisos pendientes registrados.'}`:`El expediente permanece ${state.toLowerCase() || 'sin estado definido'}. ${pending.length?`Quedan ${pending.length} compromisos o decisiones pendientes registrados.`:'La siguiente actuacion debe atender al proximo paso vigente, si esta definido.'}`),heading('Anexos seleccionados'),...annexes(attachments));
+  return blocks;
 }
+
+async function build({title,entries,mode='completo',author='',collection=false}) {
+  reportOptions({mode});
+  const date=new Intl.DateTimeFormat('es-ES',{dateStyle:'short',timeStyle:'short',timeZone:'Europe/Madrid'}).format(new Date());
+  const children=[meta(`Generado el ${date} | ${author || 'Organizador Web'}`)];
+  if(collection) children.push(new Paragraph({text:clean(title),heading:HeadingLevel.TITLE}),...paragraphs(`${entries.length} expedientes independientes. Version ${mode==='ejecutivo'?'ejecutiva':'completa'} basada en todo el historico disponible.`));
+  entries.forEach((entry,index)=>children.push(...entityBlocks(entry,mode,index,collection)));
+  const document=new Document({creator:author || 'Organizador Web',title:clean(title),styles:{
+    default:{document:{run:{font:'Arial',size:22,color:'000000'}},
+      title:{run:{font:'Arial',size:36,bold:true,color:'000000'},paragraph:{keepNext:true}},
+      heading1:{run:{font:'Arial',size:26,bold:true,color:'000000'},paragraph:{keepNext:true}},
+      heading2:{run:{font:'Arial',size:23,bold:true,color:'000000'},paragraph:{keepNext:true}}
+    },paragraphStyles:[
+      {id:'Normal',name:'Normal',run:{font:'Arial',size:22,color:'000000'}}
+    ]},sections:[{properties:{page:{size:{width:11906,height:16838},margin:{top:1100,bottom:1100,left:1400,right:1400}}},
+      headers:{default:new Header({children:[meta(entries[0]?.item.comunidad || 'Organizador')]})},
+      footers:{default:new Footer({children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun('Pagina '),new TextRun({children:[PageNumber.CURRENT]})]})]})},children}]});
+  const safe=clean(title).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9_-]+/g,'_').slice(0,80);
+  const filename=`Informe_${mode}_${safe}_${new Date().toISOString().slice(0,10)}_${crypto.randomBytes(5).toString('hex')}.docx`;
+  return {buffer:await Packer.toBuffer(document),filename};
+}
+export const buildEntityReport = entry => build({title:entry.type==='task'?entry.item.titulo:entry.item.nombre,entries:[entry],mode:entry.mode,author:entry.author});
+export const buildCollectionReport = args => build({...args,collection:true});

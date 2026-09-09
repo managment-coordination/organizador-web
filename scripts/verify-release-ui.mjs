@@ -134,6 +134,31 @@ try {
         }
         await page.waitForTimeout(300);
         assert.ok((await page.locator('#requestList').innerText()).includes(view==='projects'?'Gestionada':'Cancelada'));
+        await page.locator('#attachmentFiles').setInputFiles({name:'presupuesto-prueba.txt',mimeType:'text/plain',buffer:Buffer.from('Presupuesto de prueba, sin efectos reales.')});
+        await page.locator('#attachmentCategory').selectOption('Presupuesto');
+        await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/detail') && r.status()===200),page.locator('#uploadAttachmentsButton').click()]);
+        await page.locator('#attachmentFilter').selectOption('Presupuesto');
+        assert.equal(await page.locator('#attachmentsList .attachmentCard').count(),1);
+        await page.locator('#attachmentSearch').fill('no-existe');
+        assert.equal(await page.locator('#attachmentsList .attachmentCard').count(),0);
+        await page.locator('#attachmentSearch').fill('presupuesto');
+        await page.locator('#attachmentsList').scrollIntoViewIfNeeded();
+        await page.screenshot({path:path.join(output,`${viewport.width}-${view}-documents.png`)});
+        await page.locator('#generateReportButton').click();
+        await page.locator('#reportConfirm:enabled').waitFor();
+        await page.locator('#reportMode').selectOption('ejecutivo');
+        assert.equal(await page.locator('#reportConfiguration [data-annex-id]').count(),1);
+        await page.locator('#annexNone').click();
+        assert.equal(await page.locator('#reportConfiguration [data-annex-id]:checked').count(),0);
+        await page.screenshot({path:path.join(output,`${viewport.width}-${view}-report-options.png`)});
+        await page.locator('#reportConfirm').click();
+        await page.locator('#reportConfigurationStatus a').waitFor();
+        const wordUrl=await page.locator('#reportConfigurationStatus a').getAttribute('href');
+        const word=await context.request.get(base+wordUrl);
+        assert.equal(word.status(),200);
+        assert.equal((await word.body()).subarray(0,2).toString(),'PK');
+        await page.locator('#reportConfiguration [aria-label="Cerrar"]').click();
+        await page.locator('#entityReportsList').getByText(/ejecutivo/).first().waitFor();
         await page.locator('#closeModal').click();
       }
     }

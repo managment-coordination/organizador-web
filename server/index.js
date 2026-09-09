@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
+import { DOCUMENT_CATEGORIES, reportOptions, selectReportAttachments, reportSnapshot } from './report-domain.js';
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
 import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
 import { pythonScript } from "./python-template.js";
@@ -917,19 +918,42 @@ function resolveAttachmentPath(storedPath) {
   return null;
 }
 
-async function generateEntityReport(session, type, id, pc) {
+async function applyCommunityReportTemplate(report, communityId) {
+  const template = path.join(dataDir,'report-templates',Number(communityId) + '.docx');
+  if (!fs.existsSync(template)) return { ...report, template_sha256:null };
+  const temporary=fs.mkdtempSync(path.join(reportsDir,'.letterhead-'));
+  const inputPath=path.join(temporary,'input.docx'), outputPath=path.join(temporary,'output.docx');
+  try {
+    fs.writeFileSync(inputPath,report.buffer);
+    await runPythonJson(pythonScript`
+import json
+from pathlib import Path
+from report_template import apply_template
+content=Path(${JSON.stringify(inputPath)}).read_bytes()
+Path(${JSON.stringify(outputPath)}).write_bytes(apply_template(content,${JSON.stringify(template)}))
+print(json.dumps({'ok':True}))
+`);
+    return {...report,buffer:fs.readFileSync(outputPath),template_sha256:crypto.createHash('sha256').update(fs.readFileSync(template)).digest('hex')};
+  } finally { fs.rmSync(temporary,{recursive:true,force:true}); }
+}
+
+async function generateEntityReport(session, type, id, pc, input = {}) {
+  const options = reportOptions(input);
   session = sessionForPermission(session, "puede_generar_informes");
   if (reportsForbidden(session)) throw new Error("El perfil Presidente no tiene acceso a informes.");
   const detail = await queryEntityDetail(session, type, id);
   if (detail?.error || !detail?.item) throw new Error(detail?.error || "Elemento no encontrado.");
   const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
   fs.mkdirSync(folder, { recursive: true });
-  const attachments = (detail.attachments || []).map((row) => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }));
-  const report = await buildEntityReport({ type, item: detail.item, history: [...(detail.history || [])].reverse(), attachments, commitments: detail.commitments || [] });
+  const attachments = selectReportAttachments(detail.attachments || [], options).map((row) => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }));
+  const entry = { type, item: detail.item, history: [...(detail.history || [])].reverse(), attachments, commitments: detail.commitments || [] };
+  const metadata = { tipo_entidad:type, id_entidad:Number(id), anexos:attachments.length, ...reportSnapshot([entry], options, session.nombre) };
+  const report = await applyCommunityReportTemplate(await buildEntityReport({ ...entry, mode:options.mode, author:session.nombre }),detail.item.id_comunidad);
+  metadata.template_sha256=report.template_sha256;
   const outputPath = path.join(folder, report.filename);
   fs.writeFileSync(outputPath, report.buffer, { flag: "wx" });
   try {
-    const projectId = type === "task" ? Number(detail.item.id_proyecto || 0) : Number(id);
+    const projectId = type === "task" ? 0 : Number(id);
     const communityId = Number(detail.item.id_comunidad || 0);
     const script = pythonScript`
 import json
@@ -945,7 +969,7 @@ filename = ${JSON.stringify(report.filename)}
 user = ${JSON.stringify(session?.nombre || "web")}
 pc = ${JSON.stringify(pc || "web")}
 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-details = json.dumps({"tipo_entidad": entity_type, "id_entidad": entity_id, "anexos": ${JSON.stringify(attachments.length)}}, ensure_ascii=False)
+details = json.dumps(${JSON.stringify(metadata)}, ensure_ascii=False)
 conn = sqlite3.connect(path)
 with conn:
     cursor = conn.execute("""
@@ -993,6 +1017,7 @@ for report in reports:
     except (TypeError,ValueError): metadata={}
     if metadata.get("tipo_entidad") in {"task","tarea"} and metadata.get("id_entidad"):
         report["entity_type"]="task"; report["entity_id"]=int(metadata["id_entidad"])
+    report['mode'] = (metadata.get('snapshot') or {}).get('mode','completo')
     report.pop("archivo_word",None); report.pop("observaciones",None)
 pf,pp=scope("p"); tf,tp=scope("t")
 projects=rows("""SELECT 'project' AS entity_type,p.id_proyecto AS entity_id,p.id_comunidad,p.nombre AS titulo,
@@ -1008,7 +1033,8 @@ print(json.dumps({"reports":reports,"entities":projects+tasks,"communities":comm
   return runPythonJson(script);
 }
 
-async function generateCollectionReport(session, selections, title, pc) {
+async function generateCollectionReport(session, selections, title, pc, input = {}) {
+  const options = reportOptions(input);
   session = sessionForPermission(session, "puede_generar_informes");
   if (!Array.isArray(selections) || !selections.length) throw new Error("Selecciona al menos un elemento.");
   if (selections.length > 40) throw new Error("El informe conjunto admite un maximo de 40 elementos.");
@@ -1018,15 +1044,19 @@ async function generateCollectionReport(session, selections, title, pc) {
   const details = await Promise.all(normalized.map(row => queryEntityDetail(session, row.type, row.id)));
   if (details.some(detail => !detail?.item || detail.error)) throw new Error("No se pudo acceder a uno de los elementos seleccionados.");
   const communityIds = [...new Set(details.map(detail => Number(detail.item.id_comunidad || 0)).filter(Boolean))];
-  if (communityIds.length !== 1) throw new Error("Para mantener los permisos del archivo, selecciona elementos de una sola comunidad.");
+  if (communityIds.length !== 1) throw new Error("ValueError: Para mantener los permisos del archivo, selecciona elementos de una sola comunidad.");
+  const selectedAttachments = selectReportAttachments(details.flatMap(detail => detail.attachments || []), options);
+  const attachmentIds = new Set(selectedAttachments.map(row => Number(row.id_anexo)));
   const entries = details.map((detail, index) => ({
     type: normalized[index].type,
     item: detail.item,
     history: [...(detail.history || [])].reverse(),
     commitments: detail.commitments || [],
-    attachments: (detail.attachments || []).map(row => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }))
+    attachments: (detail.attachments || []).filter(row => attachmentIds.has(Number(row.id_anexo))).map(row => ({ ...row, resolvedPath: resolveAttachmentPath(row.ruta_archivo) || "" }))
   }));
-  const report = await buildCollectionReport({ title: String(title || "Informe conjunto").trim(), entries });
+  const metadata = { titulo:title, seleccion:normalized, ...reportSnapshot(entries, options, session.nombre) };
+  const report = await applyCommunityReportTemplate(await buildCollectionReport({ title: String(title || "Informe conjunto").trim(), entries, mode:options.mode, author:session.nombre }),communityIds[0]);
+  metadata.template_sha256=report.template_sha256;
   const folder = path.join(reportsDir, new Date().toISOString().slice(0, 7));
   fs.mkdirSync(folder, { recursive: true });
   const outputPath = path.join(folder, report.filename);
@@ -1042,7 +1072,7 @@ now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 conn=sqlite3.connect(path)
 with conn:
     cur=conn.execute("""INSERT INTO informes (fecha_generacion,tipo_informe,periodo_desde,periodo_hasta,id_proyecto,archivo_word,observaciones,usuario,pc,id_comunidad)
-        VALUES (?,'Informe conjunto','','',NULL,?,?,?,?,?)""",(now,output,json.dumps({"titulo":title,"seleccion":selection},ensure_ascii=False),user,pc,community_id))
+        VALUES (?,'Informe conjunto','','',NULL,?,?,?,?,?)""",(now,output,json.dumps(${JSON.stringify(metadata)},ensure_ascii=False),user,pc,community_id))
     report_id=int(cur.lastrowid)
     conn.execute("INSERT INTO auditoria (fecha_hora,usuario,pc,accion,entidad,id_entidad,detalle) VALUES (?,?,?,?,?,?,?)",(now,user,pc,"Generar informe conjunto web","informe",report_id,f"{len(selection)} elementos | {filename}"))
 conn.close(); print(json.dumps({"ok":True,"report_id":report_id,"filename":filename},ensure_ascii=False))
@@ -1107,7 +1137,8 @@ print(json.dumps(dict(row) if row else {}, ensure_ascii=False))
   });
 }
 
-async function saveEntityAttachment(session, type, id, fileName, mimeType, bytes, pc) {
+async function saveEntityAttachment(session, type, id, fileName, mimeType, bytes, pc, category = 'Sin clasificar') {
+  if (!DOCUMENT_CATEGORIES.includes(category)) throw new Error('Categoria documental no valida.');
   session = sessionForPermission(session, "puede_actualizar");
   if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) {
     throw new Error("Tu perfil no tiene permiso para adjuntar archivos.");
@@ -1148,6 +1179,7 @@ with conn:
     """, (community_id, entity_type, entity_id if entity_type == "tarea" else None,
           entity_id if entity_type == "proyecto" else None, name, stored_path, now, user, pc))
     attachment_id = int(cursor.lastrowid)
+    conn.execute('UPDATE anexos_registros SET categoria_documental=? WHERE id_anexo=?', (${JSON.stringify(category)},attachment_id))
     conn.execute("INSERT INTO auditoria (fecha_hora, usuario, pc, accion, entidad, id_entidad, detalle) VALUES (?, ?, ?, ?, ?, ?, ?)",
                  (now, user, pc, "Adjuntar archivo web", entity_type, entity_id, name))
 conn.close()
@@ -1609,7 +1641,7 @@ attachment_extra = " AND a.id_tarea IS NULL" if role == "Presidente" else ""
 attachments = rows("""
     SELECT a.id_anexo AS id, 'attachment' AS document_type, a.id_comunidad,
            a.nombre_archivo AS nombre, a.ruta_archivo AS ruta, a.fecha_adjuntado AS fecha,
-           a.id_tarea, a.id_proyecto, c.nombre AS comunidad,
+           a.id_tarea, a.id_proyecto, a.categoria_documental, c.nombre AS comunidad,
            t.titulo AS tarea, p.nombre AS proyecto,
            CASE WHEN a.id_tarea IS NOT NULL THEN 'task' ELSE 'project' END AS entity_type,
            COALESCE(a.id_tarea,a.id_proyecto) AS entity_id
@@ -6780,10 +6812,9 @@ if role != "Presidente":
     report_rows = [dict(r) for r in conn.execute("""
         SELECT id_informe, fecha_generacion, tipo_informe, id_proyecto, archivo_word, observaciones, usuario
         FROM informes
-        WHERE COALESCE(archivo_word,'') <> ''
+        WHERE COALESCE(archivo_word,'') <> '' AND id_comunidad=?
         ORDER BY fecha_generacion DESC, id_informe DESC
-        LIMIT 500
-    """)]
+    """, (item['id_comunidad'],))]
     for report in report_rows:
         metadata = {}
         try:
@@ -6792,14 +6823,14 @@ if role != "Presidente":
             metadata = {}
         direct_project = entity_type == "project" and int(report.get("id_proyecto") or 0) == entity_id
         metadata_match = (
-            str(metadata.get("tipo_entidad") or "") == ("tarea" if entity_type == "task" else "proyecto")
+            str(metadata.get("tipo_entidad") or "") in ({'task','tarea'} if entity_type == "task" else {'project','proyecto'})
             and int(metadata.get("id_entidad") or 0) == entity_id
         )
-        if direct_project or metadata_match:
-            report["metadata"] = metadata
+        collection_match = any(r.get('type')==entity_type and int(r.get('id') or 0)==entity_id for r in metadata.get('seleccion',[]))
+        if direct_project or metadata_match or collection_match:
+            report["mode"] = (metadata.get('snapshot') or {}).get('mode','completo')
+            report.pop('observaciones',None)
             reports.append(report)
-        if len(reports) >= 12:
-            break
 pending = commitments(conn, entity_type, entity_id)
 requests = entity_requests(conn,session,entity_type,entity_id)
 mention_users=recipients(conn,item['id_comunidad']) if role in {'Superusuario','Administrador','Usuario'} else []
@@ -7387,6 +7418,9 @@ function homePage() {
     .modal { background:white; border-radius:8px; border:1px solid var(--line); width:min(980px, 100%); max-height:92vh; overflow:auto; box-shadow:var(--shadow); }
     .modalHead { position:sticky; top:0; background:white; border-bottom:1px solid var(--line); padding:14px; display:flex; justify-content:space-between; gap:12px; align-items:flex-start; z-index:1; }
     .modalBody { padding:14px; display:grid; gap:12px; }
+    dialog { font:inherit; color:var(--text); }
+    dialog::backdrop { background:rgba(0,0,0,.25); }
+    #reportAnnexChoices section { border:0; border-bottom:1px solid #ddd; border-radius:0; box-shadow:none; padding:10px 0; background:transparent; }
     .communityScopeChoices { display:grid; gap:8px; }
     .communityScopeChoice { border:1px solid var(--line); border-radius:8px; padding:11px; display:flex; gap:10px; align-items:flex-start; cursor:pointer; background:white; }
     .communityScopeChoice:has(input:checked) { border-color:#2563eb; background:#eff6ff; box-shadow:inset 4px 0 #2563eb; }
@@ -8545,11 +8579,13 @@ function homePage() {
             <div class="history" id="historyList"></div>
           </section>
           <section>
-            <h2>Anexos</h2>
+            <h2>Documentos del expediente</h2>
+            <div class="formGrid"><div><label for="attachmentSearch">Buscar documento</label><input id="attachmentSearch" type="search" /></div><div><label for="attachmentFilter">Tipo de documento</label><select id="attachmentFilter"></select></div></div>
             <div id="attachmentUploadBox" class="uploadBox">
               <strong>Anadir archivos a la ficha</strong>
               <span class="muted">Puedes seleccionar varios. Se guardaran en el servidor y estaran disponibles desde PC y movil.</span>
               <input id="attachmentFiles" type="file" multiple />
+              <label for="attachmentCategory">Clasificacion de los nuevos archivos</label><select id="attachmentCategory"></select>
               <div class="toolbar">
                 <button class="green" id="uploadAttachmentsButton">Subir seleccionados</button>
                 <span class="muted" id="attachmentMessage"></span>
@@ -9096,7 +9132,20 @@ function homePage() {
     }
 
     function renderAttachments(attachments) {
-      $("attachmentsList").innerHTML = attachments.length ? attachments.map(row => {
+      const categories = ${JSON.stringify(DOCUMENT_CATEGORIES)};
+      if (!$('attachmentFilter').options.length) {
+        $('attachmentFilter').innerHTML='<option value="">Todos</option>' + categories.map(c=>'<option>' + html(c) + '</option>').join('');
+        $('attachmentCategory').innerHTML=categories.map(c=>'<option>' + html(c) + '</option>').join('');
+        $('attachmentFilter').addEventListener('change',()=>renderAttachments(selectedEntity?.attachments || []));
+        $('attachmentSearch').addEventListener('input',()=>renderAttachments(selectedEntity?.attachments || []));
+      }
+      const writable=canWrite() && communityCan(selectedEntity?.item?.id_comunidad,'puede_actualizar');
+      const normalizeDocument=value=>safe(value).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+      const query=normalizeDocument($('attachmentSearch').value);
+      const important=['Presupuesto','Factura','Contrato'];
+      const rows=[...attachments].filter(row=>(!$('attachmentFilter').value || (row.categoria_documental || 'Sin clasificar')===$('attachmentFilter').value) && (!query || normalizeDocument(row.nombre_archivo + ' ' + (row.categoria_documental || '')).includes(query)))
+        .sort((a,b)=>Number(important.includes(b.categoria_documental))-Number(important.includes(a.categoria_documental)));
+      $("attachmentsList").innerHTML = rows.length ? rows.map(row => {
         const name = row.nombre_archivo || "Anexo";
         const extension = name.includes(".") ? name.split(".").pop().toUpperCase() : "ARCHIVO";
         const url = "/api/attachment?id=" + encodeURIComponent(row.id_anexo);
@@ -9107,8 +9156,19 @@ function homePage() {
         const actions = row.available
           ? '<div class="cardActions"><a href="' + url + '&inline=1" target="_blank" rel="noopener"><button class="ghost">Abrir</button></a><a href="' + url + '&download=1"><button>Descargar</button></a></div>'
           : '<span class="dangerText">Pendiente de migrar al servidor</span>';
-        return '<article class="attachmentCard">' + preview + '<h4>' + html(name) + '</h4><span class="muted">' + html(row.fecha_adjuntado || "") + '</span>' + actions + '</article>';
-      }).join("") : '<div class="empty">No hay anexos.</div>';
+        const category=row.categoria_documental || 'Sin clasificar';
+        const control=writable?'<select aria-label="Tipo de ' + html(name) + '" data-document-classify="' + row.id_anexo + '">' + categories.map(c=>'<option' + (c===category?' selected':'') + '>' + html(c) + '</option>').join('') + '</select>':'<span class="pill">' + html(category) + '</span>';
+        return '<article class="attachmentCard">' + preview + '<h4>' + html(name) + '</h4>' + control + '<span class="muted">' + html(row.fecha_adjuntado || "") + '</span><div class="muted">' + (Number(row.id_registro)>0?'Seguimiento #' + html(row.id_registro):'Documento general') + '</div>' + actions + '</article>';
+      }).join("") : '<div class="empty">No hay documentos con estos criterios.</div>';
+      $('attachmentsList').querySelectorAll('[data-document-classify]').forEach(select=>select.addEventListener('change',async()=>{
+        select.disabled=true;
+        try {
+          await api('/api/attachment/classify',{method:'POST',body:JSON.stringify({id:Number(select.dataset.documentClassify),category:select.value})});
+          const row=selectedEntity.attachments.find(row=>Number(row.id_anexo)===Number(select.dataset.documentClassify));
+          if(row) row.categoria_documental=select.value;
+          renderAttachments(selectedEntity.attachments);
+        } catch(error) { alert(error.message); renderAttachments(selectedEntity.attachments); }
+      }));
     }
 
     async function uploadSelectedAttachments() {
@@ -9124,7 +9184,7 @@ function homePage() {
         for (const file of files) {
           $("attachmentMessage").textContent = "Subiendo " + (uploaded + 1) + " de " + files.length + ": " + file.name;
           const response = await fetch(
-            "/api/entity/attachment?type=" + encodeURIComponent(selectedEntity.type) + "&id=" + encodeURIComponent(selectedEntity.id),
+            "/api/entity/attachment?type=" + encodeURIComponent(selectedEntity.type) + "&id=" + encodeURIComponent(selectedEntity.id) + '&category=' + encodeURIComponent($('attachmentCategory').value),
             {
               method: "POST",
               credentials: "same-origin",
@@ -9147,12 +9207,12 @@ function homePage() {
       }
     }
 
-    async function uploadEntityFiles(type, id, files, statusCallback) {
+    async function uploadEntityFiles(type, id, files, statusCallback, category = 'Sin clasificar') {
       let uploaded = 0;
       for (const file of files) {
         if (statusCallback) statusCallback("Subiendo " + (uploaded + 1) + " de " + files.length + ": " + file.name);
         const response = await fetch(
-          "/api/entity/attachment?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id),
+          "/api/entity/attachment?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id) + '&category=' + encodeURIComponent(category),
           {
             method: "POST",
             credentials: "same-origin",
@@ -9182,15 +9242,20 @@ function homePage() {
           input.remove();
           return;
         }
-        const names = files.slice(0, 12).map(file => "- " + file.name).join("\\n");
-        const extra = files.length > 12 ? "\\n- ... y " + (files.length - 12) + " archivo(s) mas" : "";
         const target = safe(title) || (type === "project" ? "proyecto seleccionado" : "tarea seleccionada");
-        if (!confirm("Se adjuntaran " + files.length + " archivo(s) a:\\n\\n" + target + "\\n\\n" + names + extra + "\\n\\nConfirmas?")) {
+        const category=await new Promise(resolve=>{
+          const dialog=document.createElement('dialog');
+          dialog.style.cssText='width:min(600px,calc(100% - 24px));max-height:85dvh;border:1px solid #bbb;border-radius:8px';
+          dialog.innerHTML='<form method="dialog"><h2>' + html(target) + '</h2><ul>' + files.map(file=>'<li style="overflow-wrap:anywhere">' + html(file.name) + '</li>').join('') + '</ul><label>Clasificacion de los archivos</label><select name="category">' + ${JSON.stringify(DOCUMENT_CATEGORIES)}.map(c=>'<option>' + html(c) + '</option>').join('') + '</select><div class="toolbar"><button value="confirm">Adjuntar</button><button class="ghost" value="cancel">Cancelar</button></div></form>';
+          dialog.addEventListener('close',()=>{const selected=dialog.returnValue==='confirm'?dialog.querySelector('select').value:null;dialog.remove();resolve(selected);},{once:true});
+          document.body.appendChild(dialog);dialog.showModal();
+        });
+        if (category===null) {
           input.remove();
           return;
         }
         try {
-          await uploadEntityFiles(type, id, files);
+          await uploadEntityFiles(type, id, files, null, category);
           await loadOverview();
           if (selectedEntity && selectedEntity.type === type && String(selectedEntity.id) === String(id)) {
             await openEntity(type, id, false);
@@ -9207,38 +9272,55 @@ function homePage() {
     }
 
     async function generateReport(type, id, targetWindow = null) {
-      const reportWindow = targetWindow || window.open("", "_blank");
-      if (reportWindow) reportWindow.opener = null;
-      $("reportMessage").textContent = "Generando informe...";
-      $("generateReportButton").disabled = true;
-      $("generateReportBottom").disabled = true;
-      try {
-        const result = await api("/api/report/generate", {
-          method: "POST",
-          body: JSON.stringify({ type, id })
-        });
-        const url = "/api/report/download?id=" + encodeURIComponent(result.report_id) + "&inline=1";
-        $("reportMessage").innerHTML = 'Informe creado. <a href="' + url + '" target="_blank" rel="noopener">Abrir o descargar</a>';
-        if (reportWindow) reportWindow.location.href = url;
-      } catch (error) {
-        if (reportWindow && !reportWindow.closed) reportWindow.close();
-        $("reportMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
-        throw error;
-      } finally {
-        $("generateReportButton").disabled = false;
-        $("generateReportBottom").disabled = false;
-      }
+      if (targetWindow && !targetWindow.closed) targetWindow.close();
+      return configureReport([{type,id:Number(id)}]);
     }
 
-    function generateSelectedReport() {
+    async function configureReport(selections, title = '') {
+      const previous=document.getElementById('reportConfiguration');
+      if(previous) previous.remove();
+      const dialog=document.createElement('dialog');
+      dialog.id='reportConfiguration';
+      dialog.style.cssText='width:min(700px,calc(100% - 24px));max-height:90dvh;padding:0;border:1px solid #bbb;border-radius:8px';
+      dialog.innerHTML='<form method="dialog" class="modalHead"><h2>Preparar informe Word</h2><button class="ghost" aria-label="Cerrar">Cerrar</button></form><div class="modalBody"><label for="reportMode">Formato</label><select id="reportMode"><option value="ejecutivo">Ejecutivo</option><option value="completo">Completo</option></select><h3>Documentos a incluir</h3><div class="toolbar"><button id="annexAll" type="button">Seleccionar todos</button><button id="annexNone" class="ghost" type="button">Quitar seleccion</button></div><div id="reportAnnexChoices">Cargando documentos...</div><div class="toolbar"><button id="reportConfirm" disabled>Generar Word</button><span id="reportConfigurationStatus" role="status"></span></div></div>';
+      document.body.appendChild(dialog); dialog.showModal();
+      dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+      try {
+        const details=[];
+        for(const selection of selections) details.push(await api('/api/entity/detail?type=' + selection.type + '&id=' + selection.id));
+        if(!dialog.isConnected) return;
+        $('reportAnnexChoices').innerHTML=details.map((detail,index)=>'<section><h4>' + html(itemTitle(detail.item,selections[index].type)) + '</h4>' + ((detail.attachments || []).map(row=>'<label style="display:flex;gap:8px;align-items:start;padding:7px 0;overflow-wrap:anywhere"><input type="checkbox" data-annex-id="' + row.id_anexo + '" checked style="width:auto;flex:0 0 auto" /><span><strong>' + html(row.nombre_archivo) + '</strong><br/>' + html(row.categoria_documental || 'Sin clasificar') + (!row.available?' | Original no disponible':'') + '</span></label>').join('') || '<p class="muted">Sin documentos.</p>') + '</section>').join('');
+        $('annexAll').onclick=()=>dialog.querySelectorAll('[data-annex-id]').forEach(input=>input.checked=true);
+        $('annexNone').onclick=()=>dialog.querySelectorAll('[data-annex-id]').forEach(input=>input.checked=false);
+        $('reportConfirm').disabled=false;
+        $('reportConfirm').onclick=async()=>{
+          const button=$('reportConfirm'); button.disabled=true;
+          const status=$('reportConfigurationStatus'); status.textContent='Generando informe...';
+          const options={mode:$('reportMode').value,attachment_ids:[...dialog.querySelectorAll('[data-annex-id]:checked')].map(input=>Number(input.dataset.annexId))};
+          try {
+            const result=await api(title || selections.length>1?'/api/report/collection':'/api/report/generate',{method:'POST',body:JSON.stringify(title || selections.length>1?{title:title || 'Informe conjunto',selections,...options}:{...selections[0],...options})});
+            const url='/api/report/download?id=' + result.report_id;
+            status.innerHTML='Version guardada. <a href="' + url + '" target="_blank" rel="noopener">Abrir o descargar Word</a>';
+            if(selectedEntity) await openEntity(selectedEntity.type,selectedEntity.id,false);
+            if(currentView==='reports') await loadReportsCenter();
+          } catch(error) { status.textContent=error.message; }
+          finally { button.disabled=false; }
+        };
+      } catch(error) { if(dialog.isConnected) $('reportConfigurationStatus').textContent=error.message; }
+    }
+
+    function generateSelectedEntityReport() {
       if (!selectedEntity) return;
-      generateReport(selectedEntity.type, selectedEntity.id, window.open("", "_blank")).catch(() => {});
+      generateReport(selectedEntity.type, selectedEntity.id).catch(error=>alert(error.message));
     }
 
     async function openEntity(type, id, focusRecord = false) {
       $("recordMessage").textContent = "";
       if (state.usuario?.rol !== "Presidente") await loadOptions();
       const detail = await api("/api/entity/detail?type=" + encodeURIComponent(type) + "&id=" + encodeURIComponent(id));
+      if(!selectedEntity || selectedEntity.type!==type || String(selectedEntity.id)!==String(id)) {
+        $('attachmentSearch').value=''; $('attachmentFilter').value='';
+      }
       selectedEntity = { type, id, item: detail.item, commitments: detail.commitments || [], requests:detail.requests || [], attachments:detail.attachments || [] };
       const item = detail.item;
       $("modalTitle").textContent = itemTitle(item, type);
@@ -9913,16 +9995,16 @@ function homePage() {
     function filteredDocuments() {
       const query = documentQuery.toLowerCase();
       return ((state.daily || {}).documents || []).filter(row =>
-        (documentType === "all" || row.document_type === documentType) &&
+        (documentType === "all" || row.document_type === documentType || row.categoria_documental === documentType) &&
         (!documentCommunity || String(row.id_comunidad) === String(documentCommunity)) &&
-        (!query || [row.nombre,row.comunidad,row.tarea,row.proyecto,row.fecha].join(" ").toLowerCase().includes(query))
+        (!query || [row.nombre,row.comunidad,row.tarea,row.proyecto,row.fecha,row.categoria_documental].join(" ").toLowerCase().includes(query))
       );
     }
 
     function documentsPanelHtml() {
       const communities = ((state.daily || {}).communities || []).map(row => '<option value="' + html(row.id || row.id_comunidad) + '"' + (String(row.id || row.id_comunidad) === String(documentCommunity) ? " selected" : "") + '>' + html(row.nombre) + '</option>').join("");
       return '<div class="documentControls"><div><label>Filtrar documentos</label><input id="documentQuery" value="' + html(documentQuery) + '" placeholder="Nombre, proyecto, tarea..." /></div>' +
-        '<div><label>Tipo</label><select id="documentType"><option value="all">Todos</option><option value="attachment"' + (documentType === "attachment" ? " selected" : "") + '>Anexos</option><option value="report"' + (documentType === "report" ? " selected" : "") + '>Informes</option></select></div>' +
+        '<div><label>Tipo</label><select id="documentType"><option value="all">Todos</option><option value="attachment"' + (documentType === "attachment" ? " selected" : "") + '>Documentos</option><option value="report"' + (documentType === "report" ? " selected" : "") + '>Informes generados</option>' + ${JSON.stringify(DOCUMENT_CATEGORIES)}.map(c=>'<option' + (documentType===c?' selected':'') + '>' + html(c) + '</option>').join('') + '</select></div>' +
         '<div><label>Comunidad</label><select id="documentCommunity"><option value="">Todas las comunidades</option>' + communities + '</select></div></div>' +
         '<div class="muted" id="documentCount"></div><div class="documentGrid" id="documentResults"></div>';
     }
@@ -10680,7 +10762,7 @@ function homePage() {
       }));
       $("reportSelectVisible").addEventListener("click", () => { filteredReportEntities().forEach(row => selectedReportEntities.add(row.entity_type + ":" + row.entity_id)); render(); });
       $("reportClearSelection").addEventListener("click", () => { selectedReportEntities.clear(); render(); });
-      $("generateCollectionReport").addEventListener("click", generateSelectedReport);
+      $("generateCollectionReport").addEventListener("click", generateSelectedCollectionReport);
     }
 
     async function loadReportsCenter() {
@@ -10694,24 +10776,14 @@ function homePage() {
       }
     }
 
-    async function generateSelectedReport() {
+    async function generateSelectedCollectionReport() {
       const selections = [...selectedReportEntities].map(key => { const parts = key.split(":"); return { type: parts[0], id: Number(parts[1]) }; });
       if (!selections.length) { $("collectionReportMessage").textContent = "Selecciona al menos un elemento."; return; }
       if (selections.length > 40) { $("collectionReportMessage").textContent = "El maximo es de 40 elementos."; return; }
       const selectedRows = (reportsCenter.entities || []).filter(row => selectedReportEntities.has(row.entity_type + ":" + row.entity_id));
       if (new Set(selectedRows.map(row => row.id_comunidad)).size > 1) { $("collectionReportMessage").textContent = "Selecciona elementos de una sola comunidad."; return; }
-      if (!confirm("Se generara un informe Word con " + selections.length + " fichas completas. Confirmas?")) return;
-      const reportWindow = window.open("", "_blank");
-      $("collectionReportMessage").textContent = "Generando informe...";
-      try {
-        collectionReportTitle = $("collectionReportTitle").value;
-        const result = await api("/api/report/collection", { method: "POST", body: JSON.stringify({ title: collectionReportTitle || "Informe conjunto", selections }) });
-        if (reportWindow) reportWindow.location = "/api/report/download?id=" + encodeURIComponent(result.report_id);
-        await loadReportsCenter();
-      } catch (error) {
-        if (reportWindow) reportWindow.close();
-        $("collectionReportMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
-      }
+      collectionReportTitle = $("collectionReportTitle").value;
+      await configureReport(selections, collectionReportTitle || 'Informe conjunto');
     }
 
     function workflowActionCard(row) {
@@ -13110,8 +13182,8 @@ function homePage() {
     $("cancelEntityEdit").addEventListener("click", () => toggleEditSection(false));
     $("saveEntityEdit").addEventListener("click", saveEntityEdit);
     $("archiveEntityButton").addEventListener("click", archiveSelectedEntity);
-    $("generateReportButton").addEventListener("click", generateSelectedReport);
-    $("generateReportBottom").addEventListener("click", generateSelectedReport);
+    $("generateReportButton").addEventListener("click", generateSelectedEntityReport);
+    $("generateReportBottom").addEventListener("click", generateSelectedEntityReport);
     $("focusRecordButton").addEventListener("click", focusRecordSection);
     $("entityCopilotButton").addEventListener("click", () => openCopilot("ask"));
     $("uploadAttachmentsButton").addEventListener("click", uploadSelectedAttachments);
@@ -13616,7 +13688,7 @@ async function handle(req, res) {
     if (reportsForbidden(session)) return sendJson(res, 403, { ok: false, error: "El perfil Presidente no tiene acceso a informes." });
     const body = await readBody(req);
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
-    return sendJson(res, 200, await generateCollectionReport(session, body.selections || [], body.title || "Informe conjunto", String(pc)));
+    return sendJson(res, 200, await generateCollectionReport(session, body.selections || [], body.title || "Informe conjunto", String(pc), body));
   }
   if (req.method === "GET" && url.pathname === "/api/options") {
     const session = readSession(req);
@@ -13729,7 +13801,24 @@ async function handle(req, res) {
     if (!fileName) return sendJson(res, 400, { ok: false, error: "Falta el nombre del archivo." });
     const bytes = await readRawBody(req);
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
-    return sendJson(res, 200, await saveEntityAttachment(session, type, id, fileName, req.headers["content-type"], bytes, String(pc)));
+    return sendJson(res, 200, await saveEntityAttachment(session, type, id, fileName, req.headers["content-type"], bytes, String(pc), String(url.searchParams.get('category') || 'Sin clasificar')));
+  }
+  if (req.method === 'POST' && url.pathname === '/api/attachment/classify') {
+    const session = readSession(req);
+    if (!session) return sendJson(res,401,{error:'No autenticado.'});
+    const body = await readBody(req);
+    const scoped = sessionForPermission(session,'puede_actualizar');
+    const script = pythonScript`
+import json,sqlite3
+from documents_domain import classify
+conn=sqlite3.connect(${JSON.stringify(databasePath)}); conn.row_factory=sqlite3.Row
+try:
+    result=classify(conn,${JSON.stringify(scoped)},int(${JSON.stringify(Number(body.id) || 0)}),${JSON.stringify(String(body.category || ''))},${JSON.stringify(String(req.socket.remoteAddress || 'web'))})
+    print(json.dumps(result,ensure_ascii=False))
+finally:
+    conn.close()
+`;
+    return sendJson(res,200,await runPythonJson(script));
   }
   if (req.method === "GET" && url.pathname === "/api/attachment") {
     const session = readSession(req);
@@ -13749,7 +13838,7 @@ async function handle(req, res) {
     const id = Number(body.id || 0);
     if (!["task", "project"].includes(type) || !id) return sendJson(res, 400, { ok: false, error: "Entidad no valida." });
     const pc = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "web";
-    return sendJson(res, 200, await generateEntityReport(session, type, id, String(pc)));
+    return sendJson(res, 200, await generateEntityReport(session, type, id, String(pc), body));
   }
   if (req.method === "GET" && url.pathname === "/api/report/download") {
     const session = readSession(req);

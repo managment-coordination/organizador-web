@@ -129,6 +129,36 @@ try {
   assert.equal(word.status,200);
   assert.equal(Buffer.from(await word.arrayBuffer()).subarray(0,2).toString(),'PK');
   results.push('Attachment upload/open and Word generation/download');
+  assert.equal(attached.categoria_documental,'Sin clasificar');
+  await request('/api/attachment/classify',other.cookie,{id:attached.id_anexo,category:'Factura'},403);
+  await request('/api/attachment/classify',read.cookie,{id:attached.id_anexo,category:'Factura'},403);
+  await request('/api/attachment/classify',worker.cookie,{id:attached.id_anexo,category:'Inventada'},400);
+  await request('/api/attachment/classify',worker.cookie,{id:attached.id_anexo,category:'Presupuesto'});
+  let documentsDetail=(await request(`/api/entity/detail?type=task&id=${task}`,worker.cookie)).value;
+  assert.equal(documentsDetail.attachments[0].categoria_documental,'Presupuesto');
+  assert.equal(documentsDetail.attachments[0].id_registro,attached.id_registro);
+  assert.ok(documentsDetail.reports.some(r=>r.id_informe===report.report_id),'Individual task reports appear in the task file');
+  const executive=(await request('/api/report/generate',worker.cookie,{type:'task',id:task,mode:'ejecutivo',attachment_ids:[]})).value;
+  const collection=(await request('/api/report/collection',worker.cookie,{selections:[{type:'task',id:task},{type:'project',id:project}],mode:'completo',attachment_ids:[attached.id_anexo]})).value;
+  assert.notEqual(executive.filename,report.filename);
+  documentsDetail=(await request(`/api/entity/detail?type=task&id=${task}`,worker.cookie)).value;
+  assert.ok(documentsDetail.reports.some(r=>r.id_informe===executive.report_id && r.mode==='ejecutivo'));
+  assert.ok(documentsDetail.reports.some(r=>r.id_informe===collection.report_id));
+  assert.equal(documentsDetail.attachments.length,1,'Excluding annexes does not delete documents');
+  await request('/api/report/generate',worker.cookie,{type:'project',id:project,attachment_ids:[attached.id_anexo]},403);
+  await request('/api/report/generate',worker.cookie,{type:'task',id:task,mode:'pdf'},400);
+  await request('/api/report/generate',president.cookie,{type:'task',id:task},403);
+  await request('/api/report/collection',admin,{selections:[{type:'task',id:task},{type:'project',id:projectB}]},400);
+  pythonRun(`import sqlite3,sys,json,hashlib
+c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row
+row=c.execute('SELECT * FROM informes WHERE id_informe=?',(sys.argv[2],)).fetchone()
+m=json.loads(row['observaciones']); assert m['snapshot']['mode']=='ejecutivo'
+assert m['snapshot']['entries'][0]['attachments']==[]
+assert m['snapshot']['author']==row['usuario']
+assert len(m['snapshot_sha256'])==64
+assert c.execute("SELECT count(*) FROM auditoria WHERE accion='Clasificar documento'").fetchone()[0]>=1
+`,[database,String(executive.report_id)]);
+  results.push('Module05: document categories audited/scoped, both Word formats, immutable snapshots, selected annexes, task/collection versions');
   const guardAccess=(await request('/api/security/access',guard.cookie)).value;
   assert.ok(guardAccess.can_upload && !guardAccess.can_manage);
   const securityUpload=async(cookie,cid)=> {
