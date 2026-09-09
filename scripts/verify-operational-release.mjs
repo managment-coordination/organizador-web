@@ -310,6 +310,38 @@ assert c.execute("SELECT count(*) FROM auditoria WHERE accion='Clasificar docume
   assert.ok(mentions.some(n=>n.tipo==='Mencion directa' && n.id_tarea===task));
   await request('/api/entity/record',worker.cookie,{type:'task',id:task,payload:{comentario:'Forbidden mention',responsable_proximo_paso:worker.name,menciones:[other.id]}},403);
   results.push('Module04: explicit requests, attachments, independent decisions, clarification thread, read vs managed, ownership, scoped mentions');
+  // Isolated drafts are prepared without an external provider or business-data writes.
+  const draftTask = await create(worker.cookie,'task',communityA,'Module06 draft fixture');
+  const draftPayload={comentario:'Disponibilidad confirmada, condicionada a aprobar el presupuesto.',responsable_proximo_paso:'Administracion',proximo_paso:'Revisar material una vez aprobado el presupuesto.',estado_nuevo:'Pendiente'};
+  function makeDraft(){return JSON.parse(pythonRun(`import json,sqlite3,sys
+import ai_drafts as d
+conn=sqlite3.connect(sys.argv[1]);conn.row_factory=sqlite3.Row
+s=json.loads(sys.argv[2]);kind='task';eid=int(sys.argv[3]);row=d.entity(conn,s,kind,eid)
+with conn: result=d.create(conn,s,kind,eid,'Synthetic fixture input','',{'payload':json.loads(sys.argv[4])},d.version(conn,kind,row))
+print(json.dumps(result))
+`,[database,JSON.stringify({id_usuario:worker.id,nombre:worker.name,rol:'Usuario',comunidades:[{id_comunidad:communityA,puede_actualizar:1}]}),String(draftTask),JSON.stringify(draftPayload)]));}
+  const draft=makeDraft();
+  assert.equal((await request(`/api/ai/followup-draft?type=task&id=${draftTask}`,worker.cookie)).value.draft.id,draft.id);
+  await request(`/api/ai/followup-draft?type=task&id=${draftTask}`,other.cookie,undefined,403);
+  await request(`/api/ai/followup-draft?type=task&id=${draftTask}`,read.cookie,undefined,403);
+  await request('/api/ai/followup-draft',other.cookie,{draft_id:draft.id,revision:1,payload:draftPayload},403);
+  const updated=(await request('/api/ai/followup-draft',worker.cookie,{draft_id:draft.id,revision:1,payload:{...draftPayload,comentario:'Comentario revisado manualmente.'}})).value;
+  assert.equal(updated.revision,2);
+  await request('/api/ai/followup-draft',worker.cookie,{draft_id:draft.id,revision:1,payload:draftPayload},400);
+  await request('/api/entity/record',worker.cookie,{type:'task',id:task,payload:{...draftPayload,draft_id:draft.id,draft_revision:2}},403);
+  const confirmation={type:'task',id:draftTask,payload:{...updated.proposal.payload,draft_id:draft.id,draft_revision:2}};
+  const applied=(await request('/api/entity/record',worker.cookie,confirmation)).value;
+  const repeated=(await request('/api/entity/record',worker.cookie,confirmation)).value;
+  assert.equal(applied.record_id,repeated.record_id);
+  assert.equal((await request(`/api/ai/followup-draft?type=task&id=${draftTask}`,worker.cookie)).value.draft,null);
+  const stale=makeDraft();
+  await request('/api/entity/record',worker.cookie,{type:'task',id:draftTask,payload:{comentario:'Otra actuacion posterior',responsable_proximo_paso:'Administracion'}});
+  const conflict=(await request('/api/entity/record',worker.cookie,{type:'task',id:draftTask,payload:{...draftPayload,draft_id:stale.id,draft_revision:1}},400)).value;
+  assert.match(conflict.error,/ficha ha cambiado/);
+  await request('/api/ai/analyze',worker.cookie,{text:'Nueva actuacion',target:{type:'project',id:projectB}},403);
+  const offline=(await request('/api/ai/analyze',worker.cookie,{text:'Nueva actuacion',target:{type:'task',id:draftTask}},500)).value;
+  assert.match(offline.error,/IA externa no esta disponible/);
+  results.push('Module06: private editable drafts, community write scope, stale-proposal protection, idempotent audited confirmation and explicit AI unavailability');
   await adminAction('save_user',{id_usuario:worker.id,nombre:worker.name,rol:'Usuario',activo:false,community_ids:[communityA,communityB]});
   await request('/api/me',worker.cookie,undefined,401);
   await adminAction('reset_password',{id_usuario:other.id});

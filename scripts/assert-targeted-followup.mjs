@@ -1,0 +1,75 @@
+import assert from 'node:assert/strict';
+import { analyzeTargetedFollowup, normalizeFollowup, FOLLOWUP_SYSTEM } from '../server/ai-followup.js';
+
+const item = { titulo: 'Badenes', estado: 'En curso', prioridad: 'Media', responsable: 'Luis', proximo_paso: 'Antiguo paso' };
+const target = { type: 'task', id: 23 };
+const text = 'Paquito confirma disponibilidad fuera de horario. Calcula tres horas por unidad. Si aceptamos el presupuesto iremos a Valeriano a revisar el material.';
+const raw = { comentario: 'Paquito confirma disponibilidad para ejecutar los trabajos fuera de su horario habitual. Estima tres horas por unidad.',
+  proximo_paso: 'Visitar Valeriano para revisar el material antes del pedido, una vez aprobado el presupuesto.', evidencias: {} };
+const proposal = normalizeFollowup(raw, { text, item, target });
+assert.equal(proposal.entity.id, 23);
+assert.equal(proposal.payload.estado_nuevo, 'En curso');
+assert.equal(proposal.payload.responsable_nuevo, 'Luis');
+assert.equal(proposal.payload.responsable_proximo_paso, 'Administracion');
+assert.match(proposal.payload.proximo_paso, /una vez aprobado/);
+assert.ok(proposal.warnings.length);
+assert.equal(normalizeFollowup({...raw, proximo_paso:''},{text,item,target}).payload.proximo_paso,'');
+assert.equal(normalizeFollowup({...raw,comentario:''},{text,item,target}).requires_clarification,true);
+assert.equal(normalizeFollowup({...raw,necesita_aclaracion:true},{text,item,target}).requires_clarification,true);
+const invented = normalizeFollowup({...raw,estado_propuesto:'Finalizado',responsable_proximo_paso:'Elena',fecha_objetivo_proximo_paso:'2026-10-10',evidencias:{estado:'todo terminado',responsable:'Elena lo hara',fecha:'10/10/2026'}},{text,item,target});
+assert.equal(invented.payload.estado_nuevo,'En curso');
+assert.equal(invented.payload.responsable_proximo_paso,'Administracion');
+assert.equal(invented.payload.fecha_objetivo_proximo_paso,'');
+const dated = {...raw,estado_propuesto:'Finalizado',responsable_proximo_paso:'Elena',fecha_objetivo_proximo_paso:'2026-10-10',evidencias:{estado:'trabajos finalizados',responsable:'Elena revisara',fecha:'10/10/2026'}};
+const datedText='Los trabajos finalizados. Elena revisara el 10/10/2026.';
+const grounded=normalizeFollowup(dated,{text:datedText,item,target});
+assert.equal(grounded.payload.estado_nuevo,'Finalizado');
+assert.equal(grounded.payload.responsable_proximo_paso,'Elena');
+assert.equal(grounded.payload.fecha_objetivo_proximo_paso,'2026-10-10');
+const relative={...raw,fecha_objetivo_proximo_paso:'2026-09-10',evidencias:{fecha:'Vendran manana'}};
+assert.equal(normalizeFollowup(relative,{text:'Vendran manana',item,target}).payload.fecha_objetivo_proximo_paso,'');
+assert.equal(normalizeFollowup(relative,{text:'Vendran manana',item,target,sourceDate:'2026-09-09'}).payload.fecha_objetivo_proximo_paso,'2026-09-10');
+assert.equal(normalizeFollowup({...raw,fecha_objetivo_proximo_paso:'',evidencias:{fecha:'mañana'}},{text:'Vendran manana',item,target,sourceDate:'2026-12-31'}).payload.fecha_objetivo_proximo_paso,'2027-01-01');
+assert.equal(normalizeFollowup({...dated,fecha_objetivo_proximo_paso:'2026-02-30'},{text:'El 30/02/2026',item,target,sourceDate:'2026-01-01'}).payload.fecha_objetivo_proximo_paso,'');
+let calls=0;
+await analyzeTargetedFollowup({text,item,target,history:[{comentario:'Contexto',secret:'excluded'}],callAi:async request=>{
+  calls++;
+  assert.equal(request.system,FOLLOWUP_SYSTEM);
+  const input=JSON.parse(request.user);
+  assert.equal(input.fecha_conversacion,null);
+  assert.ok(!('secret' in input.contexto_reciente[0]));
+  return {...raw,source:'test',ai_model:'fixture'};
+}});
+assert.equal(calls,1);
+const project = await analyzeTargetedFollowup({text,item:{nombre:'Proyecto',estado_general:'En curso',responsable_principal:'Coordinacion'},target:{type:'project',id:4},callAi:async()=>raw});
+assert.equal(project.payload.estado_nuevo,'En curso');
+assert.equal(project.payload.responsable_nuevo,'Coordinacion');
+let repairs=0;
+const repaired=await analyzeTargetedFollowup({text:'Marta enviara el informe el viernes',item,target,callAi:async request=>{
+  repairs++;
+  if(repairs===1)return {...raw,responsable_proximo_paso:'Marta',evidencias:{responsable:'Luis'}};
+  assert.equal(request.purpose,'targeted_followup_evidence_repair_v1');
+  return {...raw,responsable_proximo_paso:'Marta',evidencias:{responsable:'Marta enviará el informe'}};
+}});
+assert.equal(repairs,2);
+assert.equal(repaired.payload.responsable_proximo_paso,'Marta');
+assert.equal(repaired.evidence_correction,true);
+let boundedCalls=0;
+const ungrounded=await analyzeTargetedFollowup({text,item,target,callAi:async()=>{
+  boundedCalls++;
+  return {...raw,responsable_proximo_paso:'Inventado',entity:{type:'task',id:999},evidencias:{responsable:'No existe esta frase'}};
+}});
+assert.equal(boundedCalls,2);
+assert.equal(ungrounded.payload.responsable_proximo_paso,'Administracion');
+assert.equal(ungrounded.entity.id,target.id);
+let conditionalRepairs=0;
+const condition=await analyzeTargetedFollowup({text:'Si mejora el tiempo, el proveedor podra pintar la fachada.',item,target,callAi:async()=>{
+  conditionalRepairs++;
+  return {...raw,proximo_paso:conditionalRepairs===1?'Pintar la fachada.':'Pintar la fachada si mejora el tiempo.'};
+}});
+assert.equal(conditionalRepairs,2);
+assert.match(condition.payload.proximo_paso,/si mejora/);
+await assert.rejects(analyzeTargetedFollowup({text,item,target,callAi:async()=>{throw new Error('Motor no disponible');}}),/Motor no disponible/);
+await assert.rejects(analyzeTargetedFollowup({text,item,target:{type:'task',id:-1},callAi:async()=>raw}),/Expediente/);
+await assert.rejects(analyzeTargetedFollowup({text:'x'.repeat(60001),item,target,callAi:async()=>raw}),/60.000/);
+console.log('Targeted followup: evidence, conditions, clarification, exact destination, empty fields, dates and explicit provider failures verified.');

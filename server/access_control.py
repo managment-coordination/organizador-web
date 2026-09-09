@@ -38,6 +38,8 @@ def migrate(conn):
     conn.execute("CREATE TABLE IF NOT EXISTS web_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     from documents_domain import migrate as migrate_documents
     migrate_documents(conn)
+    from ai_drafts import migrate as migrate_ai_drafts
+    migrate_ai_drafts(conn)
     if conn.execute("SELECT 1 FROM web_migrations WHERE version='access_v1'").fetchone():
         migrate_data_scope(conn)
         from work_domain import migrate as migrate_work

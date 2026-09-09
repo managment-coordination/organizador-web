@@ -10,6 +10,7 @@ import { DOCUMENT_CATEGORIES, reportOptions, selectReportAttachments, reportSnap
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
 import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
 import { pythonScript } from "./python-template.js";
+import { analyzeTargetedFollowup } from "./ai-followup.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +26,7 @@ const aiProvider = (process.env.AI_PROVIDER || "local").toLowerCase();
 const aiApiKey = process.env.AI_API_KEY || process.env.NVIDIA_API_KEY || process.env.ORGANIZADOR_NVIDIA_API_KEY || process.env.OPENAI_API_KEY || "";
 const aiBaseUrl = process.env.AI_BASE_URL || (aiProvider === "nvidia" ? "https://integrate.api.nvidia.com/v1" : "https://api.openai.com/v1");
 const aiModel = process.env.AI_MODEL || (aiProvider === "nvidia" ? "nvidia/nemotron-3-super-120b-a12b" : "gpt-4.1-mini");
+const aiFollowupModel = process.env.AI_FOLLOWUP_MODEL || (aiProvider === 'nvidia' ? 'nvidia/nemotron-3-super-120b-a12b' : aiModel);
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, "data"));
 const logsDir = path.join(rootDir, "logs");
 const backupsDir = path.join(rootDir, "backups");
@@ -3001,11 +3003,13 @@ function aiChatCompletionsUrl() {
   return `${aiBaseUrl.replace(/\/$/, "")}/chat/completions`;
 }
 
-async function callExternalAiJson({ system, user, purpose = "general", temperature = 0.1, maxTokens = 4096, timeoutMs = 150000 }) {
+async function callExternalAiJson({ system, user, purpose = "general", temperature = 0.1, maxTokens = 4096, timeoutMs = 150000, reasoningEffort }) {
   if (!aiExternalAvailable()) throw new Error("IA externa no configurada.");
+  const model = purpose.startsWith('targeted_followup_') ? aiFollowupModel : aiModel;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
+  let data;
   try {
     response = await fetch(aiChatCompletionsUrl(), {
       method: "POST",
@@ -3015,9 +3019,10 @@ async function callExternalAiJson({ system, user, purpose = "general", temperatu
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: aiModel,
+        model,
         temperature,
         max_tokens: maxTokens,
+        ...(aiProvider === 'nvidia' && /^openai\/gpt-oss-/.test(model) && ['low','medium','high'].includes(reasoningEffort) ? { reasoning_effort: reasoningEffort } : {}),
         messages: [
           { role: "system", content: system },
           { role: "user", content: user },
@@ -3025,23 +3030,21 @@ async function callExternalAiJson({ system, user, purpose = "general", temperatu
         response_format: { type: "json_object" },
       }),
     });
+    if (!response.ok) throw new Error(`servicio ${aiProvider}: HTTP ${response.status}`);
+    if (response.status === 202) throw new Error('La solicitud sigue en cola en el proveedor. No se ha generado una propuesta; vuelve a intentar mas tarde.');
+    data = await response.json();
   } catch (error) {
     const reason = error?.name === "AbortError" ? `tiempo agotado en ${purpose}` : error.message;
     throw new Error(`IA externa no disponible: ${reason}`);
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    let detail = "";
-    try {
-      detail = (await response.text()).slice(0, 500);
-    } catch {}
-    throw new Error(`IA externa no disponible (${response.status})${detail ? `: ${detail}` : ""}`);
-  }
-  const data = await response.json();
-  const parsed = cleanAiJson(data.choices?.[0]?.message?.content || "{}");
+  if (data.choices?.[0]?.finish_reason === "length") throw new Error("La respuesta de IA quedo incompleta. No se ha guardado nada; reduce la entrada o vuelve a intentar.");
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== 'string' || !content.trim()) throw new Error('El proveedor no ha devuelto contenido util. No se ha guardado nada.');
+  const parsed = cleanAiJson(content);
   parsed.source = aiProvider;
-  parsed.ai_model = aiModel;
+  parsed.ai_model = model;
   parsed.ai_purpose = purpose;
   return parsed;
 }
@@ -5124,51 +5127,50 @@ async function prepareAgentEmailDraft(session, text) {
   return externalPolishEmailDraft(result, cleanText);
 }
 
-function targetedRecordProposal(text, context, target) {
-  const type = String(target?.type || "").trim();
-  const id = Number(target?.id || 0);
-  if (!["task", "project"].includes(type) || !id) return null;
-  const rows = type === "task" ? (context.tasks || []) : (context.projects || []);
-  const item = rows.find((row) => Number(row.id) === id) || { id, titulo: target?.title || "", estado: "", prioridad: "Media", responsable: "" };
-  const isTask = type === "task";
-  const currentState = item.estado || (isTask ? "Pendiente" : "En curso");
-  const currentOwner = item.responsable || "";
-  return {
-    source: "local-db",
-    confidence: 0.9,
-    action: isTask ? "seguimiento_tarea" : "seguimiento_proyecto",
-    answer: "Seguimiento preparado sobre el elemento seleccionado. Revisa los campos antes de guardar.",
-    entity: { type, id, title: item.titulo || target?.title || "" },
-    current_snapshot: {
-      titulo: item.titulo || target?.title || "",
-      categoria: item.categoria || "",
-      estado: item.estado || "",
-      prioridad: item.prioridad || "",
-      responsable: item.responsable || "",
-      responsable_proximo_paso: item.responsable_proximo_paso || "",
-      fecha_objetivo_proximo_paso: item.fecha_objetivo_proximo_paso || "",
-      proximo_paso: item.proximo_paso || "",
-      comunidad: item.comunidad || "",
-    },
-    candidates: [{ type, id, title: item.titulo || target?.title || "", score: 10 }],
-    payload: {
-      tipo_registro: "Seguimiento",
-      comentario: buildFormalComment(text, item).slice(0, 4000),
-      estado_nuevo: detectState(text, currentState),
-      prioridad_nueva: detectPriority(text, item.prioridad || "Media"),
-      responsable_nuevo: currentOwner,
-      responsable_proximo_paso: detectResponsible(text, item.responsable_proximo_paso || currentOwner),
-      fecha_objetivo_proximo_paso: "",
-      fecha_proxima_revision: "",
-      proximo_paso: buildFormalNextStep(text, item.proximo_paso || ""),
-      motivo_bloqueo: "",
-    },
-  };
+function followupDraftCommand(session, action, data = {}) {
+  if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error("PermissionError: Tu perfil no puede gestionar seguimientos.");
+  session = sessionForPermission(session, "puede_actualizar");
+  return runPythonJson(pythonScript`
+import sqlite3,json
+import ai_drafts as drafts
+conn=sqlite3.connect(${JSON.stringify(databasePath)})
+conn.row_factory=sqlite3.Row
+session=${JSON.stringify(session)}
+action=${JSON.stringify(action)}
+data=${JSON.stringify(data)}
+try:
+    conn.execute('BEGIN IMMEDIATE')
+    with conn:
+        if action=='version':
+            row=drafts.entity(conn,session,data['type'],int(data['id']))
+            result={'version':drafts.version(conn,data['type'],row)}
+        elif action=='create':
+            result=drafts.create(conn,session,data['type'],int(data['id']),data['text'],data.get('source_date',''),data['proposal'],data['version'])
+        elif action=='latest':
+            result={'draft':drafts.latest(conn,session,data['type'],int(data['id']))}
+        elif action=='update':
+            result=drafts.update(conn,session,data['draft_id'],int(data['revision']),data['payload'])
+        else: raise ValueError('Accion de borrador no valida.')
+    print(json.dumps(result,ensure_ascii=False))
+finally: conn.close()
+`);
 }
 
 async function analyzeWithAi(session, text, target = null) {
   const cleanText = String(text || "").trim();
   if (!cleanText) throw new Error("El texto para analizar es obligatorio.");
+  if (target) {
+    if (!["task", "project"].includes(target.type) || !Number.isSafeInteger(Number(target.id)) || Number(target.id) <= 0) throw new Error("ValueError: Expediente no valido.");
+    const snapshot = await followupDraftCommand(session, 'version', target);
+    const detail = await queryEntityDetail(sessionForPermission(session, "puede_actualizar"), target.type, Number(target.id));
+    if (!aiExternalAvailable()) throw new Error("La IA externa no esta disponible. El texto sigue en el formulario; puedes reintentar o redactar manualmente. No se ha guardado nada.");
+    const proposal = await analyzeTargetedFollowup({ text: cleanText, target, item: detail.item, history: detail.history,
+      sourceDate: String(target.source_date || ""), callAi: callExternalAiJson });
+    const reviewed = withAiProposalContract(proposal);
+    const draft = await followupDraftCommand(session, 'create', { ...target, text: cleanText,
+      source_date: String(target.source_date || ''), proposal: reviewed, version: snapshot.version });
+    return { ...reviewed, draft_id: draft.id, draft_revision: draft.revision };
+  }
   const context = await queryAiContext(session);
   let redactionRules = [];
   try {
@@ -5188,8 +5190,6 @@ async function analyzeWithAi(session, text, target = null) {
     }
     return withAiProposalContract(improved);
   };
-  const targeted = targetedRecordProposal(cleanText, context, target);
-  if (targeted) return finalizeProposal(targeted);
   const pastedOperational = looksLikePastedOperationalConversation(cleanText) || isLongMeetingTranscript(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText);
   if (!pastedOperational) {
     const smart = await querySmartAssistant(session, cleanText);
@@ -6881,6 +6881,7 @@ import json
 import sqlite3
 from work_domain import validate_change, synchronize, add_commitment
 from presidency_domain import notify_mentions
+from ai_drafts import before_confirm, applied
 from datetime import datetime, date
 
 path = ${JSON.stringify(databasePath)}
@@ -6943,6 +6944,12 @@ try:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("BEGIN IMMEDIATE")
     with conn:
+        draft_id = str(data.get('draft_id') or '')
+        if draft_id:
+            previous = before_confirm(conn,session,entity_type,entity_id,draft_id,int(data.get('draft_revision') or 0))
+            if previous:
+                print(json.dumps(previous))
+                raise SystemExit(0)
         if entity_type == "task":
             task = conn.execute("""
                 SELECT t.*, p.nombre AS proyecto
@@ -7047,6 +7054,8 @@ try:
             notify_mentions(conn,session,dict(project),data)
             synchronize(conn, {'nombre':user,'pc':pc}, 'project',dict(project),data)
             audit(conn, "Seguimiento de proyecto web", "proyecto", entity_id, f"{project['estado_general']} -> {estado_nuevo}")
+        if draft_id:
+            applied(conn,session,draft_id,{'ok':True,'record_id':record_id},data,pc)
     print(json.dumps({"ok": True, "record_id": record_id}, ensure_ascii=False))
 finally:
     conn.close()
@@ -8526,11 +8535,15 @@ function homePage() {
               <h3>Actualizar con IA</h3>
               <p class="muted">Pega o dicta lo ocurrido. La app propondrá comentario, estado, responsable, fecha y próximo paso para que lo revises antes de guardar.</p>
               <textarea id="quickRecordText" placeholder="Ejemplo: He hablado con el proveedor. Queda pendiente revisar la arqueta, confirmar presupuesto y volver a informar..."></textarea>
+              <label for="quickRecordDate">Fecha de la conversación (opcional)</label>
+              <input id="quickRecordDate" type="date">
               <div class="toolbar">
                 <button id="quickRecordAnalyze">Analizar y rellenar</button>
                 <button class="ghost" id="quickRecordDictate">Dictar</button>
                 <button class="ghost" id="quickRecordClear">Limpiar</button>
-                <span class="muted" id="quickRecordMessage"></span>
+                <button class="ghost hidden" id="quickRecordSaveDraft">Guardar borrador</button>
+                <button class="ghost hidden" id="quickRecordResume">Recuperar borrador</button>
+                <span class="muted" id="quickRecordMessage" role="status" aria-live="polite"></span>
               </div>
             </div>
             <div class="formGrid">
@@ -9385,7 +9398,15 @@ function homePage() {
       $("recordNextStep").value = "";
       $("recordBlockReason").value = "";
       $("quickRecordText").value = "";
+      $("quickRecordDate").value = "";
+      quickRecordRequest++;
+      $("quickRecordAnalyze").disabled = false;
+      $("saveRecord").disabled = false;
       $("quickRecordMessage").textContent = "";
+      activeFollowupDraft = null;
+      availableFollowupDraft = null;
+      $("quickRecordSaveDraft").classList.add("hidden");
+      $("quickRecordResume").classList.add("hidden");
       $("quickRecordBox").classList.toggle("hidden", !writable);
       updateBlockReasonVisibility();
       $("recordSection").classList.toggle("hidden", !writable);
@@ -9393,6 +9414,16 @@ function homePage() {
       renderAttachments(detail.attachments || []);
       renderEntityReports(detail.reports || [], reportsAllowed);
       $("entityModal").classList.remove("hidden");
+      if (writable) {
+        const opened = selectedEntity;
+        api('/api/ai/followup-draft?type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id)).then(result => {
+          if (selectedEntity !== opened) return;
+          availableFollowupDraft = result.draft;
+          $("quickRecordResume").classList.toggle('hidden', !result.draft);
+        }).catch(error => {
+          if (selectedEntity === opened) $("quickRecordMessage").textContent = 'No se pudo consultar el borrador: ' + error.message;
+        });
+      }
       if (focusRecord) setTimeout(focusRecordSection, 50);
     }
 
@@ -9406,15 +9437,52 @@ function homePage() {
       setSelectValue($("recordType"), payload.tipo_registro || "Seguimiento");
       setSelectValue($("recordState"), payload.estado_nuevo);
       setSelectValue($("recordPriority"), payload.prioridad_nueva);
-      $("recordOwner").value = payload.responsable_nuevo || $("recordOwner").value;
-      $("recordNextOwner").value = payload.responsable_proximo_paso || $("recordNextOwner").value;
-      $("recordNextDate").value = (payload.fecha_objetivo_proximo_paso || payload.fecha_proxima_revision || $("recordNextDate").value || "").slice(0, 10);
-      $("recordComment").value = payload.comentario || $("recordComment").value;
-      $("recordNextStep").value = payload.proximo_paso || $("recordNextStep").value;
+      $("recordOwner").value = payload.responsable_nuevo || "";
+      $("recordNextOwner").value = payload.responsable_proximo_paso || "";
+      $("recordNextDate").value = (payload.fecha_objetivo_proximo_paso || "").slice(0, 10);
+      $("recordComment").value = payload.comentario || "";
+      $("recordNextStep").value = payload.proximo_paso || "";
       $("recordBlockReason").value = payload.motivo_bloqueo || "";
       updateBlockReasonVisibility();
     }
 
+    let quickRecordRequest = 0;
+    let activeFollowupDraft = null;
+    let availableFollowupDraft = null;
+    function showFollowupProposal(proposal) {
+      $("quickRecordMessage").innerHTML = '<div>' + html(proposal.answer || 'Propuesta preparada. Revisa antes de guardar.') + '</div>' +
+        (proposal.warnings || []).concat(proposal.questions || []).map(message => '<div class="dangerText">' + html(message) + '</div>').join('');
+    }
+    function resumeFollowupDraft() {
+      if (!availableFollowupDraft || !selectedEntity) return;
+      if (($("quickRecordText").value || $("recordComment").value) && !confirm('Recuperar el borrador sustituira el texto actual del formulario. Continuar?')) return;
+      quickRecordRequest++;
+      $("quickRecordAnalyze").disabled = false;
+      $("saveRecord").disabled = false;
+      activeFollowupDraft = { id: availableFollowupDraft.id, revision: availableFollowupDraft.revision };
+      $("quickRecordText").value = availableFollowupDraft.entrada;
+      $("quickRecordDate").value = availableFollowupDraft.fecha_origen || '';
+      const proposal = availableFollowupDraft.proposal;
+      if (!proposal.requires_clarification) fillRecordFromProposal(proposal);
+      showFollowupProposal(proposal);
+      $("quickRecordSaveDraft").classList.remove('hidden');
+      focusRecordSection();
+    }
+    async function saveFollowupDraft() {
+      if (!activeFollowupDraft || !selectedEntity) return;
+      const origin = selectedEntity;
+      const draft = activeFollowupDraft;
+      $("quickRecordSaveDraft").disabled = true;
+      try {
+        const result = await api('/api/ai/followup-draft', {method:'POST',body:JSON.stringify({draft_id:draft.id,revision:draft.revision,payload:recordFormPayload()})});
+        if (selectedEntity !== origin || activeFollowupDraft !== draft) return;
+        activeFollowupDraft = { id: result.id, revision: result.revision };
+        availableFollowupDraft = result;
+        showFollowupProposal({ ...result.proposal, answer: 'Borrador guardado. No se ha modificado el expediente.' });
+      } catch(error) {
+        if (selectedEntity === origin) $("quickRecordMessage").textContent = error.message;
+      } finally { $("quickRecordSaveDraft").disabled = false; }
+    }
     async function analyzeQuickRecord() {
       if (!selectedEntity) return;
       const text = $("quickRecordText").value;
@@ -9422,16 +9490,48 @@ function homePage() {
         $("quickRecordMessage").textContent = "Pega o dicta primero el seguimiento.";
         return;
       }
-      $("quickRecordMessage").textContent = "Analizando...";
+      const origin = selectedEntity;
+      const requestId = ++quickRecordRequest;
+      const sameForm = () => selectedEntity === origin && requestId === quickRecordRequest;
+      const formFingerprint = () => JSON.stringify(['quickRecordText','quickRecordDate','recordComment','recordNextStep','recordNextOwner','recordNextDate','recordState','recordOwner','recordPriority'].map(id => $(id).value));
+      const originalForm = formFingerprint();
+      $("quickRecordAnalyze").disabled = true;
+      $("saveRecord").disabled = true;
+      $("quickRecordMessage").textContent = "Preparando propuesta con IA...";
+      const started = Date.now();
+      const elapsedTimer = setInterval(() => {
+        if (sameForm()) $("quickRecordMessage").textContent = 'Preparando propuesta con IA (' + Math.floor((Date.now() - started) / 1000) + ' s)...';
+      }, 10000);
       try {
         const proposal = await api("/api/ai/analyze", {
           method: "POST",
-          body: JSON.stringify({ text, target: { type: selectedEntity.type, id: selectedEntity.id, title: itemTitle(selectedEntity.item, selectedEntity.type) } })
+          body: JSON.stringify({ text, target: { type: origin.type, id: origin.id, source_date: $("quickRecordDate").value } })
         });
+        if (!sameForm()) return;
+        if (originalForm !== formFingerprint()) {
+          $("quickRecordMessage").textContent = "Has modificado el formulario mientras se analizaba. Se conservan tus cambios; vuelve a analizar para preparar una propuesta actualizada.";
+          return;
+        }
+        activeFollowupDraft = { id: proposal.draft_id, revision: proposal.draft_revision };
+        $("quickRecordSaveDraft").classList.remove('hidden');
+        if (proposal.requires_clarification) {
+          $("recordComment").value = '';
+          $("recordNextStep").value = '';
+          $("recordNextOwner").value = 'Administracion';
+          $("recordNextDate").value = '';
+          showFollowupProposal(proposal);
+          return;
+        }
         fillRecordFromProposal(proposal);
-        $("quickRecordMessage").textContent = "Campos rellenados. Revisa y guarda el seguimiento.";
+        showFollowupProposal(proposal);
       } catch (error) {
-        $("quickRecordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+        if (sameForm()) $("quickRecordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      } finally {
+        clearInterval(elapsedTimer);
+        if (requestId === quickRecordRequest) {
+          $("quickRecordAnalyze").disabled = false;
+          $("saveRecord").disabled = false;
+        }
       }
     }
 
@@ -9604,9 +9704,8 @@ function homePage() {
       $("blockReasonWrap").classList.toggle("hidden", value !== "Bloqueada" && value !== "Bloqueado");
     }
 
-    async function saveRecord() {
-      if (!selectedEntity) return;
-      const payload = {
+    function recordFormPayload() {
+      return {
         tipo_registro: $("recordType").value,
         estado_nuevo: $("recordState").value,
         prioridad_nueva: $("recordPriority").value,
@@ -9620,12 +9719,21 @@ function homePage() {
         motivo_bloqueo: $("recordBlockReason").value,
         motivo_reapertura: $('recordReopenReason').value
       };
+    }
+    async function saveRecord() {
+      if (!selectedEntity || $("saveRecord").disabled) return;
+      const payload = recordFormPayload();
+      if (activeFollowupDraft) {
+        payload.draft_id = activeFollowupDraft.id;
+        payload.draft_revision = activeFollowupDraft.revision;
+      }
       if (!safe(payload.comentario)) {
         $("recordMessage").innerHTML = '<span class="dangerText">El comentario es obligatorio.</span>';
         return;
       }
       const summary = "Se guardara un seguimiento y se actualizara la ficha.\\n\\nEstado: " + payload.estado_nuevo + "\\nResponsable: " + payload.responsable_nuevo + "\\nProximo responsable: " + payload.responsable_proximo_paso;
       if (!confirm(summary)) return;
+      $("saveRecord").disabled = true;
       $("recordMessage").textContent = "Guardando...";
       try {
         const reviewedType = selectedEntity.type;
@@ -9642,6 +9750,8 @@ function homePage() {
         await openEntity(reviewedType, reviewedId, false);
       } catch (error) {
         $("recordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
+      } finally {
+        $("saveRecord").disabled = false;
       }
     }
 
@@ -13222,8 +13332,15 @@ function homePage() {
     $("recordState").addEventListener("change", updateBlockReasonVisibility);
     $("saveRecord").addEventListener("click", saveRecord);
     $("quickRecordAnalyze").addEventListener("click", analyzeQuickRecord);
+    $("quickRecordSaveDraft").addEventListener("click", saveFollowupDraft);
+    $("quickRecordResume").addEventListener("click", resumeFollowupDraft);
     $("quickRecordDictate").addEventListener("click", startQuickDictation);
     $("quickRecordClear").addEventListener("click", () => {
+      activeFollowupDraft = null;
+      $("quickRecordSaveDraft").classList.add('hidden');
+      quickRecordRequest++;
+      $("quickRecordAnalyze").disabled = false;
+      $("saveRecord").disabled = false;
       $("quickRecordText").value = "";
       $("quickRecordMessage").textContent = "";
       $("quickRecordText").focus();
@@ -13967,6 +14084,14 @@ finally:
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await analyzeGuidedAutomationBatch(session, body.text || ""));
+  }
+  if (["GET", "POST"].includes(req.method) && url.pathname === "/api/ai/followup-draft") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
+    if (req.method === 'GET') return sendJson(res, 200, await followupDraftCommand(session, 'latest', {type:url.searchParams.get('type'),id:Number(url.searchParams.get('id'))}));
+    const body = await readBody(req);
+    if (!body.draft_id || !Number.isSafeInteger(body.revision) || !body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) throw new Error('ValueError: Borrador no valido.');
+    return sendJson(res, 200, await followupDraftCommand(session, 'update', body));
   }
   if (req.method === "POST" && url.pathname === "/api/ai/analyze") {
     const session = readSession(req);

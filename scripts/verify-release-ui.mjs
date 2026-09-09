@@ -68,6 +68,27 @@ try {
         await page.locator('#saveCreateEntity').click();
         await page.locator('#entityModal').waitFor({state:'visible'});
         assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),1);
+        await page.route('**/api/ai/analyze',async route=>{
+          const {target}=route.request().postDataJSON();
+          await route.fulfill({json:{entity:target,source:'test-provider',draft_id:'ui-only-fixture',draft_revision:1,
+            answer:'Propuesta de seguimiento revisable.',warnings:['Responsable no identificado: Administracion.'],
+            payload:{tipo_registro:'Seguimiento',comentario:'El proveedor confirma disponibilidad fuera del horario habitual.',
+              estado_nuevo:'Pendiente',prioridad_nueva:'Media',responsable_nuevo:'SuperUsuario',responsable_proximo_paso:'Administracion',
+              proximo_paso:'Revisar el material una vez aprobado el presupuesto.',fecha_objetivo_proximo_paso:'',motivo_bloqueo:''}}});
+        });
+        await page.locator('#quickRecordText').fill('El proveedor puede venir fuera de horario. Si aprobamos presupuesto revisamos el material.');
+        await page.locator('#recordNextDate').fill('2026-12-31');
+        await page.locator('#quickRecordAnalyze').click();
+        await page.locator('#quickRecordMessage').getByText('Responsable no identificado: Administracion.').waitFor();
+        assert.equal(await page.locator('#recordNextDate').inputValue(),'');
+        assert.equal(await page.locator('#recordNextOwner').inputValue(),'Administracion');
+        assert.match(await page.locator('#recordNextStep').inputValue(),/una vez aprobado/);
+        await page.locator('#quickRecordBox').scrollIntoViewIfNeeded();
+        await page.screenshot({path:path.join(output,`${viewport.width}-${view}-ai-followup.png`)});
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)));
+        await page.locator('#quickRecordClear').click();
+        await page.unroute('**/api/ai/analyze');
+        await page.locator('#recordNextStep').fill('');
         await page.locator('#recordComment').fill('Additional information without a new commitment.');
         await page.locator('#recordNextOwner').fill('Administration');
         page.once('dialog',dialog=>dialog.accept());
