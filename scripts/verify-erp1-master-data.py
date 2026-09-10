@@ -80,7 +80,12 @@ try:
     community = int(communities[0]["id_comunidad"])
     second = int(communities[1]["id_comunidad"]) if len(communities) > 1 else None
     type_id = conn.execute("SELECT id_tipo_propiedad FROM erp_tipos_propiedad WHERE id_comunidad=? AND codigo='vivienda'", (community,)).fetchone()[0]
+    empty_community = conn.execute("INSERT INTO comunidades(nombre,descripcion,activo,codigo,denominacion) VALUES('ERP1 Comunidad sin estructura','Fixture aislado',1,'ERP1-EMPTY','ERP1 Comunidad sin estructura')").lastrowid
+    conn.commit()
+    communities.append({"id_comunidad":empty_community,"nombre":"ERP1 Comunidad sin estructura","puede_ver":1,"puede_actualizar":1})
     conn.close()
+    assert query(session,"erp1.community.get",empty_community)["entity"]["agrupaciones"]==[]
+    checks.append("comunidad sin estructura adicional admite la operativa ordinaria")
 
     def new_owner(name, suffix):
         return command(session, "erp1.owner.save", community, {
@@ -228,6 +233,48 @@ try:
     checks.append("pertenencia y exclusion versionadas sin prorrateo implicito")
 
     bulk_properties=[new_property(f"ERP1-BULK-{index:02d}") for index in range(1,41)]
+    simple_structure=command(session,"erp1.aggregation.save",community,{"codigo":"ERP1-ZONA","nombre":"Zona independiente","tipo":"zona","estado":"activa","efectiva_desde":"2026-01-01"})["entity"]
+    phase=command(session,"erp1.aggregation.save",community,{"codigo":"ERP1-FASE-1","nombre":"Fase 1","tipo":"fase","estado":"activa","efectiva_desde":"2026-01-01"})["entity"]
+    block_a=command(session,"erp1.aggregation.save",community,{"codigo":"ERP1-BLOQUE-A","nombre":"Bloque A","tipo":"bloque","id_padre":phase["id_agrupacion"],"estado":"activa","efectiva_desde":"2026-01-01"})["entity"]
+    block_b=command(session,"erp1.aggregation.save",community,{"codigo":"ERP1-BLOQUE-B","nombre":"Bloque B","tipo":"bloque","id_padre":phase["id_agrupacion"],"estado":"activa","efectiva_desde":"2026-01-01"})["entity"]
+    conn=sqlite3.connect(database)
+    coefficient_hash_before=rows_hash(conn,"erp_coeficiente_versiones")
+    group_count_before=conn.execute("SELECT COUNT(*) FROM erp_grupos_reparto WHERE id_comunidad=?",(community,)).fetchone()[0]
+    conn.close()
+    configured=command(session,"erp1.aggregation.configure",community,{"id_agrupacion":block_a["id_agrupacion"],"efectiva_desde":"2026-01-01","id_propiedades":[row["id_propiedad"] for row in bulk_properties[:4]]},expected=block_a["version"])["entity"]
+    assert configured["resumen"]=={"anadir":4,"eliminar":0,"total":4}
+    community_detail=query(session,"erp1.community.get",community)["entity"]
+    structures={row["codigo"]:row for row in community_detail["agrupaciones"]}
+    structure_codes=[row["codigo"] for row in community_detail["agrupaciones"]]
+    assert structures["ERP1-ZONA"]["ruta"]=="Zona independiente"
+    assert structures["ERP1-BLOQUE-A"]["ruta"]=="Fase 1 > Bloque A"
+    assert structure_codes.index("ERP1-FASE-1") < structure_codes.index("ERP1-BLOQUE-A") < structure_codes.index("ERP1-BLOQUE-B")
+    assert structures["ERP1-FASE-1"]["propiedades_directas"]==0 and structures["ERP1-FASE-1"]["propiedades_totales"]==4
+    structured_property=query(session,"erp1.property.get",community,{"id_propiedad":bulk_properties[0]["id_propiedad"]})["entity"]
+    assert structured_property["estructura_actual"]=="Fase 1 > Bloque A"
+    assert set(structured_property["agrupacion_ids_actuales"])=={phase["id_agrupacion"],block_a["id_agrupacion"]}
+    conn=sqlite3.connect(database)
+    assert rows_hash(conn,"erp_coeficiente_versiones")==coefficient_hash_before
+    assert conn.execute("SELECT COUNT(*) FROM erp_grupos_reparto WHERE id_comunidad=?",(community,)).fetchone()[0]==group_count_before
+    conn.close()
+    checks.append("estructura simple y Fase > Bloques con asignacion masiva, ruta y filtro jerarquico derivados")
+    checks.append("estructura fisica no modifica coeficientes ni crea grupos de reparto")
+
+    block_a_version=configured["agrupacion"]["version"]
+    reduced_structure=command(session,"erp1.aggregation.configure",community,{"id_agrupacion":block_a["id_agrupacion"],"efectiva_desde":"2026-07-01","id_propiedades":[row["id_propiedad"] for row in bulk_properties[1:4]]},expected=block_a_version)["entity"]
+    before_structure=query(session,"erp1.property.get",community,{"id_propiedad":bulk_properties[0]["id_propiedad"],"fecha":"2026-06-30"})["entity"]
+    after_structure=query(session,"erp1.property.get",community,{"id_propiedad":bulk_properties[0]["id_propiedad"],"fecha":"2026-07-01"})["entity"]
+    assert before_structure["estructura_actual"]=="Fase 1 > Bloque A" and not after_structure["estructuras_actuales"]
+    try:
+        command(session,"erp1.aggregation.configure",community,{"id_agrupacion":block_a["id_agrupacion"],"efectiva_desde":"2026-08-01","id_propiedades":[bulk_properties[4]["id_propiedad"]],"simulate_failure":True},expected=reduced_structure["agrupacion"]["version"])
+        raise AssertionError("No se produjo el fallo estructural simulado")
+    except RuntimeError:
+        pass
+    structure_after_rollback=query(session,"erp1.community.get",community)["entity"]
+    block_after_rollback=next(row for row in structure_after_rollback["agrupaciones"] if row["id_agrupacion"]==block_a["id_agrupacion"])
+    assert block_after_rollback["version"]==reduced_structure["agrupacion"]["version"] and block_after_rollback["propiedades_directas"]==3
+    checks.append("baja estructural conserva vigencia historica y el fallo masivo revierte por completo")
+
     gardens=command(session,"erp1.group.save",community,{"codigo":"ERP1-JARDINES","nombre":"Mantenimiento jardines privados","finalidad":"Mantenimiento de jardines de uso privativo","base":"porcentaje","suma_esperada_decimal":"100","estado":"activo","efectiva_desde":"2026-01-01"})["entity"]
     selected=[{"id_propiedad":row["id_propiedad"],"valor_decimal":"6"} for row in bulk_properties[:15]]
     selected.append({"id_propiedad":bulk_properties[15]["id_propiedad"],"valor_decimal":"10"})
@@ -299,6 +346,11 @@ try:
         try:
             command(denied,"erp1.group.configure",second,{"id_grupo":gardens["id_grupo"],"efectiva_desde":"2026-01-01","miembros":[]},expected=gardens_version)
             raise AssertionError("Se permitio configurar un grupo de otra comunidad")
+        except PermissionError:
+            pass
+        try:
+            command(denied,"erp1.aggregation.configure",second,{"id_agrupacion":block_a["id_agrupacion"],"efectiva_desde":"2026-01-01","id_propiedades":[]},expected=block_a_version)
+            raise AssertionError("Se permitio configurar una estructura de otra comunidad")
         except PermissionError:
             pass
         checks.append("mismo codigo aislado por comunidad y lectura/escritura transversal denegadas")

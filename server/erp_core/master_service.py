@@ -103,6 +103,98 @@ class MasterDataService:
         if envelope.expected_version != actual:
             raise ConflictError(f"Conflicto de version: esperada {envelope.expected_version}, actual {actual}.")
 
+    @staticmethod
+    def _aggregation_context(conn, community_id, effective_date=None):
+        effective = iso_date(effective_date, "fecha") or date.today().isoformat()
+        items = _rows(conn.execute(
+            "SELECT * FROM erp_agrupaciones WHERE id_comunidad=? ORDER BY nombre", (community_id,)))
+        by_id = {row["id_agrupacion"]: row for row in items}
+        children = {}
+        for row in items:
+            children.setdefault(row.get("id_padre"), []).append(row["id_agrupacion"])
+
+        def lineage(group_id):
+            result = []
+            seen = set()
+            current = by_id.get(group_id)
+            while current and current["id_agrupacion"] not in seen:
+                seen.add(current["id_agrupacion"])
+                result.append(current)
+                current = by_id.get(current.get("id_padre"))
+            return list(reversed(result))
+
+        membership_rows = _rows(conn.execute("""SELECT pa.* FROM erp_propiedad_agrupaciones pa
+            WHERE pa.id_comunidad=? AND pa.rol='estructural'
+              AND (pa.efectiva_desde IS NULL OR pa.efectiva_desde<=?)
+              AND (pa.efectiva_hasta IS NULL OR pa.efectiva_hasta>?)
+            ORDER BY pa.id_pertenencia""", (community_id, effective, effective)))
+        direct_by_group = {}
+        direct_by_property = {}
+        for membership in membership_rows:
+            direct_by_group.setdefault(membership["id_agrupacion"], set()).add(membership["id_propiedad"])
+            direct_by_property.setdefault(membership["id_propiedad"], []).append(membership)
+
+        def descendant_properties(group_id, seen=None):
+            seen = set(seen or ())
+            if group_id in seen:
+                return set()
+            seen.add(group_id)
+            result = set(direct_by_group.get(group_id, set()))
+            for child_id in children.get(group_id, []):
+                result.update(descendant_properties(child_id, seen))
+            return result
+
+        for row in items:
+            hierarchy = lineage(row["id_agrupacion"])
+            row["ruta"] = " > ".join(item["nombre"] for item in hierarchy)
+            row["nivel"] = max(0, len(hierarchy) - 1)
+            row["id_ancestros"] = [item["id_agrupacion"] for item in hierarchy[:-1]]
+            row["propiedades_directas"] = len(direct_by_group.get(row["id_agrupacion"], set()))
+            row["propiedades_totales"] = len(descendant_properties(row["id_agrupacion"]))
+        ordered = []
+        visited = set()
+
+        def append_branch(group_id):
+            if group_id in visited or group_id not in by_id:
+                return
+            visited.add(group_id)
+            ordered.append(by_id[group_id])
+            for child_id in sorted(children.get(group_id, []), key=lambda value: by_id[value]["nombre"].casefold()):
+                append_branch(child_id)
+
+        root_ids = [row["id_agrupacion"] for row in items if not row.get("id_padre") or row.get("id_padre") not in by_id]
+        for root_id in sorted(root_ids, key=lambda value: by_id[value]["nombre"].casefold()):
+            append_branch(root_id)
+        for row in items:
+            append_branch(row["id_agrupacion"])
+        return ordered, direct_by_property
+
+    @classmethod
+    def _decorate_property_structures(cls, conn, community_id, properties, effective_date=None):
+        aggregations, direct_by_property = cls._aggregation_context(conn, community_id, effective_date)
+        by_id = {row["id_agrupacion"]: row for row in aggregations}
+        for prop in properties:
+            structures = []
+            filter_ids = set()
+            for membership in direct_by_property.get(prop["id_propiedad"], []):
+                group = by_id.get(membership["id_agrupacion"])
+                if not group:
+                    continue
+                structures.append({
+                    **membership,
+                    "codigo": group["codigo"],
+                    "nombre": group["nombre"],
+                    "tipo": group["tipo"],
+                    "ruta": group["ruta"],
+                })
+                filter_ids.add(group["id_agrupacion"])
+                filter_ids.update(group["id_ancestros"])
+            structures.sort(key=lambda row: row["ruta"])
+            prop["estructuras_actuales"] = structures
+            prop["estructura_actual"] = " / ".join(row["ruta"] for row in structures)
+            prop["agrupacion_ids_actuales"] = sorted(filter_ids)
+        return aggregations
+
     def community_get(self, session, query):
         def op(conn, q):
             row = self._require_entity(conn, "comunidades", "id_comunidad", q.community_id, q.community_id)
@@ -110,8 +202,7 @@ class MasterDataService:
                 "SELECT * FROM erp_ejercicios WHERE id_comunidad=? ORDER BY fecha_inicio DESC", (q.community_id,)))
             row["tipos_propiedad"] = _rows(conn.execute(
                 "SELECT * FROM erp_tipos_propiedad WHERE id_comunidad=? ORDER BY nombre", (q.community_id,)))
-            row["agrupaciones"] = _rows(conn.execute(
-                "SELECT * FROM erp_agrupaciones WHERE id_comunidad=? ORDER BY tipo,nombre", (q.community_id,)))
+            row["agrupaciones"], _ = self._aggregation_context(conn, q.community_id)
             return {"ok": True, "query": q.query, "entity": row}
         return self._read(session, query, op)
 
@@ -228,6 +319,7 @@ class MasterDataService:
                 WHERE """+" AND ".join(clauses)+" ORDER BY p.codigo_normalizado LIMIT ? OFFSET ?"
             values += [limit,offset]
             items=_rows(conn.execute(sql,values))
+            self._decorate_property_structures(conn, q.community_id, items, q.filters.get("fecha"))
             total=conn.execute("SELECT COUNT(*) FROM cf_propiedades p LEFT JOIN erp_tipos_propiedad t ON t.id_tipo_propiedad=p.id_tipo_propiedad WHERE "+" AND ".join(clauses),values[:-2]).fetchone()[0]
             return {"ok":True,"query":q.query,"items":items,"total":total,"limit":limit,"offset":offset}
         return self._read(session,query,op)
@@ -242,6 +334,10 @@ class MasterDataService:
                 JOIN cf_propiedades p ON p.id_propiedad=r.id_propiedad_destino WHERE r.id_comunidad=? AND r.id_propiedad_origen=? ORDER BY r.creada_en DESC""",(q.community_id,entity_id)))
             row["agrupaciones"]=_rows(conn.execute("""SELECT pa.*,a.codigo,a.nombre,a.tipo FROM erp_propiedad_agrupaciones pa
                 JOIN erp_agrupaciones a ON a.id_agrupacion=pa.id_agrupacion WHERE pa.id_comunidad=? AND pa.id_propiedad=? ORDER BY a.tipo,a.nombre""",(q.community_id,entity_id)))
+            aggregation_rows = self._decorate_property_structures(conn, q.community_id, [row], q.filters.get("fecha"))
+            aggregation_by_id = {item["id_agrupacion"]: item for item in aggregation_rows}
+            for membership in row["agrupaciones"]:
+                membership["ruta"] = aggregation_by_id.get(membership["id_agrupacion"], {}).get("ruta", membership["nombre"])
             row["titularidades"]=self._ownership_snapshot(conn,q.community_id,entity_id,q.filters.get("fecha"),q.filters.get("conocido_en"))
             row["historico_propietarios"]=self._ownership_history(conn,q.community_id,entity_id)
             row["coeficientes"]=_rows(conn.execute("""SELECT s.*,g.codigo AS grupo_codigo,g.nombre AS grupo_nombre,
@@ -367,6 +463,70 @@ class MasterDataService:
                 cur=conn.execute('INSERT INTO erp_agrupaciones(id_comunidad,id_padre,codigo,nombre,tipo,estado,efectiva_desde,efectiva_hasta,creada_en,creada_por,origen) VALUES(?,?,?,?,?,?,?,?,?,?,?)',(env.community_id,*values,utc_now(),actor.user_id,env.origin));aid=cur.lastrowid
             after=self._require_entity(conn,'erp_agrupaciones','id_agrupacion',aid,env.community_id)
             return self._outcome('Agrupacion guardada','agrupacion',aid,before,after,'erp1.aggregation.saved')
+        return self._write(session,envelope,op)
+
+    def aggregation_configure(self, session, envelope):
+        def op(conn,actor,env):
+            only(env.payload,{'id_agrupacion','efectiva_desde','id_propiedades','motivo','simulate_failure'})
+            aid=integer(env.payload.get('id_agrupacion'),'id_agrupacion',required=True)
+            aggregation=self._require_entity(conn,'erp_agrupaciones','id_agrupacion',aid,env.community_id)
+            self._expected(env,aggregation)
+            start=iso_date(env.payload.get('efectiva_desde'),'efectiva_desde',required=True)
+            reason=text(env.payload.get('motivo'),'motivo',maximum=1000) or 'Gestion masiva de estructura de propiedades'
+            raw_ids=env.payload.get('id_propiedades')
+            if not isinstance(raw_ids,list):
+                raise ContractError('La configuracion requiere una lista de propiedades.')
+            selected=[]; seen=set()
+            for raw_id in raw_ids:
+                pid=integer(raw_id,'id_propiedad',required=True)
+                if pid in seen:
+                    raise ContractError('Una propiedad no puede repetirse en la seleccion.')
+                seen.add(pid)
+                self._require_entity(conn,'cf_propiedades','id_propiedad',pid,env.community_id)
+                selected.append(pid)
+            current_rows=_rows(conn.execute("""SELECT * FROM erp_propiedad_agrupaciones
+                WHERE id_comunidad=? AND id_agrupacion=? AND rol='estructural'
+                  AND (efectiva_desde IS NULL OR efectiva_desde<=?)
+                  AND (efectiva_hasta IS NULL OR efectiva_hasta>?)
+                ORDER BY id_pertenencia""",(env.community_id,aid,start,start)))
+            by_property={}
+            for row in current_rows:
+                if row['id_propiedad'] in by_property:
+                    raise ConflictError('Existen pertenencias estructurales solapadas. Requieren revision antes de la operacion masiva.')
+                by_property[row['id_propiedad']]=row
+            before={'agrupacion':aggregation,'miembros':current_rows}
+            selected_set=set(selected); current_set=set(by_property); now=utc_now()
+            for pid in sorted(current_set-selected_set):
+                row=by_property[pid]
+                if row.get('efectiva_desde')==start:
+                    conn.execute('DELETE FROM erp_propiedad_agrupaciones WHERE id_pertenencia=?',(row['id_pertenencia'],))
+                else:
+                    conn.execute('UPDATE erp_propiedad_agrupaciones SET efectiva_hasta=?,version=version+1 WHERE id_pertenencia=?',(start,row['id_pertenencia']))
+            for pid in sorted(selected_set-current_set):
+                same_start=conn.execute("""SELECT * FROM erp_propiedad_agrupaciones WHERE id_comunidad=?
+                    AND id_propiedad=? AND id_agrupacion=? AND rol='estructural' AND efectiva_desde=?""",
+                    (env.community_id,pid,aid,start)).fetchone()
+                if same_start:
+                    conn.execute('UPDATE erp_propiedad_agrupaciones SET efectiva_hasta=NULL,version=version+1 WHERE id_pertenencia=?',(same_start['id_pertenencia'],))
+                else:
+                    conn.execute("""INSERT INTO erp_propiedad_agrupaciones(id_comunidad,id_propiedad,id_agrupacion,rol,
+                        efectiva_desde,efectiva_hasta,version,origen,creada_en,creada_por)
+                        VALUES(?,?,?,'estructural',?,NULL,1,?,?,?)""",(env.community_id,pid,aid,start,env.origin,now,actor.user_id))
+            if boolean(env.payload.get('simulate_failure'),'simulate_failure'):
+                if env.origin!='test':
+                    raise ContractError('La simulacion de fallo solo esta disponible en pruebas.')
+                raise RuntimeError('Fallo simulado durante la gestion masiva de estructura.')
+            conn.execute('UPDATE erp_agrupaciones SET version=version+1 WHERE id_agrupacion=?',(aid,))
+            after_aggregation=self._require_entity(conn,'erp_agrupaciones','id_agrupacion',aid,env.community_id)
+            after_rows=_rows(conn.execute("""SELECT * FROM erp_propiedad_agrupaciones
+                WHERE id_comunidad=? AND id_agrupacion=? AND rol='estructural'
+                  AND (efectiva_desde IS NULL OR efectiva_desde<=?)
+                  AND (efectiva_hasta IS NULL OR efectiva_hasta>?) ORDER BY id_propiedad""",
+                (env.community_id,aid,start,start)))
+            after={'agrupacion':after_aggregation,'miembros':after_rows,
+                   'resumen':{'anadir':len(selected_set-current_set),'eliminar':len(current_set-selected_set),'total':len(after_rows)},
+                   'motivo':reason}
+            return self._outcome('Estructura de propiedades configurada','agrupacion',aid,before,after,'erp1.aggregation.configured')
         return self._write(session,envelope,op)
 
     def property_alias_save(self, session, envelope):

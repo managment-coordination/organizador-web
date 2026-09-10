@@ -137,6 +137,55 @@ try {
         assert.match(await page.locator('.masterOwnershipCard').first().innerText(),new RegExp(ownerName.trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
         await page.screenshot({path:path.join(output,`${viewport.width}-master-ownership.png`),fullPage:true});
 
+        await page.locator('[data-master-section="structures"]').click();
+        await page.locator('.masterStructureIntro').getByText(/no determina por si misma/i).waitFor();
+        await page.locator('.masterAddContact summary').filter({hasText:'+ Crear estructura'}).click();
+        const phaseCode=`UX-PHASE-${viewport.width}-${Date.now()}`;
+        await page.locator('#masterStructureCreateForm [name="codigo"]').fill(phaseCode);
+        await page.locator('#masterStructureCreateForm [name="nombre"]').fill('Fase UX');
+        await page.locator('#masterStructureCreateForm [name="tipo"]').selectOption('fase');
+        const [phaseResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterStructureCreateForm button').click(),
+        ]);
+        const phaseCreated=await phaseResponse.json();
+        assert.equal(phaseResponse.status(),200,JSON.stringify(phaseCreated));
+        await page.locator('.masterAddContact summary').filter({hasText:'+ Crear estructura'}).click();
+        const blockCode=`UX-BLOCK-${viewport.width}-${Date.now()}`;
+        await page.locator('#masterStructureCreateForm [name="codigo"]').fill(blockCode);
+        await page.locator('#masterStructureCreateForm [name="nombre"]').fill('Bloque UX');
+        await page.locator('#masterStructureCreateForm [name="tipo"]').selectOption('bloque');
+        await page.locator('#masterStructureCreateForm [name="id_padre"]').selectOption(String(phaseCreated.entity.id_agrupacion));
+        const [blockResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterStructureCreateForm button').click(),
+        ]);
+        const blockCreated=await blockResponse.json();
+        assert.equal(blockResponse.status(),200,JSON.stringify(blockCreated));
+        await page.locator('#masterManageStructure').click();
+        await page.locator('#masterStructureSearch').fill(propertyCode.toLowerCase());
+        const structureRows=page.locator('.masterStructureMember:not([hidden])');
+        await structureRows.first().waitFor();
+        assert.equal(await structureRows.count(),1);
+        await structureRows.first().locator('.masterStructureCheck').check();
+        await page.locator('#masterReviewStructure').click();
+        await page.locator('#masterConfirmStructure').waitFor();
+        const [structureConfigureResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterConfirmStructure').click(),
+          page.once('dialog',dialog=>dialog.accept()),
+        ]);
+        assert.equal(structureConfigureResponse.status(),200,await structureConfigureResponse.text());
+        await page.locator('#masterManageStructure').waitFor();
+        assert.match(await page.locator('.masterGroupSummary').first().innerText(),/Propiedades directas\s+1/);
+        await page.locator(`[data-master-property-link="${propertyCreated.entity.id_propiedad}"]`).click();
+        await page.locator('[data-master-section="properties"].active').waitFor();
+        assert.match(await page.locator('.masterStructurePath').innerText(),/Fase UX > Bloque UX/);
+        await page.locator('[data-master-structure-link]').click();
+        await page.locator('[data-master-section="structures"].active').waitFor();
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master structure horizontal overflow');
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-structures.png`),fullPage:true});
+
         await page.locator('[data-master-section="groups"]').click();
         await page.locator('.masterAddContact summary').filter({hasText:'+ Crear grupo'}).click();
         const groupCode=`UX-GROUP-${viewport.width}-${Date.now()}`;
@@ -170,6 +219,11 @@ try {
         await page.locator('#masterManageGroup').waitFor();
         assert.match(await page.locator('.masterGroupSummary').first().innerText(),/100 %/);
         await page.locator('#masterManageGroup').click();
+        await page.locator('#masterGroupAggregation').selectOption(String(blockCreated.entity.id_agrupacion));
+        const filteredStructureRows=page.locator('.masterMemberRow:not([hidden])');
+        assert.equal(await filteredStructureRows.count(),1);
+        assert.match(await filteredStructureRows.first().innerText(),new RegExp(propertyCode));
+        await page.locator('#masterGroupAggregation').selectOption('');
         const firstCode=await page.locator('.masterMemberRow').first().locator('strong').innerText();
         await page.locator('.masterAddContact summary').filter({hasText:'Pegar datos desde Excel'}).click();
         await page.locator('#masterGroupPaste').fill(`${firstCode}\t100\nNO-EXISTE\t5\n${firstCode}\t2`);

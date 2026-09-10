@@ -8342,6 +8342,15 @@ function homePage() {
     .masterSumOk { color:#176a47; }
     .masterSumWarning { color:#8c3a21; }
     .masterNotice { padding:10px; border-left:4px solid var(--gold); background:#faf7ef; }
+    .masterStructureIntro { margin-bottom:12px; padding:14px 16px; border-left:4px solid var(--accent); background:#f4f8f7; }
+    .masterStructureIntro h3,.masterStructureIntro p { margin-top:0; }
+    .masterStructureIntro p:last-child { margin-bottom:0; }
+    .masterStructureRow { padding-left:calc(12px + (var(--structure-depth) * 22px)); position:relative; }
+    .masterStructureRow::before { content:""; position:absolute; left:calc(8px + (var(--structure-depth) * 22px)); top:12px; bottom:12px; border-left:2px solid #c6d4d0; }
+    .masterStructurePath { padding:10px; border-left:3px solid var(--teal); background:#f3f5f4; margin-bottom:7px; }
+    .masterStructurePath span { display:block; color:var(--muted); font-size:12px; margin-bottom:3px; }
+    .masterStructureFilters { grid-template-columns:2fr repeat(3,minmax(120px,1fr)); }
+    .masterInherited { color:#79551d !important; margin-top:3px; }
 
     @media (max-width:1100px) {
       main { padding:15px; }
@@ -8979,7 +8988,7 @@ function homePage() {
     let assemblyOwnerQuery = "";
     let selectedAssemblyPoint = 0;
     let adminData = { users: [], communities: [], roles: [], loaded: false };
-    let masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, error:"" };
+    let masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
     let selectedAdminUserId = 0;
     let selectedAdminCommunityId = 0;
     let lastTemporaryKey = null;
@@ -9207,7 +9216,7 @@ function homePage() {
       selectedAdminUserId = 0;
       selectedAdminCommunityId = 0;
       lastTemporaryKey = null;
-      masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, error:"" };
+      masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
       pendingCommunityUser = null;
       communityScopeRequired = false;
       currentView = "home";
@@ -11580,6 +11589,7 @@ function homePage() {
         masterData.properties = propertyResult.items || [];
         masterData.owners = ownerResult.items || [];
         masterData.groups = groupResult.items || [];
+        if (masterData.structure?.id_agrupacion) masterData.structure=(masterData.community.agrupaciones||[]).find(row=>Number(row.id_agrupacion)===Number(masterData.structure.id_agrupacion))||null;
         masterData.propertyTotal = Number(propertyResult.total || masterData.properties.length);
         masterData.ownerTotal = Number(ownerResult.total || masterData.owners.length);
         masterData.loaded = true;
@@ -11644,7 +11654,7 @@ function homePage() {
 
     function masterHeaderHtml() {
       const communityOptions = masterCommunities().map(row => '<option value="' + html(row.id_comunidad) + '"' + (Number(row.id_comunidad)===Number(masterData.communityId)?' selected':'') + '>' + html(row.nombre) + '</option>').join("");
-      const tabs = [["properties","Propiedades"],["owners","Propietarios"],["groups","Coeficientes y grupos"],["community","Comunidad y ejercicios"]];
+      const tabs = [["properties","Propiedades"],["owners","Propietarios"],["structures","Estructura de propiedades"],["groups","Coeficientes y grupos"],["community","Comunidad y ejercicios"]];
       return '<div class="masterToolbar"><label>Comunidad<select id="masterCommunity">' + communityOptions + '</select></label><div class="masterTabs">' + tabs.map(row => '<button type="button" data-master-section="' + row[0] + '" class="' + (masterData.section===row[0]?'active':'') + '">' + row[1] + '</button>').join("") + '</div></div>';
     }
 
@@ -11688,6 +11698,13 @@ function homePage() {
       return '<div class="masterSection"><h3>Participacion en grupos</h3><table class="masterDataTable"><thead><tr><th>Grupo</th><th>Participa</th><th>Valor actual</th></tr></thead><tbody>'+(groups||'<tr><td colspan="3">No hay grupos configurados en esta comunidad.</td></tr>')+'</tbody></table><p class="muted">La gestion principal de miembros y valores se realiza desde Coeficientes y grupos.</p></div>';
     }
 
+    function masterPropertyStructureHtml(row) {
+      const structures=row.estructuras_actuales||[];
+      if(!structures.length)return '';
+      const rows=structures.map(item=>'<div class="masterStructurePath"><span>Ubicacion / estructura</span><button class="masterEntityLink" data-master-structure-link="'+html(item.id_agrupacion)+'"><strong>'+html(item.ruta)+'</strong></button></div>').join('');
+      return '<div class="masterSection"><h3>Estructura de propiedades</h3>'+rows+'</div>';
+    }
+
     function masterPropertyDetailHtml() {
       const row = masterData.property;
       if (!row) return '<div class="masterPane"><h3>Ficha de propiedad</h3><p class="muted">Selecciona una propiedad o crea una nueva.</p><button id="masterNewProperty" class="green">Nueva propiedad</button></div>';
@@ -11696,7 +11713,7 @@ function homePage() {
       const coefficients=(row.coeficientes||[]).map(item=>'<tr><td>'+html(item.grupo_nombre||'Sin grupo')+'</td><td>'+html(item.finalidad)+'</td><td>'+html(item.valor_decimal)+'</td><td>'+html(item.version_estado)+'</td></tr>').join('');
       const stateLabels={activa:'Activa',preparacion:'Pendiente de activacion',inactiva:'Inactiva',baja:'Baja'};const qualityLabels={validada:'Datos validados',observada:'Dato observado',pendiente_revision:'Pendiente de revision'};
       return '<div class="masterPane"><div class="contentHead"><div><h3>' + html(row.codigo_propiedad) + '</h3><p class="muted">ID estable ' + html(row.id_propiedad) + ' · version ' + html(row.version) + '</p><div class="masterPropertyFlags"><span class="pill">'+html(stateLabels[row.estado]||row.estado)+'</span><span class="pill">'+html(qualityLabels[row.calidad_dato]||row.calidad_dato)+'</span></div></div><button id="masterNewProperty" class="ghost">Nueva</button></div>' + masterPropertyQualityHtml(row) +
-        '<div class="masterSection"><h3>Propietario'+((row.titularidades?.items||[]).length===1?' actual':'s actuales')+'</h3>' + masterOwnershipSummary(row.titularidades) + '<div class="masterOwnershipActions"><button id="masterStartOwnership" class="green">'+((row.titularidades?.items||[]).length?'Gestionar propietarios':'Asignar propietario')+'</button></div>'+(masterData.ownershipEditing?masterOwnershipFormHtml(row):'')+(masterData.proposal?masterProposalHtml():'')+'</div>' + masterOwnershipHistoryHtml(row) + masterPropertyForm(row) + masterPropertyLifecycleHtml(row) +
+        '<div class="masterSection"><h3>Propietario'+((row.titularidades?.items||[]).length===1?' actual':'s actuales')+'</h3>' + masterOwnershipSummary(row.titularidades) + '<div class="masterOwnershipActions"><button id="masterStartOwnership" class="green">'+((row.titularidades?.items||[]).length?'Gestionar propietarios':'Asignar propietario')+'</button></div>'+(masterData.ownershipEditing?masterOwnershipFormHtml(row):'')+(masterData.proposal?masterProposalHtml():'')+'</div>' + masterOwnershipHistoryHtml(row) + masterPropertyStructureHtml(row) + masterPropertyForm(row) + masterPropertyLifecycleHtml(row) +
         '<div class="masterSection"><h3>Aliases de busqueda</h3><div>' + aliases + '</div><form id="masterAliasForm" class="toolbar"><input name="alias" required placeholder="Nuevo alias"><button>Añadir alias</button></form></div>' +
         '<div class="masterSection"><h3>Relaciones</h3><ul>' + relations + '</ul><form id="masterRelationForm" class="masterFormGrid"><label>ID propiedad relacionada<input name="id_propiedad_destino" type="number" required></label><label>Tipo<select name="tipo"><option value="anexo">Anexo</option><option value="segregacion">Segregacion</option><option value="agrupacion">Agrupacion</option><option value="otra">Otra</option></select></label><button>Guardar relacion</button></form></div>' +
         masterPropertyGroupsHtml(row)+'<details class="masterPropertyControl"><summary>Edicion individual avanzada de coeficientes</summary><table class="masterDataTable"><thead><tr><th>Grupo</th><th>Finalidad</th><th>Valor exacto</th><th>Estado</th></tr></thead><tbody>' + (coefficients||'<tr><td colspan="4">Sin coeficientes.</td></tr>') + '</tbody></table>' + masterCoefficientForm(row) + '</details></div>';
@@ -11777,8 +11794,44 @@ function homePage() {
     }
 
     function masterCommunityHtml() {
-      const c=masterData.community||{};const exercises=(c.ejercicios||[]).map(e=>'<tr><td>'+html(e.codigo)+'</td><td>'+html(e.fecha_inicio)+' a '+html(e.fecha_fin)+'</td><td>'+html(e.estado)+'</td></tr>').join('');const aggregations=(c.agrupaciones||[]).map(a=>'<tr><td>'+html(a.codigo)+'</td><td>'+html(a.nombre)+'</td><td>'+html(a.tipo)+'</td></tr>').join('');
-      return '<div class="masterLayout"><div class="masterPane"><h3>Datos de comunidad</h3><form id="masterCommunityForm" class="masterForm"><input type="hidden" name="version" value="'+html(c.version)+'"><label>Codigo estable<input name="codigo" value="'+html(c.codigo)+'"></label><label>Denominacion<input name="denominacion" value="'+html(c.denominacion)+'"></label><label>NIF<input name="nif" value="'+html(c.nif)+'"></label><label>Domicilio<input name="domicilio" value="'+html(c.domicilio)+'"></label><label>Contacto administrativo<input name="contacto_administrativo" value="'+html(c.contacto_administrativo)+'"></label><div class="masterFormGrid"><label>Zona horaria<input name="zona_horaria" value="'+html(c.zona_horaria)+'"></label><label>Moneda<input name="moneda" value="'+html(c.moneda)+'"></label></div>'+(state.usuario?.rol==='Superusuario'?'<button class="green">Guardar comunidad</button>':'<p class="muted">Solo el Superusuario puede modificar estos datos.</p>')+'</form></div><div class="masterPane"><h3>Ejercicios</h3><table class="masterDataTable"><tbody>'+(exercises||'<tr><td>Sin ejercicios.</td></tr>')+'</tbody></table><form id="masterExerciseForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Codigo<input name="codigo" required placeholder="2026"></label><label>Estado<select name="estado"><option value="preparacion">Preparacion</option><option value="abierto">Abierto</option></select></label><label>Inicio<input name="fecha_inicio" type="date" required></label><label>Fin<input name="fecha_fin" type="date" required></label></div><button>Crear ejercicio</button></form><div class="masterSection"><h3>Agrupaciones</h3><table class="masterDataTable"><tbody>'+(aggregations||'<tr><td>Sin agrupaciones.</td></tr>')+'</tbody></table><form id="masterAggregationForm" class="masterFormGrid"><label>Codigo<input name="codigo" required></label><label>Nombre<input name="nombre" required></label><label>Tipo<input name="tipo" placeholder="bloque, fase, zona..."></label><label>ID padre opcional<input name="id_padre" type="number"></label><button>Crear agrupacion</button></form></div></div></div>';
+      const c=masterData.community||{};const exercises=(c.ejercicios||[]).map(e=>'<tr><td>'+html(e.codigo)+'</td><td>'+html(e.fecha_inicio)+' a '+html(e.fecha_fin)+'</td><td>'+html(e.estado)+'</td></tr>').join('');
+      return '<div class="masterLayout"><div class="masterPane"><h3>Datos de comunidad</h3><form id="masterCommunityForm" class="masterForm"><input type="hidden" name="version" value="'+html(c.version)+'"><label>Codigo estable<input name="codigo" value="'+html(c.codigo)+'"></label><label>Denominacion<input name="denominacion" value="'+html(c.denominacion)+'"></label><label>NIF<input name="nif" value="'+html(c.nif)+'"></label><label>Domicilio<input name="domicilio" value="'+html(c.domicilio)+'"></label><label>Contacto administrativo<input name="contacto_administrativo" value="'+html(c.contacto_administrativo)+'"></label><div class="masterFormGrid"><label>Zona horaria<input name="zona_horaria" value="'+html(c.zona_horaria)+'"></label><label>Moneda<input name="moneda" value="'+html(c.moneda)+'"></label></div>'+(state.usuario?.rol==='Superusuario'?'<button class="green">Guardar comunidad</button>':'<p class="muted">Solo el Superusuario puede modificar estos datos.</p>')+'</form></div><div class="masterPane"><h3>Ejercicios</h3><p class="muted">Periodos economicos independientes de la organizacion fisica de las propiedades.</p><table class="masterDataTable"><tbody>'+(exercises||'<tr><td>Sin ejercicios.</td></tr>')+'</tbody></table><form id="masterExerciseForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Codigo<input name="codigo" required placeholder="2026"></label><label>Estado<select name="estado"><option value="preparacion">Preparacion</option><option value="abierto">Abierto</option></select></label><label>Inicio<input name="fecha_inicio" type="date" required></label><label>Fin<input name="fecha_fin" type="date" required></label></div><button>Crear ejercicio</button></form></div></div>';
+    }
+
+    function masterStructureOptions(selected, excludedId) {
+      return '<option value="">Directamente en la comunidad</option>'+(masterData.community?.agrupaciones||[]).filter(item=>Number(item.id_agrupacion)!==Number(excludedId||0)).map(item=>'<option value="'+html(item.id_agrupacion)+'"'+(Number(item.id_agrupacion)===Number(selected)?' selected':'')+'>'+html(item.ruta)+'</option>').join('');
+    }
+
+    function masterStructureForm(row={}) {
+      const editing=Boolean(row.id_agrupacion);
+      return '<form id="'+(editing?'masterStructureEditForm':'masterStructureCreateForm')+'" class="masterForm masterSection"><input type="hidden" name="id_agrupacion" value="'+html(row.id_agrupacion)+'"><input type="hidden" name="version" value="'+html(row.version)+'"><div class="masterFormGrid"><label>Codigo<input name="codigo" required value="'+html(row.codigo)+'" placeholder="FASE-1"></label><label>Nombre<input name="nombre" required value="'+html(row.nombre)+'" placeholder="Fase 1"></label><label>Tipo de division<select name="tipo"><option value="fase">Fase</option><option value="bloque">Bloque</option><option value="portal">Portal</option><option value="zona">Zona</option><option value="garajes">Garajes</option><option value="otra">Otra</option></select></label><label>Dentro de<select name="id_padre">'+masterStructureOptions(row.id_padre,row.id_agrupacion)+'</select></label><label>Vigente desde<input name="efectiva_desde" type="date" value="'+html(row.efectiva_desde||new Date().toISOString().slice(0,10))+'"></label></div><button class="'+(editing?'':'green')+'">'+(editing?'Guardar estructura':'Crear estructura')+'</button></form>';
+    }
+
+    function masterStructureManagerHtml(structure) {
+      const current=new Set((masterData.properties||[]).filter(property=>(property.estructuras_actuales||[]).some(item=>Number(item.id_agrupacion)===Number(structure.id_agrupacion))).map(property=>Number(property.id_propiedad)));
+      const selected=new Set(masterData.structureDraft||current);
+      const unique=key=>[...new Set((masterData.properties||[]).map(row=>safe(row[key]).trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es')).map(value=>'<option value="'+html(value)+'">'+html(value)+'</option>').join('');
+      const rows=(masterData.properties||[]).map(property=>{const inherited=!current.has(Number(property.id_propiedad))&&(property.agrupacion_ids_actuales||[]).map(Number).includes(Number(structure.id_agrupacion));const search=[property.codigo_propiedad,property.descripcion_direccion,property.tipo_nombre,property.bloque,property.planta].map(safe).join(' ').toLowerCase();return '<div class="masterMemberRow masterStructureMember" data-property-id="'+property.id_propiedad+'" data-search="'+html(search)+'" data-type="'+html(property.tipo_nombre)+'" data-block="'+html(property.bloque)+'" data-floor="'+html(property.planta)+'"><input class="masterStructureCheck" type="checkbox" '+(selected.has(Number(property.id_propiedad))?'checked':'')+' aria-label="Seleccionar '+html(property.codigo_propiedad)+'"><div><strong>'+html(property.codigo_propiedad)+'</strong><span class="muted">'+html([property.tipo_nombre,property.bloque&&('Bloque '+property.bloque),property.planta&&('Planta '+property.planta)].filter(Boolean).join(' · '))+'</span>'+(inherited?'<span class="masterInherited">Incluida mediante una subestructura</span>':'')+'</div><span class="muted">'+(selected.has(Number(property.id_propiedad))?'Asignacion directa':'Sin asignacion directa')+'</span></div>';}).join('');
+      return '<div class="masterGroupManager"><h3>Gestionar propiedades</h3><p class="muted">Selecciona las propiedades asignadas directamente a esta estructura. Las asignadas a bloques o divisiones inferiores tambien se contabilizan en su rama.</p><div class="masterGroupFilters masterStructureFilters"><label>Buscar<input id="masterStructureSearch" placeholder="Codigo o descripcion"></label><label>Tipo<select id="masterStructureType"><option value="">Todos</option>'+unique('tipo_nombre')+'</select></label><label>Bloque<select id="masterStructureBlock"><option value="">Todos</option>'+unique('bloque')+'</select></label><label>Planta<select id="masterStructureFloor"><option value="">Todas</option>'+unique('planta')+'</select></label></div><div class="toolbar"><button id="masterStructureSelectVisible">Marcar visibles</button><button id="masterStructureClearVisible" class="ghost">Desmarcar visibles</button><span id="masterStructureSelectionCount"></span></div><div class="masterMemberList">'+rows+'</div><div class="masterOwnershipActions"><button id="masterReviewStructure" class="green">Revisar cambios</button><button id="masterCancelStructure" class="ghost">Cancelar</button></div></div>';
+    }
+
+    function masterStructureReviewHtml(structure) {
+      const review=masterData.structureReview;
+      return '<div class="masterReviewSummary"><h3>Revisar asignacion</h3><p><strong>Estructura:</strong> '+html(structure.ruta)+'</p><div class="masterGroupSummary"><div class="masterGroupMetric"><span>Añadir</span><strong>'+review.added+'</strong></div><div class="masterGroupMetric"><span>Retirar</span><strong>'+review.removed+'</strong></div><div class="masterGroupMetric"><span>Total directo</span><strong>'+review.ids.length+'</strong></div></div><label>Vigente desde<input id="masterStructureEffectiveDate" type="date" value="'+html(review.efectiva_desde)+'"></label><label>Motivo<input id="masterStructureReason" value="Organizacion de propiedades revisada"></label><p class="masterNotice">Esta operacion solo organiza propiedades. No modifica coeficientes ni crea grupos de reparto.</p><div class="masterOwnershipActions"><button id="masterConfirmStructure" class="green">Confirmar asignacion</button><button id="masterBackStructure" class="ghost">Volver a editar</button></div></div>';
+    }
+
+    function masterStructureDetailHtml() {
+      const structure=masterData.structure;
+      if(!structure)return '<div class="masterPane"><h3>Estructura de propiedades</h3><p>Selecciona una division para consultar sus propiedades o crea la primera cuando la comunidad necesite organizarse por fases, bloques, portales o zonas.</p><p class="muted">Es opcional. Una comunidad puede funcionar completamente sin estructura adicional.</p></div>';
+      const direct=(masterData.properties||[]).filter(property=>(property.estructuras_actuales||[]).some(item=>Number(item.id_agrupacion)===Number(structure.id_agrupacion)));
+      const rows=direct.map(property=>'<tr><td><button class="masterEntityLink" data-master-property-link="'+html(property.id_propiedad)+'"><strong>'+html(property.codigo_propiedad)+'</strong></button></td><td>'+html(property.tipo_nombre||'Sin tipo')+'</td></tr>').join('');
+      const children=(masterData.community?.agrupaciones||[]).filter(item=>Number(item.id_padre)===Number(structure.id_agrupacion)).map(item=>'<button class="masterEntityLink" data-master-structure="'+html(item.id_agrupacion)+'">'+html(item.nombre)+'</button>').join('');
+      return '<div class="masterPane"><div class="contentHead"><div><h3>'+html(structure.nombre)+'</h3><p class="muted">'+html(structure.ruta)+'</p></div><span class="pill">'+html(structure.estado)+'</span></div><div class="masterGroupSummary"><div class="masterGroupMetric"><span>Tipo</span><strong>'+html(structure.tipo)+'</strong></div><div class="masterGroupMetric"><span>Propiedades directas</span><strong>'+html(structure.propiedades_directas||0)+'</strong></div><div class="masterGroupMetric"><span>Total en la rama</span><strong>'+html(structure.propiedades_totales||0)+'</strong></div></div>'+(masterData.structureReview?masterStructureReviewHtml(structure):masterData.structureManaging?masterStructureManagerHtml(structure):'<div class="masterOwnershipActions"><button id="masterManageStructure" class="green">Gestionar propiedades</button></div><h3>Propiedades asignadas directamente</h3><table class="masterDataTable"><thead><tr><th>Propiedad</th><th>Tipo</th></tr></thead><tbody>'+(rows||'<tr><td colspan="2">Sin propiedades asignadas directamente.</td></tr>')+'</tbody></table>'+(children?'<div class="masterSection"><h3>Divisiones incluidas</h3>'+children+'</div>':'')+'<details class="masterPropertyControl"><summary>Editar estructura</summary>'+masterStructureForm(structure)+'</details>')+'</div>';
+    }
+
+    function masterStructuresHtml() {
+      const list=(masterData.community?.agrupaciones||[]).map(item=>'<button class="masterRow masterStructureRow'+(Number(masterData.structure?.id_agrupacion)===Number(item.id_agrupacion)?' selected':'')+'" data-master-structure="'+item.id_agrupacion+'" style="--structure-depth:'+html(item.nivel||0)+'"><strong>'+html(item.nombre)+'</strong><span>'+html(item.tipo)+' · '+html(item.propiedades_directas||0)+' directas · '+html(item.propiedades_totales||0)+' en la rama</span></button>').join('');
+      return '<div class="masterStructureIntro"><h3>Estructura de propiedades</h3><p>Organiza opcionalmente las propiedades por bloques, fases, portales, zonas u otras divisiones de la comunidad. Esta estructura no determina por si misma como se reparten los gastos.</p></div><div class="masterLayout"><div class="masterPane"><h3>Organizacion actual</h3><div class="masterList">'+(list||'<div class="empty"><strong>Comunidad sin estructura adicional</strong><p>Las propiedades pueden gestionarse normalmente sin crear ninguna division.</p></div>')+'</div><details class="masterAddContact"><summary>+ Crear estructura</summary>'+masterStructureForm()+'</details></div>'+masterStructureDetailHtml()+'</div>';
     }
 
     function masterGroupsHtml() {
@@ -11788,15 +11841,15 @@ function homePage() {
 
     function masterGroupFiltersHtml() {
       const unique=(key)=>[...new Set((masterData.properties||[]).map(row=>safe(row[key]).trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es')).map(value=>'<option value="'+html(value)+'">'+html(value)+'</option>').join('');
-      const aggregations=[...new Set((masterData.properties||[]).flatMap(row=>safe(row.agrupaciones_actuales).split(' / ')).map(value=>value.trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es')).map(value=>'<option value="'+html(value)+'">'+html(value)+'</option>').join('');
-      return '<div class="masterGroupFilters"><label>Buscar<input id="masterGroupSearch" placeholder="Codigo o descripcion"></label><label>Tipo<select id="masterGroupType"><option value="">Todos</option>'+unique('tipo_nombre')+'</select></label><label>Agrupacion<select id="masterGroupAggregation"><option value="">Todas</option>'+aggregations+'</select></label><label>Bloque<select id="masterGroupBlock"><option value="">Todos</option>'+unique('bloque')+'</select></label><label>Planta<select id="masterGroupFloor"><option value="">Todas</option>'+unique('planta')+'</select></label></div>';
+      const structures=(masterData.community?.agrupaciones||[]).map(item=>'<option value="'+html(item.id_agrupacion)+'">'+html(item.ruta)+'</option>').join('');
+      return '<div class="masterGroupFilters"><label>Buscar<input id="masterGroupSearch" placeholder="Codigo o descripcion"></label><label>Tipo<select id="masterGroupType"><option value="">Todos</option>'+unique('tipo_nombre')+'</select></label><label>Estructura<select id="masterGroupAggregation"><option value="">Todas</option>'+structures+'</select></label><label>Bloque<select id="masterGroupBlock"><option value="">Todos</option>'+unique('bloque')+'</select></label><label>Planta<select id="masterGroupFloor"><option value="">Todas</option>'+unique('planta')+'</select></label></div>';
     }
 
     function masterGroupManagerHtml(group) {
       const config=group.configuracion_actual||{};const needsValue=['porcentaje','peso'].includes(config.base);
       const current=new Map((group.miembros||[]).filter(row=>row.participa&&!row.excluida).map(row=>[Number(row.id_propiedad),row]));
       const draft=new Map((masterData.groupDraft||[]).map(row=>[Number(row.id_propiedad),row]));
-      const rows=(masterData.properties||[]).map(property=>{const saved=draft.get(Number(property.id_propiedad))||current.get(Number(property.id_propiedad));const checked=Boolean(saved);const value=saved?.valor_decimal||'';const search=[property.codigo_propiedad,property.descripcion_direccion,property.tipo_nombre,property.agrupaciones_actuales,property.bloque,property.planta].map(safe).join(' ').toLowerCase();return '<div class="masterMemberRow" data-property-id="'+property.id_propiedad+'" data-search="'+html(search)+'" data-type="'+html(property.tipo_nombre)+'" data-aggregation="'+html(property.agrupaciones_actuales)+'" data-block="'+html(property.bloque)+'" data-floor="'+html(property.planta)+'"><input class="masterMemberCheck" type="checkbox" '+(checked?'checked':'')+' aria-label="Seleccionar '+html(property.codigo_propiedad)+'"><div><strong>'+html(property.codigo_propiedad)+'</strong><span class="muted">'+html([property.tipo_nombre,property.agrupaciones_actuales,property.bloque&&('Bloque '+property.bloque),property.planta&&('Planta '+property.planta)].filter(Boolean).join(' · '))+'</span></div>'+(needsValue?'<input class="masterMemberValue" inputmode="decimal" placeholder="'+(config.base==='porcentaje'?'Porcentaje':'Peso')+'" value="'+html(value)+'" '+(checked?'':'disabled')+'>':'<span class="muted">La pertenencia es suficiente</span>')+'</div>';}).join('');
+      const rows=(masterData.properties||[]).map(property=>{const saved=draft.get(Number(property.id_propiedad))||current.get(Number(property.id_propiedad));const checked=Boolean(saved);const value=saved?.valor_decimal||'';const search=[property.codigo_propiedad,property.descripcion_direccion,property.tipo_nombre,property.estructura_actual,property.bloque,property.planta].map(safe).join(' ').toLowerCase();return '<div class="masterMemberRow" data-property-id="'+property.id_propiedad+'" data-search="'+html(search)+'" data-type="'+html(property.tipo_nombre)+'" data-aggregation-ids="'+html((property.agrupacion_ids_actuales||[]).join(','))+'" data-block="'+html(property.bloque)+'" data-floor="'+html(property.planta)+'"><input class="masterMemberCheck" type="checkbox" '+(checked?'checked':'')+' aria-label="Seleccionar '+html(property.codigo_propiedad)+'"><div><strong>'+html(property.codigo_propiedad)+'</strong><span class="muted">'+html([property.tipo_nombre,property.estructura_actual,property.bloque&&('Bloque '+property.bloque),property.planta&&('Planta '+property.planta)].filter(Boolean).join(' · '))+'</span></div>'+(needsValue?'<input class="masterMemberValue" inputmode="decimal" placeholder="'+(config.base==='porcentaje'?'Porcentaje':'Peso')+'" value="'+html(value)+'" '+(checked?'':'disabled')+'>':'<span class="muted">La pertenencia es suficiente</span>')+'</div>';}).join('');
       return '<div class="masterGroupManager"><h3>Gestionar propiedades</h3>'+masterGroupFiltersHtml()+'<div class="toolbar"><button id="masterSelectVisible">Marcar visibles</button><button id="masterClearVisible" class="ghost">Desmarcar visibles</button><span id="masterGroupSelectionCount"></span></div><div class="masterMemberList">'+rows+'</div><div id="masterGroupLiveSummary" class="masterGroupSummary"></div><details class="masterAddContact"><summary>Pegar datos desde Excel</summary><p class="muted">Pega codigo de propiedad y valor separados por tabulador. Solo se aceptan coincidencias exactas dentro de esta comunidad.</p><textarea id="masterGroupPaste" rows="7" placeholder="B1-01&#9;5,20&#10;B1-02&#9;6,10"></textarea><button id="masterPreviewPaste" type="button">Comprobar datos</button><div id="masterPastePreview"></div></details><div class="masterOwnershipActions"><button id="masterReviewGroup" class="green">Revisar cambios</button><button id="masterCancelGroupManage" class="ghost">Cancelar</button></div></div>';
     }
 
@@ -11814,7 +11867,7 @@ function homePage() {
     function masterDataPanelHtml() {
       if(!masterData.loaded)return '<div class="empty">Cargando datos maestros...</div>';
       if(masterData.error)return '<div class="empty dangerText">'+html(masterData.error)+'</div>';
-      let content=masterData.section==='properties'?masterPropertiesHtml():masterData.section==='owners'?masterOwnersHtml():masterData.section==='groups'?masterGroupsHtml():masterCommunityHtml();
+      let content=masterData.section==='properties'?masterPropertiesHtml():masterData.section==='owners'?masterOwnersHtml():masterData.section==='structures'?masterStructuresHtml():masterData.section==='groups'?masterGroupsHtml():masterCommunityHtml();
       return '<div class="masterShell">'+masterHeaderHtml()+content+'</div>';
     }
 
@@ -11825,7 +11878,27 @@ function homePage() {
       const query=safe(root.querySelector('#masterGroupSearch')?.value).trim().toLowerCase();
       const type=safe(root.querySelector('#masterGroupType')?.value);const aggregation=safe(root.querySelector('#masterGroupAggregation')?.value);
       const block=safe(root.querySelector('#masterGroupBlock')?.value);const floor=safe(root.querySelector('#masterGroupFloor')?.value);
-      root.querySelectorAll('.masterMemberRow').forEach(row=>{const rowAggregations=safe(row.dataset.aggregation).split(' / ');row.hidden=Boolean((query&&!row.dataset.search.includes(query))||(type&&row.dataset.type!==type)||(aggregation&&!rowAggregations.includes(aggregation))||(block&&row.dataset.block!==block)||(floor&&row.dataset.floor!==floor));});
+      root.querySelectorAll('.masterMemberRow').forEach(row=>{const rowAggregations=safe(row.dataset.aggregationIds).split(',');row.hidden=Boolean((query&&!row.dataset.search.includes(query))||(type&&row.dataset.type!==type)||(aggregation&&!rowAggregations.includes(aggregation))||(block&&row.dataset.block!==block)||(floor&&row.dataset.floor!==floor));});
+    }
+
+    function masterApplyStructureFilters(root) {
+      const query=safe(root.querySelector('#masterStructureSearch')?.value).trim().toLowerCase();
+      const type=safe(root.querySelector('#masterStructureType')?.value);const block=safe(root.querySelector('#masterStructureBlock')?.value);const floor=safe(root.querySelector('#masterStructureFloor')?.value);
+      root.querySelectorAll('.masterStructureMember').forEach(row=>{row.hidden=Boolean((query&&!row.dataset.search.includes(query))||(type&&row.dataset.type!==type)||(block&&row.dataset.block!==block)||(floor&&row.dataset.floor!==floor));});
+      masterStructureSelectionSummary(root);
+    }
+
+    function masterStructureSelectionSummary(root) {
+      const count=root.querySelectorAll('.masterStructureCheck:checked').length;
+      const node=root.querySelector('#masterStructureSelectionCount');if(node)node.textContent='Seleccionadas: '+count+' de '+masterData.properties.length;
+      return count;
+    }
+
+    function masterCollectStructureReview(root) {
+      const ids=[...root.querySelectorAll('.masterStructureCheck:checked')].map(field=>Number(field.closest('.masterStructureMember').dataset.propertyId));
+      const current=new Set((masterData.properties||[]).filter(property=>(property.estructuras_actuales||[]).some(item=>Number(item.id_agrupacion)===Number(masterData.structure.id_agrupacion))).map(property=>Number(property.id_propiedad)));
+      const selected=new Set(ids);
+      return {ids,added:ids.filter(id=>!current.has(id)).length,removed:[...current].filter(id=>!selected.has(id)).length,efectiva_desde:new Date().toISOString().slice(0,10)};
     }
 
     function masterGroupLiveSummary(root) {
@@ -11856,12 +11929,14 @@ function homePage() {
 
     function bindMasterDataPanel() {
       const root=$('cards');
-      root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.property=null;masterData.owner=null;masterData.group=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;loadMasterData();});
-      root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;loadMasterData();}));
+      root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
+      root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
       root.querySelectorAll('[data-master-property]').forEach(button=>button.addEventListener('click',()=>{masterData.ownershipEditing=false;masterData.proposal=null;selectMasterProperty(button.dataset.masterProperty).catch(error=>alert(error.message));}));
       root.querySelectorAll('[data-master-owner]').forEach(button=>button.addEventListener('click',()=>selectMasterOwner(button.dataset.masterOwner).catch(error=>alert(error.message))));
       root.querySelectorAll('[data-master-owner-link]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.section='owners';masterData.search='';await loadMasterData();await selectMasterOwner(button.dataset.masterOwnerLink);}catch(error){alert(error.message);}}));
       root.querySelectorAll('[data-master-property-link]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.section='properties';masterData.search='';masterData.groupManaging=false;masterData.groupReview=null;await loadMasterData();await selectMasterProperty(button.dataset.masterPropertyLink);}catch(error){alert(error.message);}}));
+      root.querySelectorAll('[data-master-structure]').forEach(button=>button.addEventListener('click',()=>{masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(button.dataset.masterStructure))||null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;render();}));
+      root.querySelectorAll('[data-master-structure-link]').forEach(button=>button.addEventListener('click',async()=>{masterData.section='structures';masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(button.dataset.masterStructureLink))||null;await loadMasterData();render();}));
       root.querySelectorAll('[data-master-group]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.group=(await erpQuery('erp1.group.get',{id_grupo:Number(button.dataset.masterGroup)})).entity;render();}catch(error){alert(error.message);}}));
       root.querySelector('#masterSearchForm')?.addEventListener('submit',event=>{event.preventDefault();masterData.search=new FormData(event.target).get('search')||'';loadMasterData();});
       root.querySelectorAll('#masterNewProperty').forEach(button=>button.addEventListener('click',()=>{masterData.property={};render();}));
@@ -11878,7 +11953,9 @@ function homePage() {
       bindSubmit('#masterRelationForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad_origen=masterData.property.id_propiedad;data.id_propiedad_destino=Number(data.id_propiedad_destino);await erpCommand('erp1.property.relation.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterCoefficientForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;if(data.id_grupo)data.id_grupo=Number(data.id_grupo);await erpCommand('erp1.coefficient.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterExerciseForm',async form=>{await erpCommand('erp1.exercise.save',compactPayload(formObject(form)));await loadMasterData();});
-      bindSubmit('#masterAggregationForm',async form=>{const data=compactPayload(formObject(form));if(data.id_padre)data.id_padre=Number(data.id_padre);await erpCommand('erp1.aggregation.save',data);await loadMasterData();});
+      const saveStructure=async form=>{const data=compactPayload(formObject(form));const id=Number(data.id_agrupacion||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_agrupacion;if(data.id_padre)data.id_padre=Number(data.id_padre);else delete data.id_padre;data.estado=id?(masterData.structure?.estado||'activa'):'activa';const result=await erpCommand('erp1.aggregation.save',data,id?version:null);await loadMasterData();masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(result.entity.id_agrupacion))||null;render();};
+      bindSubmit('#masterStructureCreateForm',saveStructure);
+      bindSubmit('#masterStructureEditForm',saveStructure);
       bindSubmit('#masterCommunityForm',async form=>{if(state.usuario?.rol!=='Superusuario')return;const data=formObject(form);const version=Number(data.version);delete data.version;await erpCommand('erp1.community.update',data,version);await loadMasterData();});
       bindSubmit('#masterGroupForm',async form=>{const data=compactPayload(formObject(form));data.estado='activo';if(data.base!=='porcentaje')delete data.suma_esperada_decimal;const result=await erpCommand('erp1.group.save',data);await loadMasterData();masterData.group=(await erpQuery('erp1.group.get',{id_grupo:result.entity.id_grupo})).entity;render();});
       const groupBase=root.querySelector('#masterGroupForm [name="base"]');groupBase?.addEventListener('change',()=>{const expected=root.querySelector('.masterExpectedSum');if(expected)expected.hidden=groupBase.value!=='porcentaje';});if(groupBase)groupBase.dispatchEvent(new Event('change'));
@@ -11900,9 +11977,20 @@ function homePage() {
       root.querySelector('#masterReviewGroup')?.addEventListener('click',()=>{try{masterData.groupReview=masterCollectGroupReview(root);masterData.groupDraft=masterData.groupReview.items;render();}catch(error){alert(error.message);}});
       root.querySelector('#masterBackGroup')?.addEventListener('click',()=>{masterData.groupReview=null;masterData.groupManaging=true;render();});
       root.querySelector('#masterConfirmGroup')?.addEventListener('click',async()=>{if(!confirm('Confirmar la configuracion completa del grupo?'))return;const button=root.querySelector('#masterConfirmGroup');button.disabled=true;try{const result=await erpCommand('erp1.group.configure',{id_grupo:masterData.group.id_grupo,efectiva_desde:root.querySelector('#masterGroupEffectiveDate').value,miembros:masterData.groupReview.items,motivo:root.querySelector('#masterGroupReason').value},masterData.group.version);const groupId=result.entity.grupo.id_grupo;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.group=null;await loadMasterData();masterData.group=(await erpQuery('erp1.group.get',{id_grupo:groupId})).entity;render();}catch(error){alert(error.message);button.disabled=false;}});
+      root.querySelector('#masterManageStructure')?.addEventListener('click',()=>{masterData.structureManaging=true;masterData.structureReview=null;masterData.structureDraft=null;render();});
+      root.querySelector('#masterCancelStructure')?.addEventListener('click',()=>{masterData.structureManaging=false;masterData.structureDraft=null;render();});
+      ['#masterStructureSearch','#masterStructureType','#masterStructureBlock','#masterStructureFloor'].forEach(selector=>root.querySelector(selector)?.addEventListener(selector==='#masterStructureSearch'?'input':'change',()=>masterApplyStructureFilters(root)));
+      root.querySelectorAll('.masterStructureCheck').forEach(field=>field.addEventListener('change',()=>masterStructureSelectionSummary(root)));
+      root.querySelector('#masterStructureSelectVisible')?.addEventListener('click',()=>{root.querySelectorAll('.masterStructureMember:not([hidden]) .masterStructureCheck').forEach(field=>{field.checked=true;});masterStructureSelectionSummary(root);});
+      root.querySelector('#masterStructureClearVisible')?.addEventListener('click',()=>{root.querySelectorAll('.masterStructureMember:not([hidden]) .masterStructureCheck').forEach(field=>{field.checked=false;});masterStructureSelectionSummary(root);});
+      root.querySelector('#masterReviewStructure')?.addEventListener('click',()=>{masterData.structureReview=masterCollectStructureReview(root);masterData.structureDraft=masterData.structureReview.ids;render();});
+      root.querySelector('#masterBackStructure')?.addEventListener('click',()=>{masterData.structureReview=null;masterData.structureManaging=true;render();});
+      root.querySelector('#masterConfirmStructure')?.addEventListener('click',async()=>{if(!confirm('Confirmar la asignacion de propiedades a esta estructura?'))return;const button=root.querySelector('#masterConfirmStructure');button.disabled=true;try{const structureId=masterData.structure.id_agrupacion;await erpCommand('erp1.aggregation.configure',{id_agrupacion:structureId,efectiva_desde:root.querySelector('#masterStructureEffectiveDate').value,id_propiedades:masterData.structureReview.ids,motivo:root.querySelector('#masterStructureReason').value},masterData.structure.version);masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;masterData.structure=null;await loadMasterData();masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(structureId))||null;render();}catch(error){alert(error.message);button.disabled=false;}});
       if(masterData.groupManaging&&!masterData.groupReview)masterGroupLiveSummary(root);
+      if(masterData.structureManaging&&!masterData.structureReview)masterStructureSelectionSummary(root);
       const setSelect=(form,name,value)=>{const field=form?.elements?.[name];if(field&&value)field.value=value;};
       setSelect(root.querySelector('#masterOwnerForm'),'tipo_persona',masterData.owner?.tipo_persona);setSelect(root.querySelector('#masterOwnerForm'),'estado',masterData.owner?.estado);setSelect(root.querySelector('#masterOwnerForm'),'calidad_identidad',masterData.owner?.calidad_identidad);
+      setSelect(root.querySelector('#masterStructureEditForm'),'tipo',masterData.structure?.tipo);
     }
 
     function render() {

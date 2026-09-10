@@ -13,6 +13,7 @@ COMMANDS = {
     "erp1.exercise.save": "exercise_save",
     "erp1.exercise.lock": "exercise_lock",
     "erp1.aggregation.save": "aggregation_save",
+    "erp1.aggregation.configure": "aggregation_configure",
     "erp1.property.save": "property_save",
     "erp1.property.alias.save": "property_alias_save",
     "erp1.property.relation.save": "property_relation_save",

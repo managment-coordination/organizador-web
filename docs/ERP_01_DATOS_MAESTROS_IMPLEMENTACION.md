@@ -121,6 +121,16 @@ Desde una propiedad se muestran todos los grupos de la comunidad, indicando part
 
 Las pruebas de ERP 1 incorporan propietario unico, copropiedad, cambio efectivo, historico bidireccional, aislamiento por comunidad e inmutabilidad de deuda y asambleas; tambien cubren 40 propiedades, seleccion masiva de 16, suma exacta, exceso y defecto, peso, pertenencia sin coeficiente, coexistencia de coeficientes, baja historica, rollback, permisos y pegado revisable. El recorrido Playwright valida los flujos principales en escritorio y movil.
 
+### Ajuste UX de estructura de propiedades - 10/09/2026
+
+El dominio `erp_agrupaciones` se presenta como `Estructura de propiedades` en una pestaña propia, independiente de Comunidad/Ejercicios y de Coeficientes y grupos. Su finalidad visible es organizar opcionalmente inmuebles por fases, bloques, portales, zonas u otras divisiones fisicas. Una comunidad sin estructura adicional conserva toda la operativa de propiedades, propietarios, coeficientes y grupos.
+
+La pantalla ordena las divisiones como un arbol padre-hijo y muestra rutas comprensibles como `Fase 1 > Bloque A`, propiedades asignadas directamente y total incluido en cada rama. La creacion y edicion seleccionan el elemento padre por nombre y ruta, sin exponer IDs. `Gestionar propiedades` permite buscar, filtrar, seleccionar varias filas, revisar altas y retiradas y confirmar la operacion completa en una unica transaccion con permiso de comunidad, idempotencia, version esperada, auditoria y rollback.
+
+La ficha de propiedad muestra `Ubicacion / estructura` solo cuando existe una pertenencia actual. Los intervalos conservan su vigencia; retirar una propiedad finaliza la pertenencia sin alterar periodos anteriores. Los grupos de reparto pueden utilizar cualquier nodo, incluidos sus descendientes, como filtro de seleccion masiva, pero nunca se crea un grupo economico ni se modifica un coeficiente por pertenecer a una estructura.
+
+No se ha modificado el esquema ni se ha implementado ERP 2. Las pruebas cubren comunidad sin estructura, division simple, jerarquia Fase > Bloques, asignacion masiva, rutas y filtros derivados, vigencia, permisos, rollback, inmutabilidad de coeficientes y grupos, escritorio y movil.
+
 La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de maestros, historicos, coeficientes y grupos. Las reglas economicas pertenecen a ERP 2. Antes de cualquier siguiente cambio estructural siguen siendo obligatorios checkpoint Git, backup independiente de SQLite y restauracion ensayada.
 
 ## Estado final
