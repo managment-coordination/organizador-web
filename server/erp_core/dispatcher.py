@@ -6,6 +6,7 @@ from .contracts import CommandEnvelope, QueryEnvelope
 from .errors import NotFoundError
 from .service import FoundationService
 from .master_service import MasterDataService
+from .budget_contracts import contract_catalog as budget_contract_catalog
 
 
 COMMANDS = {
@@ -68,5 +69,6 @@ def catalog():
         "contract_version": "erp_internal_v1",
         "queries": ["erp0.foundation.get_status", *sorted(QUERIES)],
         "commands": sorted(COMMANDS) + (["erp0.foundation.set_status"] if os.environ.get("ERP0_REFERENCE_COMMANDS") == "1" else []),
+        "erp2a": budget_contract_catalog(),
         "arbitrary_sql": False,
     }

@@ -10,6 +10,7 @@ FIELDS = (
     "puede_ver", "puede_crear", "puede_actualizar", "puede_ver_documentos",
     "puede_generar_informes", "puede_gestionar_asambleas", "puede_gestionar_seguridad",
 )
+BUDGET_FIELDS = ("puede_ver", "puede_preparar", "puede_aprobar", "puede_configurar_cobro")
 
 
 def stamp():
@@ -27,6 +28,16 @@ def defaults(role, security=False):
         "puede_generar_informes": int(general),
         "puede_gestionar_asambleas": int(work),
         "puede_gestionar_seguridad": int(work and security),
+    }
+
+
+def budget_defaults(role):
+    work = role in WORK_ROLES
+    return {
+        "puede_ver": int(work or role == "Consulta"),
+        "puede_preparar": int(work),
+        "puede_aprobar": int(role in {"Superusuario", "Administrador"}),
+        "puede_configurar_cobro": int(role in {"Superusuario", "Administrador"}),
     }
 
 
@@ -188,6 +199,50 @@ def save_permissions(conn, user_id, community_id, role, permissions):
         rol_en_comunidad=excluded.rol_en_comunidad,
         {','.join(f'{f}=excluded.{f}' for f in FIELDS)},activo=1,fecha_actualizacion=excluded.fecha_actualizacion""",
         [user_id, community_id, role, *values, stamp()])
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erp_presupuesto_permisos'").fetchone():
+        economic = budget_defaults(role)
+        conn.execute("""INSERT OR IGNORE INTO erp_presupuesto_permisos
+            (id_usuario,id_comunidad,puede_ver,puede_preparar,puede_aprobar,
+             puede_configurar_cobro,activo,version,actualizado_en,actualizado_por)
+            VALUES (?,?,?,?,?,?,1,1,?,?)""",
+            (user_id, community_id, *(economic[field] for field in BUDGET_FIELDS), stamp(), user_id))
+
+
+def save_budget_permissions(conn, actor_id, user_id, community_id, permissions, expected_version=None):
+    row = conn.execute("SELECT * FROM erp_presupuesto_permisos WHERE id_usuario=? AND id_comunidad=?",
+                       (user_id, community_id)).fetchone()
+    if row and expected_version is not None and int(row["version"]) != int(expected_version):
+        raise ValueError("Los permisos economicos han cambiado; vuelve a cargar la ficha.")
+    values = [int(bool(permissions.get(field, 0))) for field in BUDGET_FIELDS]
+    conn.execute("""INSERT INTO erp_presupuesto_permisos
+        (id_usuario,id_comunidad,puede_ver,puede_preparar,puede_aprobar,
+         puede_configurar_cobro,activo,version,actualizado_en,actualizado_por)
+        VALUES (?,?,?,?,?,?,1,1,?,?)
+        ON CONFLICT(id_usuario,id_comunidad) DO UPDATE SET
+        puede_ver=excluded.puede_ver,puede_preparar=excluded.puede_preparar,
+        puede_aprobar=excluded.puede_aprobar,
+        puede_configurar_cobro=excluded.puede_configurar_cobro,
+        activo=1,version=erp_presupuesto_permisos.version+1,
+        actualizado_en=excluded.actualizado_en,actualizado_por=excluded.actualizado_por""",
+        (user_id, community_id, *values, stamp(), actor_id))
+
+
+def budget_permission(conn, session, community_id, field):
+    if field not in BUDGET_FIELDS:
+        raise ValueError("Permiso economico desconocido.")
+    if not session or not permission(session, community_id, "puede_ver"):
+        return False
+    if session.get("rol") == "Superusuario":
+        return True
+    row = conn.execute(f"""SELECT {field} FROM erp_presupuesto_permisos
+        WHERE id_usuario=? AND id_comunidad=? AND activo=1""",
+        (session.get("id_usuario"), community_id)).fetchone()
+    return bool(row and row[0])
+
+
+def require_budget_permission(conn, session, community_id, field):
+    if not budget_permission(conn, session, community_id, field):
+        raise PermissionError("No tienes permiso para esta operacion de presupuestos.")
 
 
 def profile(conn, user_id):
