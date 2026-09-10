@@ -30,6 +30,8 @@ with tarfile.open(args.archive) as bundle:
     bundle.extractall(stage, filter='data')
 (stage/'server/node_modules').symlink_to(APP/'server/node_modules', target_is_directory=True)
 env = {**os.environ, 'VERIFY_SOURCE_DB':str(APP/'data/organizador_tareas.db'), 'PYTHON_BIN':'python3'}
+subprocess.run(['python3',str(stage/'scripts/verify-erp1-master-data.py'),
+    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-operational-release.mjs')],cwd=stage,env=env,check=True)
 print(json.dumps({'staging_verified':str(stage)}),flush=True)
 if not args.publish:

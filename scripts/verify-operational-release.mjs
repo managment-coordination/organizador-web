@@ -26,10 +26,14 @@ target=sqlite3.connect(sys.argv[2]); target.row_factory=sqlite3.Row
 source.backup(target); source.close()
 before={r[0]:target.execute('SELECT COUNT(*) FROM "'+r[0]+'"').fetchone()[0] for r in target.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()}
 previous_migrations=set(tuple(r) for r in target.execute('SELECT * FROM web_migrations')) if 'web_migrations' in before else set()
+previous_erp_migrations=set(tuple(r) for r in target.execute('SELECT * FROM erp_schema_migrations')) if 'erp_schema_migrations' in before else set()
 migrate(target)
 for table,count in before.items():
     if table=='web_migrations':
         assert previous_migrations.issubset(set(tuple(r) for r in target.execute('SELECT * FROM web_migrations')))
+        continue
+    if table=='erp_schema_migrations':
+        assert previous_erp_migrations.issubset(set(tuple(r) for r in target.execute('SELECT * FROM erp_schema_migrations')))
         continue
     assert target.execute('SELECT COUNT(*) FROM "'+table+'"').fetchone()[0]==count, table
 assert target.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
