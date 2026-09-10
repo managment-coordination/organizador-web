@@ -342,6 +342,58 @@ print(json.dumps(result))
   const offline=(await request('/api/ai/analyze',worker.cookie,{text:'Nueva actuacion',target:{type:'task',id:draftTask}},500)).value;
   assert.match(offline.error,/IA externa no esta disponible/);
   results.push('Module06: private editable drafts, community write scope, stale-proposal protection, idempotent audited confirmation and explicit AI unavailability');
+  const meetingTask=await create(worker.cookie,'task',communityA,'Meeting existing fixture');
+  const meetingSession={id_usuario:worker.id,nombre:worker.name,rol:'Usuario',comunidades:[{id_comunidad:communityA,puede_actualizar:1,puede_crear:1}]};
+  const meeting=JSON.parse(pythonRun(`import json,sqlite3,sys
+from ai_meetings import command
+conn=sqlite3.connect(sys.argv[1]);conn.row_factory=sqlite3.Row
+s=json.loads(sys.argv[2]);eid=int(sys.argv[3])
+with conn:
+    cat=command(conn,s,'catalog',{})
+    b=command(conn,s,'create',{'text':'Synthetic meeting','catalog':cat})
+    current=next(r for r in cat if r['type']=='task' and r['id']==eid)
+    p={'action':'seguimiento_tarea','entity':{'type':'task','id':eid},'baseline_version':current['version'],'selected':True,'payload':{'comentario':'Synthetic reviewed comment','responsable_proximo_paso':'Administracion','proximo_paso':'','id_comunidad':current['id_comunidad']}}
+    n={'action':'crear_proyecto','entity':{'type':'project','id':None},'selected':True,'payload':{'titulo':'Meeting new project','comentario':'Reviewed extraordinary works','responsable_nuevo':'Administracion','responsable_proximo_paso':'Administracion','proximo_paso':'','id_comunidad':current['id_comunidad']}}
+    result=command(conn,s,'finish',{'meeting_id':b['meeting_id'],'proposals':[p,n]})
+print(json.dumps(result))
+`,[database,JSON.stringify(meetingSession),String(meetingTask)]));
+  const meetingPath='/api/ai/meetings';
+  await request(meetingPath+'?id='+meeting.meeting_id,other.cookie,undefined,403);
+  await request(meetingPath+'?id='+meeting.meeting_id,read.cookie,undefined,403);
+  assert.equal((await request(meetingPath+'?id='+meeting.meeting_id,worker.cookie)).value.proposals.length,2);
+  const first=meeting.proposals[0];
+  const edited={...first,entity_id:meetingTask,payload:{...first.payload,comentario:'Human reviewed meeting comment'}};
+  await request(meetingPath,worker.cookie,{action:'save',item:edited});
+  await request(meetingPath,worker.cookie,{action:'save',item:edited},400);
+  const appliedMeeting=(await request(meetingPath,worker.cookie,{action:'apply',meeting_id:meeting.meeting_id,item_ids:[first.meeting_item_id]})).value;
+  assert.equal(appliedMeeting.results[0].ok,true,JSON.stringify(appliedMeeting.results));
+  assert.equal(appliedMeeting.proposals[1].confirmed,false);
+  const once=(await request(`/api/entity/detail?type=task&id=${meetingTask}`,worker.cookie)).value.history.length;
+  await request(meetingPath,worker.cookie,{action:'apply',meeting_id:meeting.meeting_id,item_ids:meeting.proposals.map(p=>p.meeting_item_id)});
+  await request(meetingPath,worker.cookie,{action:'apply',meeting_id:meeting.meeting_id,item_ids:meeting.proposals.map(p=>p.meeting_item_id)});
+  assert.equal((await request(`/api/entity/detail?type=task&id=${meetingTask}`,worker.cookie)).value.history.length,once);
+  const completeMeeting=(await request(meetingPath+'?id='+meeting.meeting_id,worker.cookie)).value;
+  assert.ok(completeMeeting.proposals.every(p=>p.confirmed),JSON.stringify(completeMeeting));
+  assert.equal(Number(pythonRun("import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT COUNT(*) FROM proyectos WHERE nombre='Meeting new project'\").fetchone()[0])",[database])),1);
+  const staleMeeting=JSON.parse(pythonRun(`import json,sqlite3,sys
+from ai_meetings import command
+c=sqlite3.connect(sys.argv[1]);c.row_factory=sqlite3.Row;s=json.loads(sys.argv[2]);eid=int(sys.argv[3])
+with c:
+    cat=command(c,s,'catalog',{});r=next(x for x in cat if x['type']=='task' and x['id']==eid)
+    b=command(c,s,'create',{'text':'Stale and partial fixture','catalog':cat})
+    p={'action':'seguimiento_tarea','entity':{'type':'task','id':eid},'baseline_version':r['version'],'payload':{'comentario':'Old proposal','responsable_proximo_paso':'Administracion','id_comunidad':r['id_comunidad']}}
+    n={'action':'crear_tarea','entity':{'type':'task','id':None},'payload':{'titulo':'Independent partial fixture','comentario':'New ordinary incident','responsable_nuevo':'Administracion','responsable_proximo_paso':'Administracion','id_comunidad':r['id_comunidad']}}
+    result=command(c,s,'finish',{'meeting_id':b['meeting_id'],'proposals':[p,n]})
+print(json.dumps(result))
+`,[database,JSON.stringify(meetingSession),String(meetingTask)]));
+  await request('/api/entity/record',worker.cookie,{type:'task',id:meetingTask,payload:{comentario:'Concurrent update',responsable_proximo_paso:'Administracion'}});
+  const partial=(await request(meetingPath,worker.cookie,{action:'apply',meeting_id:staleMeeting.meeting_id,item_ids:staleMeeting.proposals.map(p=>p.meeting_item_id)})).value;
+  assert.equal(partial.results[0].ok,false);
+  assert.match(partial.results[0].error,/ha cambiado/);
+  assert.equal(partial.results[1].ok,true);
+  await request(meetingPath,worker.cookie,{action:'apply',meeting_id:staleMeeting.meeting_id,item_ids:staleMeeting.proposals.map(p=>p.meeting_item_id)});
+  assert.equal(Number(pythonRun("import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT COUNT(*) FROM tareas WHERE titulo='Independent partial fixture'\").fetchone()[0])",[database])),1);
+  results.push('Module06 meetings: private resumable proposals, editable revisions, individual and selected confirmation, new projects and retry without duplicate records');
   await adminAction('save_user',{id_usuario:worker.id,nombre:worker.name,rol:'Usuario',activo:false,community_ids:[communityA,communityB]});
   await request('/api/me',worker.cookie,undefined,401);
   await adminAction('reset_password',{id_usuario:other.id});

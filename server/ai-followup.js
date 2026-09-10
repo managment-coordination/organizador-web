@@ -3,6 +3,18 @@ const STATES = new Set(['Pendiente', 'En curso', 'Pendiente de tercero', 'Bloque
 const clean = value => typeof value === 'string' ? value.trim() : '';
 const normalized = value => clean(value).normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase('es').replace(/\s+/g, ' ');
 const hasEvidence = (raw, field, text) => clean(raw?.evidencias?.[field]).length >= 3 && normalized(text).includes(normalized(raw.evidencias[field]));
+function conversationDateOnly(quote, text) {
+  const source = normalized(text);
+  const evidence = normalized(quote);
+  if (!evidence) return false;
+  const at = source.indexOf(evidence);
+  if (at < 0) return false;
+  const before = Math.max(source.lastIndexOf('.',at),source.lastIndexOf(';',at));
+  const end = source.indexOf('.',at + evidence.length);
+  const sentence = source.slice(before + 1,end < 0 ? source.length : end);
+  return /\b(?:he hablado|hemos hablado|hable con|se celebro|hemos mantenido|tuve una llamada|ha tenido lugar)\b/.test(sentence)
+    && !/\b(?:vendr|enviar|revisar|entregar|realizar|ejecutar|antes de|a mas tardar|plazo)/.test(sentence);
+}
 function missingCondition(raw, text) {
   const conditionalInput = /\b(?:si\s|una vez|siempre que|en caso de|hasta que)/i.test(text);
   const conditionalStep = /\b(?:si|cuando|una vez|tras|despues de|condicionad[oa]|previa|siempre que|en caso|hasta)\b/i.test(normalized(raw?.proximo_paso));
@@ -27,6 +39,7 @@ No rellenes huecos con el historico: describe SOLO la nueva actuacion. El contex
 No deduzcas que el interlocutor o quien escribe es el responsable del siguiente paso. Si no esta claro usa responsable_proximo_paso vacio; la aplicacion mostrara Administracion con advertencia.
 El proximo paso es opcional: vacio si no hay accion identificable. Estado propuesto vacio salvo cambio explicitamente respaldado, no confundir una reparacion parcial con finalizar todo el expediente.
 Fechas: usa una fecha ISO solo si consta inequívocamente. Las relativas requieren fecha de la conversacion facilitada expresamente; si falta pregunta. Nunca uses la fecha del servidor como fecha de una llamada antigua.
+fecha_objetivo_proximo_paso es SOLO el plazo de la accion futura. "Hoy he hablado con Paquito" fecha la llamada, NO la visita ni el pedido: fecha objetivo vacia. "Juan revisara manana" SI fecha la accion. Cita la clausula completa que vincula plazo y accion, no una palabra de fecha aislada de otro hecho.
 Incluye citas LITERALES de la entrada como evidencia de estado, responsable y fecha; si no hay evidencia, deja vacio. No cambies el responsable general ni la prioridad.
 Si fecha_conversacion contiene una fecha, YA es la referencia expresa: no vuelvas a preguntarla. Calcula hoy/manana respecto a ella, no respecto al presente real. Ejemplo fecha_conversacion 2026-03-03 y entrada "manana" -> 2026-03-04, evidencia "manana".
 IMPORTANTE: evidencias.responsable justifica responsable_proximo_paso, NO el responsable actual del expediente. evidencias.fecha es la frase de la entrada que indica el plazo (por ejemplo "vendran manana"), NO la fecha de referencia ni el ISO calculado. Las evidencias salen SOLO de entrada, nunca de expediente o contexto_reciente.
@@ -52,10 +65,11 @@ export function normalizeFollowup(raw, { text, item, target, sourceDate = '' }) 
   }
   const evidence = raw.evidencias || {};
   const supported = field => hasEvidence(raw, field, text);
+  const stateForKind = value => target.type === 'task' ? ({Bloqueado:'Bloqueada',Finalizado:'Terminada',Archivado:'Archivada'}[value] || value) : value;
   let state = clean(item.estado) || 'Pendiente';
-  const proposedState = clean(raw.estado_propuesto);
+  const proposedState = stateForKind(clean(raw.estado_propuesto));
   if (proposedState && proposedState !== state) {
-    if (STATES.has(proposedState) && supported('estado')) {
+    if ((STATES.has(clean(raw.estado_propuesto)) || ['Bloqueada','Terminada','Archivada'].includes(proposedState) && target.type === 'task') && supported('estado')) {
       warnings.push(`Cambio de estado propuesto: ${state} -> ${proposedState}. Confirma que afecta a todo el expediente.`);
       state = proposedState;
     } else warnings.push('El cambio de estado no tiene evidencia suficiente; se conserva el estado actual.');
@@ -66,19 +80,20 @@ export function normalizeFollowup(raw, { text, item, target, sourceDate = '' }) 
     warnings.push('Responsable del proximo paso no identificado con claridad: Administracion. Puedes confirmarlo o corregirlo.');
   }
   let date = clean(raw.fecha_objetivo_proximo_paso);
-  const resolvedDate = supported('fecha') ? relativeDate(evidence.fecha, sourceDate) : '';
+  const conversationOnly = conversationDateOnly(evidence.fecha,text);
+  const resolvedDate = supported('fecha') && !conversationOnly ? relativeDate(evidence.fecha, sourceDate) : '';
   if (resolvedDate) date = resolvedDate;
   if (date) {
     const validDate = /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString().slice(0, 10) === date;
     const [year, month, day] = date.split('-');
     const numericForms = [date, `${Number(day)}/${Number(month)}/${year}`, `${day}/${month}/${year}`, `${Number(day)}-${Number(month)}-${year}`];
     const absoluteInSource = numericForms.some(value => text.includes(value));
-    if (!validDate || !supported('fecha') || (!sourceDate && !absoluteInSource)) {
+    if (!validDate || !supported('fecha') || conversationOnly || (!sourceDate && !absoluteInSource)) {
       date = '';
-      warnings.push('Fecha pendiente de confirmar: indica la fecha de la conversacion o completa el plazo manualmente.');
+      warnings.push(conversationOnly ? 'La fecha citada corresponde a la conversacion, no al proximo paso. Se deja el plazo vacio.' : 'Fecha pendiente de confirmar: indica la fecha de la conversacion o completa el plazo manualmente.');
     } else if (!absoluteInSource) warnings.push(`Fecha interpretada con referencia ${sourceDate}; verifica el plazo propuesto.`);
   }
-  if (['Finalizado', 'Archivado'].includes(clean(item.estado)) && state === item.estado && clean(raw.proximo_paso)) {
+  if (['Finalizado', 'Archivado', 'Terminada', 'Archivada'].includes(clean(item.estado)) && state === item.estado && clean(raw.proximo_paso)) {
     warnings.push('El expediente esta cerrado y se propone una nueva accion. Revisa si procede reabrirlo.');
   }
   const title = item.titulo || item.nombre || '';
@@ -93,7 +108,7 @@ export function normalizeFollowup(raw, { text, item, target, sourceDate = '' }) 
     payload: { tipo_registro: 'Seguimiento', comentario: comment, proximo_paso: clean(raw.proximo_paso),
       estado_nuevo: state, prioridad_nueva: item.prioridad || 'Media', responsable_nuevo: item.responsable || '',
       responsable_proximo_paso: owner, fecha_objetivo_proximo_paso: date, fecha_proxima_revision: date,
-      motivo_bloqueo: state === 'Bloqueado' ? clean(raw.motivo_bloqueo) || item.motivo_bloqueo || '' : '' }
+      motivo_bloqueo: ['Bloqueado','Bloqueada'].includes(state) ? clean(raw.motivo_bloqueo) || item.motivo_bloqueo || '' : '' }
   };
 }
 

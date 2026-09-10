@@ -40,7 +40,8 @@ try {
     await page.locator('#loginUser option').first().waitFor({state:'attached'});
     await page.locator('#loginUser').selectOption({label:'SuperUsuario'});
     await page.locator('#loginPassword').fill('Only-local-fixture-629');
-    await page.locator('#loginButton').click();
+    const [loginResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/login')),page.locator('#loginButton').click()]);
+    assert.equal(loginResponse.status(),200,await loginResponse.text());
     await page.locator('#appView').waitFor({state:'visible'});
     for(const view of ['home','tasks','projects','admin','ai']){
       if(viewport.width<600){
@@ -57,6 +58,35 @@ try {
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);
       assert.ok(!overflow, `Horizontal overflow in ${view} at ${viewport.width}`);
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
+      if(view==='ai') {
+        const meeting={ok:true,meeting_id:'ui-meeting',status:'revision',progress:100,message:'Propuestas listas',
+          communities:[{id_comunidad:1,nombre:'Comunidad de prueba'}],catalog:[],
+          proposals:[0,1].map(i=>({meeting_item_id:'ui-item-'+i,revision:1,action:'crear_tarea',selected:true,entity:{type:'task',id:null},
+            payload:{titulo:'Revision de instalacion '+i,comentario:'El proveedor confirma disponibilidad para revisar la instalacion.',proximo_paso:'Revisar el material una vez aprobado el presupuesto.',responsable_proximo_paso:'Administracion',estado_nuevo:'Pendiente'},
+            warnings:['Responsable pendiente de confirmar: Administracion.'],source_text:'Texto sintetico de reunion.'}))};
+        await page.route('**/api/ai/meetings',async route=>{
+          const body=route.request().postDataJSON();
+          if(body.action==='save'){
+            const item=meeting.proposals.find(p=>p.meeting_item_id===body.item.meeting_item_id);
+            Object.assign(item,{payload:body.item.payload,revision:item.revision+1});
+          }
+          if(body.action==='apply')for(const id of body.item_ids)meeting.proposals.find(p=>p.meeting_item_id===id).confirmed=true;
+          await route.fulfill({status:body.action==='start'?202:200,json:meeting});
+        });
+        await page.locator('#aiUnifiedText').fill('Reunion de prueba con dos asuntos independientes.');
+        await page.locator('#meetingAnalyze').click();
+        await page.locator('[data-meeting-card="0"]').waitFor();
+        await page.locator('[data-meeting-card="1"] [data-field="comment"]').fill('Edicion humana conservada al confirmar el otro asunto.');
+        page.once('dialog',dialog=>dialog.accept());
+        await page.locator('[data-meeting-confirm="0"]').click();
+        await page.locator('#meetingReviewMessage').getByText(/Confirmacion terminada/).waitFor();
+        assert.equal(await page.locator('[data-meeting-card="1"] [data-field="comment"]').inputValue(),'Edicion humana conservada al confirmar el otro asunto.');
+        assert.ok(await page.locator('[data-meeting-card="0"] [data-field="comment"]').isDisabled());
+        assert.ok(!await page.locator('[data-meeting-card="1"] [data-field="comment"]').isDisabled());
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Meeting mobile overflow');
+        await page.screenshot({path:path.join(output,`${viewport.width}-meeting-review.png`),fullPage:true});
+        await page.unroute('**/api/ai/meetings');
+      }
       if(['tasks','projects'].includes(view)){
         await page.locator(view==='tasks'?'#newTaskButton':'#newProjectButton').click();
         await page.locator('#createName').fill(`UI ${view} ${viewport.width}`);
@@ -65,7 +95,8 @@ try {
         await page.locator('#createCommunity').selectOption(community);
         await page.locator('#createNextStep').fill('Supplier to inspect installation');
         await page.locator('#createNextOwner').fill('External supplier');
-        await page.locator('#saveCreateEntity').click();
+        const [createdResponse]=await Promise.all([page.waitForResponse(r=>r.url().includes('/api/entity/create')),page.locator('#saveCreateEntity').click()]);
+        assert.equal(createdResponse.status(),200,JSON.stringify({response:await createdResponse.text(),input:createdResponse.request().postDataJSON()}));
         await page.locator('#entityModal').waitFor({state:'visible'});
         assert.equal(await page.locator('#commitmentList [data-resolution="Resuelta"]').count(),1);
         await page.route('**/api/ai/analyze',async route=>{

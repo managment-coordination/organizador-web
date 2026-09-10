@@ -16,7 +16,8 @@ function routeBlock(route, nextRoute) {
     failures.push(`falta endpoint ${route}`);
     return "";
   }
-  const end = nextRoute ? source.indexOf(`url.pathname === "${nextRoute}"`, start + route.length) : source.indexOf("return notFound", start);
+  // A neighbouring confirmation endpoint is not part of the analysis route.
+  const end = source.indexOf('\n  if (',start);
   return source.slice(start, end === -1 ? undefined : end);
 }
 

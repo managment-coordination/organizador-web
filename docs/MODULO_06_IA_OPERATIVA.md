@@ -26,7 +26,7 @@ No marcar todo el modulo completado por mejorar un prompt. Aceptacion semantica 
 
 ## Estado
 
-Definicion 100%. Bloques A y B: 100% de implementacion, publicados el 09/09/2026. C pendiente. D: regresion y vistas de seguimiento comprobadas; aceptacion semantica por el usuario pendiente. No confundir el cierre de A/B con el cierre del modulo completo.
+Definicion 100%. Bloques A y B publicados el 09/09/2026. Bloque C: 100% de implementacion y pruebas tecnicas, publicado el 10/09/2026. D: regresion, proveedor sintetico y vistas comprobados; aceptacion semantica por el usuario pendiente. No confundir implementacion con una garantia de comprension infalible.
 Publicacion: backups/stage-operational-20260909-105755; copia anterior a publicar: backups/before-operational-publish-20260909-105755. La bateria operativa de 16 grupos paso antes de detener/reiniciar exclusivamente organizador-web.service. Salud localhost:8771 verificada.
 
 ### Cambios de A y B
@@ -59,7 +59,47 @@ Publicacion: backups/stage-operational-20260909-105755; copia anterior a publica
 
 ### Limites y continuidad
 
-- No certificar todavia reuniones: el flujo previo corta catalogos y texto, impone un timeout de 8 segundos y vuelve a aplicar reglas locales a la salida de IA. Debe sustituirse como bloque, no darlo por corregido por mejorar el seguimiento.
-- Pendiente persistencia de lotes de reuniones, confirmacion individual/seleccionada, matching completo, manejo de altas y reintentos parciales sin duplicados.
+- El nuevo recorrido de reuniones sustituye la ruta anterior en Centro IA (transcripciones extensas), Analizar reunion, lotes del agente e importacion de texto natural. La importacion de texto expresamente estructurado y la carga de historicos conservan su contrato anterior; no se presentan como analisis semantico nuevo.
 - Los borradores de seguimiento se guardan por ficha; todavia no existe un listado historico de todos los borradores. Las ediciones requieren Guardar borrador; no hay autosalvado silencioso.
 - Una prueba sintetica satisfactoria no garantiza interpretacion perfecta en casos reales. La revision humana sigue siendo obligatoria.
+
+## Bloque C: reuniones revisables (10/09/2026)
+
+- server/ai-meetings.js: lectura de TODO el texto por fragmentos, citas literales comprobadas, agrupacion posterior de temas intercalados, busqueda en catalogo autorizado completo y redaccion profesional por asunto. No aplica el pulido mecanico antiguo a la salida.
+- El catalogo incluye expedientes cerrados, descripcion, comunidad y version del registro; ningun identificador propuesto fuera del catalogo puede convertirse automaticamente en seguimiento.
+- Una propuesta por expediente existente; si la IA repite u omite indices de asuntos se interrumpe con error visible. Las citas verifican origen, no garantizan exhaustividad semantica.
+- Ante destino dudoso: tarjeta con comentario util y pregunta, sin seleccionar. Se puede elegir existente o alta nueva. Responsable incierto: Administracion y advertencia. Proximo paso opcional.
+- Se conserva el estado real; se traduce la nomenclatura de cierre/bloqueo para tareas y proyectos. La fecha de una llamada no debe convertirse en fecha de la siguiente accion.
+- Modelo de redaccion probado: NVIDIA Nemotron 3 Super, mediante la misma configuracion AI_FOLLOWUP_MODEL; otros proveedores mantienen su adaptador. No afecta a AI_MODEL de las consultas generales.
+- Tablas privadas ia_reuniones e ia_reunion_asuntos: entrada original, fecha de referencia, catalogo, propuestas, revisiones y resultados confirmados. Auditoria enlaza reunion y asunto.
+- Analisis en segundo plano con progreso persistido. Si se reinicia el servidor, el borrador pasa a interrupcion explicita al consultarlo; se recupera el texto para reanalizar. No se reintenta automaticamente ni se repite consumo sin accion humana.
+- Revision individual y por seleccion. Guardar borrador conserva ediciones; al confirmar se conservan tambien las ediciones de otras tarjetas. Confirmados quedan plegados y no editables.
+- Cada confirmacion queda marcada dentro de la MISMA transaccion de alta/seguimiento. Si una seleccion falla parcialmente, los resultados correctos siguen confirmados y no se repiten al reintentar. Version de expediente y revision del borrador impiden sobrescrituras silenciosas.
+- Alcance por usuario y comunidades, mas permiso de creacion para altas. No envia solicitudes presidenciales por inferir un nombre.
+
+### Capacidad y limites explicitos
+
+- Hasta 180.000 caracteres de entrada; fragmentos de hasta 14.000. Hasta 1.000 expedientes y 180.000 caracteres de catalogo. Hasta 100 fragmentos de asuntos y 50 propuestas finales. Al superar un limite se pide dividir o concretar, nunca se corta silenciosamente.
+- Llamadas externas: una por fragmento, una para agrupar/asociar y una por asunto final; 120 segundos maximos por llamada, sin reintentos ocultos. Maximo dos reuniones simultaneas. Una reunion extensa puede tardar varios minutos; no hay garantia de latencia del proveedor.
+- Borradores recuperables desde Centro IA > Reuniones guardadas. Las ediciones sin Guardar borrador o Confirmar no se autosalvan al cerrar el navegador.
+- No se garantiza que la IA detecte todos los asuntos ni que toda inferencia sea correcta. Hay que revisar el comentario, las condiciones, el destino y los plazos.
+- La entrada extraida queda conservada en el borrador; este cambio no promete adjuntar automaticamente el archivo binario original a cada expediente. Los anexos se incorporan desde Adjuntar de la ficha.
+- Las consultas generales conservan funcionalidad existente y pruebas de regresion; su ampliacion transversal no se ha implementado en este bloque. No declararla cerrada por haber terminado reuniones.
+
+### Comprobaciones
+
+- 17 grupos de regresion operativa en copia aislada de SQLite, incluidos guardado privado, revisiones obsoletas, confirmacion individual/seleccionada, alta nueva, fallo parcial y reintento sin duplicados.
+- Pruebas puras: cobertura completa de fragmentacion, fuentes inexistentes, indices omitidos/repetidos, limite de catalogo, existente preferente, dudas con comentario, condiciones y siguiente paso vacio.
+- Prueba sintetica con proveedor real: badenes asociado a proyecto existente con condicion de presupuesto; alumbrado parcial asociado a tarea sin darla por finalizada; nueva gotera propuesta como tarea. No se enviaron registros reales de propietarios/contabilidad.
+- La lectura humana del resultado detecto que "Hoy he hablado" se usaba como plazo. Se anadio control conservador y regresion especifica; las pruebas iniciales se ampliaron para comprobarlo.
+- Playwright escritorio 1440x1000 y movil 390x844, cinco vistas y revision de reuniones; edicion de un asunto conservada al confirmar otro. Se registran evidencias en archivos temporales de QA, nunca en la base real.
+
+### Continuidad
+
+Publicado tras superar los 17 grupos tambien en Ubuntu sobre copia de la base real. Stage: backups/stage-operational-20260910-093924. Copia previa a publicar: backups/before-operational-publish-20260910-093924 (SQLite integra, codigo, documentos y configuracion privada). Solo se reinicio organizador-web.service; UNO Marbella no se modifico.
+
+Validacion posterior: 28 rutas, cinco perfiles activos, integridad SQLite ok. Regresion assert*.mjs completa. Ultima prueba externa sintetica pasa tambien la fecha de conversacion frente al plazo. Ultimas capturas: C:/Users/EQUIPO/AppData/Local/Temp/organizador-ui-release-pBGR1c (movil/escritorio, cinco vistas y reuniones). Fixtures locales y remotas independientes; nunca se crearon asuntos de prueba en produccion.
+
+Siguiente verificacion funcional: una reunion real del usuario, revisando omisiones, asociaciones y redaccion antes de confirmar. La ampliacion de consultas generales queda pendiente, no se considera ejecutada por haber cerrado el bloque C. No iniciar Seguridad, Asambleas ni un nuevo roadmap sin indicacion del usuario.
+
+La idempotencia corresponde a la confirmacion de cada asunto del mismo borrador. Reanalizar deliberadamente el mismo texto como una reunion nueva crea otro borrador y requiere revisar posibles seguimientos repetidos; no hay deduplicacion universal entre reuniones diferentes.

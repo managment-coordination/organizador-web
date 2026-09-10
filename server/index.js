@@ -11,6 +11,7 @@ import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
 import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.js";
 import { pythonScript } from "./python-template.js";
 import { analyzeTargetedFollowup } from "./ai-followup.js";
+import { analyzeMeeting, meetingChunks } from './ai-meetings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1943,7 +1944,8 @@ tasks = [dict(r) for r in conn.execute("""
     LEFT JOIN comunidades c ON c.id_comunidad = t.id_comunidad
     WHERE COALESCE(t.activa, 1) = 1 AND COALESCE(t.archivada, 0) = 0
 """ + tf + " ORDER BY t.fecha_ultima_actualizacion DESC, t.id_tarea DESC LIMIT 160", tp)]
-communities = [dict(r) for r in conn.execute("SELECT id_comunidad AS id, nombre FROM comunidades WHERE COALESCE(activo, 1) = 1 ORDER BY nombre")]
+cf, cp = community_filter('')
+communities = [dict(r) for r in conn.execute("SELECT id_comunidad AS id, nombre FROM comunidades WHERE COALESCE(activo, 1) = 1" + cf + " ORDER BY nombre", cp)]
 conn.close()
 print(json.dumps({"projects": projects, "tasks": tasks, "communities": communities}, ensure_ascii=False))
 `;
@@ -2885,6 +2887,7 @@ async function analyzeImportBatch(session, text, mode = "updates") {
   if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error("Tu perfil no puede importar información.");
   const source = cleanImportText(text);
   if (source.length < 12) throw new Error("El texto es demasiado corto para analizarlo.");
+  if (mode !== 'historical' && (isLongMeetingTranscript(text) || !splitStructuredImport(source).length)) return startMeeting(session,String(text || ''));
   if (source.length > 120000) throw new Error("El texto supera el limite de 120.000 caracteres.");
   const context = await queryAiContext(session);
   if (mode === "historical") return { mode, source: "local", proposals: [historicalImportProposal(source)] };
@@ -3005,7 +3008,7 @@ function aiChatCompletionsUrl() {
 
 async function callExternalAiJson({ system, user, purpose = "general", temperature = 0.1, maxTokens = 4096, timeoutMs = 150000, reasoningEffort }) {
   if (!aiExternalAvailable()) throw new Error("IA externa no configurada.");
-  const model = purpose.startsWith('targeted_followup_') ? aiFollowupModel : aiModel;
+  const model = purpose.startsWith('targeted_followup_') || purpose === 'meeting_v2' ? aiFollowupModel : aiModel;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
@@ -5127,6 +5130,48 @@ async function prepareAgentEmailDraft(session, text) {
   return externalPolishEmailDraft(result, cleanText);
 }
 
+const meetingJobs = new Set();
+function meetingCommand(session, action, data = {}) {
+  if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error('PermissionError: Tu perfil no puede gestionar reuniones IA.');
+  session = sessionForPermission(session,'puede_actualizar');
+  return runPythonJson(pythonScript`
+import sqlite3,json
+from ai_meetings import command
+conn=sqlite3.connect(${JSON.stringify(databasePath)})
+conn.row_factory=sqlite3.Row
+try:
+    conn.execute('BEGIN IMMEDIATE')
+    with conn:
+        result=command(conn,${JSON.stringify(session)},${JSON.stringify(action)},${JSON.stringify(data)})
+    print(json.dumps(result,ensure_ascii=False))
+finally: conn.close()
+`);
+}
+
+async function startMeeting(session, text, sourceDate = '') {
+  meetingChunks(text);
+  if (!aiExternalAvailable()) throw new Error('La IA externa no esta disponible. Se conserva tu texto; no se sustituira por un resumen de reglas locales.');
+  if (meetingJobs.size >= 2) throw new Error('Hay dos reuniones en analisis. Espera a que termine una antes de iniciar otra.');
+  const reservation = crypto.randomUUID();
+  meetingJobs.add(reservation);
+  try {
+    const catalog = await meetingCommand(session,'catalog');
+    const batch = await meetingCommand(session,'create',{text,source_date:sourceDate,catalog});
+    meetingJobs.add(batch.meeting_id);
+    meetingJobs.delete(reservation);
+    void (async () => {
+      try {
+        const result = await analyzeMeeting({text,catalog,sourceDate,callAi:callExternalAiJson,
+          progress:(progress,message) => meetingCommand(session,'progress',{meeting_id:batch.meeting_id,progress,message})});
+        await meetingCommand(session,'finish',{meeting_id:batch.meeting_id,...result,message:result.notice || 'Propuestas listas para revisar.'});
+      } catch (error) {
+        await meetingCommand(session,'error',{meeting_id:batch.meeting_id,message:String(error.message || 'Error de analisis').slice(0,1500)}).catch(() => {});
+      } finally { meetingJobs.delete(batch.meeting_id); }
+    })();
+    return batch;
+  } finally { meetingJobs.delete(reservation); }
+}
+
 function followupDraftCommand(session, action, data = {}) {
   if (!["Superusuario", "Administrador", "Usuario"].includes(session?.rol)) throw new Error("PermissionError: Tu perfil no puede gestionar seguimientos.");
   session = sessionForPermission(session, "puede_actualizar");
@@ -5580,6 +5625,10 @@ function splitGuidedAutomationText(text) {
 }
 
 async function analyzeGuidedAutomationBatch(session, text) {
+  return startMeeting(session, String(text || ''));
+}
+
+async function analyzeLegacyGuidedAutomationBatch(session, text) {
   const segments = splitGuidedAutomationText(text);
   if (!segments.length) throw new Error("Pega primero uno o varios asuntos para automatizar.");
   const meetingMode = isLongMeetingTranscript(text) || looksLikePastedOperationalConversation(text) || looksLikeMeetingOrMultiTopicText(text);
@@ -6656,6 +6705,11 @@ function buildAiCenterText(text, attachments, context) {
 }
 
 async function answerAiCenterMessage(session, body) {
+  const meetingInput = [String(body?.text || ''), ...(Array.isArray(body?.attachments) ? body.attachments.map(a => String(a?.text || '')) : [])].filter(Boolean).join('\n\n');
+  if (isLongMeetingTranscript(meetingInput)) {
+    const result = await startMeeting(session,meetingInput,String(body?.source_date || ''));
+    return {ok:true,intent:'lote',message:'Reunion en analisis. Puedes recuperar el progreso desde Reuniones guardadas.',result,center_contract:'ai_center_v1'};
+  }
   const attachments = normalizeAiCenterAttachments(body?.attachments || []);
   const directText = String(body?.text || "").trim();
   if (!directText && !attachments.some((attachment) => attachment.text || attachment.note)) {
@@ -6882,6 +6936,7 @@ import sqlite3
 from work_domain import validate_change, synchronize, add_commitment
 from presidency_domain import notify_mentions
 from ai_drafts import before_confirm, applied
+import ai_meetings as meetings
 from datetime import datetime, date
 
 path = ${JSON.stringify(databasePath)}
@@ -6945,6 +7000,10 @@ try:
     conn.execute("BEGIN IMMEDIATE")
     with conn:
         draft_id = str(data.get('draft_id') or '')
+        previous_meeting = meetings.before_apply(conn,session,entity_type,entity_id,data)
+        if previous_meeting:
+            print(json.dumps(previous_meeting))
+            raise SystemExit(0)
         if draft_id:
             previous = before_confirm(conn,session,entity_type,entity_id,draft_id,int(data.get('draft_revision') or 0))
             if previous:
@@ -7056,6 +7115,7 @@ try:
             audit(conn, "Seguimiento de proyecto web", "proyecto", entity_id, f"{project['estado_general']} -> {estado_nuevo}")
         if draft_id:
             applied(conn,session,draft_id,{'ok':True,'record_id':record_id},data,pc)
+        meetings.applied(conn,session,data,{'ok':True,'record_id':record_id},pc)
     print(json.dumps({"ok": True, "record_id": record_id}, ensure_ascii=False))
 finally:
     conn.close()
@@ -7070,6 +7130,7 @@ import json
 import sqlite3
 from datetime import datetime, date
 from work_domain import validate_creation, initialize_created
+import ai_meetings as meetings
 
 path = ${JSON.stringify(databasePath)}
 session = ${JSON.stringify(session || {})}
@@ -7127,6 +7188,11 @@ try:
     conn.execute("PRAGMA foreign_keys = ON")
     with conn:
         cid = choose_community(conn)
+        conn.execute('BEGIN IMMEDIATE')
+        previous_meeting = meetings.before_apply(conn,session,entity_type,None,data)
+        if previous_meeting:
+            print(json.dumps(previous_meeting))
+            raise SystemExit(0)
         validate_creation(data, entity_type)
         if entity_type == "project":
             cur = conn.execute(
@@ -7153,6 +7219,7 @@ try:
             new_id = int(cur.lastrowid)
             initialize_created(conn, {'nombre':user,'pc':pc}, entity_type, new_id, data)
             audit(conn, "Crear proyecto web IA", "proyecto", new_id, titulo)
+            meetings.applied(conn,session,data,{'ok':True,'type':'project','id':new_id},pc)
             print(json.dumps({"ok": True, "type": "project", "id": new_id}, ensure_ascii=False))
         elif entity_type == "task":
             project_id = None
@@ -7183,6 +7250,7 @@ try:
             new_id = int(cur.lastrowid)
             initialize_created(conn, {'nombre':user,'pc':pc}, entity_type, new_id, data)
             audit(conn, "Crear tarea web IA", "tarea", new_id, titulo)
+            meetings.applied(conn,session,data,{'ok':True,'type':'task','id':new_id},pc)
             print(json.dumps({"ok": True, "type": "task", "id": new_id}, ensure_ascii=False))
         else:
             raise ValueError("Tipo de entidad no valido.")
@@ -9638,7 +9706,7 @@ function homePage() {
       $("createProject").innerHTML = projectOptions("");
       updateCreateForm();
       $("createModal").classList.remove("hidden");
-      setTimeout(() => $("createName").focus(), 30);
+      $("createName").focus();
     }
 
     function updateCreateForm() {
@@ -10782,6 +10850,13 @@ function homePage() {
       try {
         if (!options.estados_tarea.length) await loadOptions();
         importAnalysis = await api("/api/import/analyze", { method: "POST", body: JSON.stringify({ text: importSourceText, mode: $("importMode").value }) });
+        if (importAnalysis.meeting_id) {
+          aiBatch = importAnalysis;
+          importAnalysis = null;
+          switchView('ai');
+          renderAiBatch('aiUnifiedResult');
+          return;
+        }
         render();
       } catch (error) { $("importMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
     }
@@ -11489,6 +11564,9 @@ function homePage() {
             '<button class="green" id="aiUnifiedSend">Enviar al Centro IA</button>' +
             '<button class="ghost" id="aiUnifiedClear">Limpiar</button>' +
             '<button class="ghost" id="aiUnifiedVoice">Dictar</button>' +
+            '<button class="ghost" id="meetingAnalyze">Analizar reunion</button>' +
+            '<button class="ghost" id="meetingResume">Reuniones guardadas</button>' +
+            '<label>Fecha de reunion <input id="meetingDate" type="date" /></label>' +
             '<span class="muted" id="aiUnifiedMessage"></span>' +
           '</div>' +
           '<div id="aiUnifiedResult"></div>' +
@@ -11696,6 +11774,27 @@ function homePage() {
     }
 
     function bindAiPanel() {
+      $("meetingAnalyze")?.addEventListener('click', async () => {
+        const button = $("meetingAnalyze");
+        button.disabled = true;
+        try {
+          const text = [$("aiUnifiedText").value, ...aiUnifiedAttachments.map(a => a.text || '')].filter(Boolean).join('\\n\\n');
+          aiBatch = await api('/api/ai/meetings',{method:'POST',body:JSON.stringify({action:'start',text,source_date:$("meetingDate").value})});
+          renderAiBatch('aiUnifiedResult');
+        } catch(error) { $("aiUnifiedMessage").textContent = error.message; }
+        finally { button.disabled = false; }
+      });
+      $("meetingResume")?.addEventListener('click', async () => {
+        try {
+          const data = await api('/api/ai/meetings');
+          const container = $("aiUnifiedResult");
+          container.innerHTML = '<h3>Reuniones guardadas</h3>' + (data.meetings.length ? data.meetings.map(row => '<p><button class="ghost" data-meeting-open="' + html(row.id) + '">' + html(row.fecha.slice(0,16).replace('T',' ') + ' · ' + row.estado) + '</button></p>').join('') : '<p>No hay reuniones guardadas.</p>');
+          container.querySelectorAll('[data-meeting-open]').forEach(button => button.addEventListener('click',async () => {
+            try { aiBatch = await api('/api/ai/meetings?id=' + encodeURIComponent(button.dataset.meetingOpen)); renderAiBatch('aiUnifiedResult'); }
+            catch(error) { $("aiUnifiedMessage").textContent = error.message; }
+          }));
+        } catch(error) { $("aiUnifiedMessage").textContent = error.message; }
+      });
       $("aiUnifiedSend")?.addEventListener("click", askUnifiedAi);
       $("aiUnifiedText")?.addEventListener("keydown", event => {
         if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
@@ -12857,9 +12956,85 @@ function homePage() {
       '</article>';
     }
 
+    let meetingPollTimer = null;
+    function renderMeetingBatch(resultId) {
+      clearTimeout(meetingPollTimer);
+      const container = $(resultId);
+      const batch = aiBatch;
+      const message = '<p role="status">' + html(batch.message || '') + '</p>';
+      if (batch.status === 'analizando') {
+        container.innerHTML = '<h3>Analizando reunion</h3><progress max="100" value="' + Number(batch.progress || 0) + '"></progress>' + message;
+        meetingPollTimer = setTimeout(async () => {
+          if (!$(resultId) || aiBatch?.meeting_id !== batch.meeting_id) return;
+          try { aiBatch = await api('/api/ai/meetings?id=' + encodeURIComponent(batch.meeting_id)); renderMeetingBatch(resultId); }
+          catch(error) { if ($(resultId)) $(resultId).textContent = error.message + ' Recupera la reunion desde Reuniones guardadas.'; }
+        },3000);
+        return;
+      }
+      if (batch.status === 'error') {
+        container.innerHTML = '<h3>Analisis interrumpido</h3>' + message + '<button class="ghost" id="meetingRestoreInput">Recuperar entrada</button>';
+        $("meetingRestoreInput").onclick = () => { $("aiUnifiedText").value = batch.source_text; $("meetingDate").value = batch.source_date || ''; $("aiUnifiedText").focus(); };
+        return;
+      }
+      const proposals = batch.proposals || [];
+      container.innerHTML = '<h3>Revision de asuntos</h3>' + message + '<div class="toolbar"><button class="green" id="meetingApplySelected">Confirmar seleccionadas</button><button class="ghost" id="meetingSaveAll">Guardar borrador</button><span role="status" id="meetingReviewMessage"></span></div>' + proposals.map((p,i) => {
+        const v = p.payload || {};
+        const kind = p.entity?.type || 'task';
+        const states = [...new Set([...(kind === 'task' ? options.estados_tarea : options.estados_proyecto),v.estado_nuevo].filter(Boolean))];
+        const entities = (batch.catalog || []).map(row => '<option value="' + row.type + ':' + row.id + '"' + (p.entity?.type === row.type && Number(p.entity?.id) === row.id ? ' selected' : '') + '>' + html((row.type === 'task' ? 'Tarea: ' : 'Proyecto: ') + row.titulo) + '</option>').join('');
+        return '<article class="aiBatchCard" data-meeting-card="' + i + '"><h3>' + html(v.titulo || p.entity?.title || 'Asunto pendiente de aclarar') + '</h3>' +
+          (p.confirmed ? '<p>Confirmado. No se volvera a importar.</p>' : '<label class="checkLine"><input data-field="selected" type="checkbox"' + (p.selected ? ' checked' : '') + '> Seleccionar</label>') +
+          (p.confirmed ? '<details><summary>Ver asunto confirmado</summary>' : '') +
+          '<fieldset' + (p.confirmed ? ' disabled' : '') + ' style="border:0;padding:0;min-width:0"><details><summary>Destino, estado y responsable</summary><div class="formGrid">' +
+          '<label>Accion<select data-field="action">' + proposalActionOptions(p.action) + '</select></label>' +
+          '<label>Destino existente<select data-field="entity"><option value="">Seleccionar expediente</option>' + entities + '</select></label>' +
+          '<label>Comunidad<select data-field="community"><option value="">Seleccionar comunidad</option>' + (batch.communities || []).map(c => '<option value="' + c.id_comunidad + '"' + (Number(v.id_comunidad) === Number(c.id_comunidad) || !v.id_comunidad && batch.communities.length === 1 ? ' selected' : '') + '>' + html(c.nombre) + '</option>').join('') + '</select></label>' +
+          '<label>Titulo<input data-field="title" value="' + html(v.titulo || '') + '"></label>' +
+          '<label>Estado<select data-field="state">' + (states || []).map(s => '<option' + (s === v.estado_nuevo ? ' selected' : '') + '>' + html(s) + '</option>').join('') + '</select></label>' +
+          '<label>Proximo responsable<input data-field="owner" list="responsiblesList" value="' + html(v.responsable_proximo_paso || 'Administracion') + '"></label>' +
+          '<label>Fecha proximo paso<input type="date" data-field="date" value="' + html(v.fecha_objetivo_proximo_paso || '') + '"></label></div></details>' +
+          '<label>Comentario<textarea data-field="comment" rows="5">' + html(v.comentario || '') + '</textarea></label>' +
+          '<label>Proximo paso (opcional)<textarea data-field="step" rows="3">' + html(v.proximo_paso || '') + '</textarea></label>' +
+          '<label>Motivo del bloqueo<input data-field="block" value="' + html(v.motivo_bloqueo || '') + '"></label>' +
+          [...(p.warnings || []),...(p.questions || [])].map(w => '<p class="answerNote">' + html(w) + '</p>').join('') +
+          '<details><summary>Origen y asociacion propuesta</summary><p>' + html(p.match_reason || '') + '</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">' + html(p.source_text || '') + '</pre></details>' +
+          '<button class="green" data-meeting-confirm="' + i + '">Confirmar este asunto</button></fieldset>' + (p.confirmed ? '</details>' : '') + '</article>';
+      }).join('');
+      const collect = i => {
+        const card = container.querySelector('[data-meeting-card="' + i + '"]');
+        const value = field => card.querySelector('[data-field="' + field + '"]').value;
+        const p = proposals[i];
+        const [kind,id] = value('entity').split(':');
+        const action = value('action');
+        if (action.startsWith('seguimiento_') && (!id || (action === 'seguimiento_tarea' ? 'task' : 'project') !== kind)) throw new Error('Elige un destino que corresponda al tipo de seguimiento.');
+        return {meeting_item_id:p.meeting_item_id,revision:p.revision,action,entity_id:id || null,selected:!!card.querySelector('[data-field="selected"]')?.checked,
+          payload:{...p.payload,titulo:value('title'),id_comunidad:Number(value('community')) || null,estado_nuevo:value('state'),responsable_proximo_paso:value('owner'),fecha_objetivo_proximo_paso:value('date'),fecha_proxima_revision:value('date'),comentario:value('comment'),proximo_paso:value('step'),motivo_bloqueo:value('block')}};
+      };
+      const execute = async (indices, apply) => {
+        if (apply && !confirm('Confirmar ' + indices.length + ' asunto(s) revisado(s)?')) return;
+        container.querySelectorAll('button').forEach(b => b.disabled = true);
+        try {
+          const edits = proposals.map((p,i) => p.confirmed ? null : collect(i)).filter(Boolean);
+          for (const item of edits) { aiBatch = await api('/api/ai/meetings',{method:'POST',body:JSON.stringify({action:'save',item})}); const current = aiBatch.proposals.find(p => p.meeting_item_id === item.meeting_item_id); proposals.find(p => p.meeting_item_id === item.meeting_item_id).revision = current.revision; }
+          let errors = [];
+          if (apply) { aiBatch = await api('/api/ai/meetings',{method:'POST',body:JSON.stringify({action:'apply',meeting_id:batch.meeting_id,item_ids:indices.map(i => proposals[i].meeting_item_id)})}); errors = (aiBatch.results || []).filter(r => !r.ok).map(r => r.error); }
+          renderMeetingBatch(resultId);
+          $("meetingReviewMessage").textContent = errors.length ? errors.join(' ') : apply ? 'Confirmacion terminada. Los demas asuntos quedan pendientes.' : 'Borrador guardado.';
+        } catch(error) { $("meetingReviewMessage").textContent = error.message; container.querySelectorAll('button').forEach(b => b.disabled = false); }
+      };
+      $("meetingSaveAll").onclick = () => execute(proposals.map((p,i) => p.confirmed ? -1 : i).filter(i => i >= 0),false);
+      $("meetingApplySelected").onclick = () => {
+        const indices = proposals.map((p,i) => !p.confirmed && container.querySelector('[data-meeting-card="' + i + '"] [data-field="selected"]')?.checked ? i : -1).filter(i => i >= 0);
+        if (indices.length) execute(indices,true);
+        else $("meetingReviewMessage").textContent = 'Selecciona al menos un asunto.';
+      };
+      container.querySelectorAll('[data-meeting-confirm]').forEach(button => button.onclick = () => execute([Number(button.dataset.meetingConfirm)],true));
+    }
+
     function renderAiBatch(resultId = "aiBatchResult") {
       const container = $(resultId);
       if (!container || !aiBatch) return;
+      if (aiBatch.meeting_id) return renderMeetingBatch(resultId);
       const proposals = aiBatch.proposals || [];
       const meetingNote = aiBatch.batch_mode === "long_meeting_transcript"
         ? '<div class="answerNote"><strong>Reunion larga detectada</strong><div>La transcripcion se ha dividido por asuntos. Revisa cada tarjeta: las dudosas quedan desmarcadas y se pueden convertir manualmente en seguimiento, tarea o proyecto.</div></div>'
@@ -14076,6 +14251,40 @@ finally:
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     const body = await readBody(req);
     return sendJson(res, 200, await analyzeOperationalWithAi(session, body.text || ""));
+  }
+  if (['GET','POST'].includes(req.method) && url.pathname === '/api/ai/meetings') {
+    const session = readSession(req);
+    if (!session) return sendJson(res,401,{ok:false,error:'No autenticado.'});
+    if (req.method === 'GET') {
+      const id = url.searchParams.get('id');
+      if (!id) return sendJson(res,200,await meetingCommand(session,'list'));
+      let batch = await meetingCommand(session,'get',{meeting_id:id});
+      if (batch.status === 'analizando' && !meetingJobs.has(id)) batch = await meetingCommand(session,'error',{meeting_id:id,message:'El servidor se reinicio durante el analisis. La entrada se conserva; puedes volver a analizarla.'});
+      return sendJson(res,200,batch);
+    }
+    const body = await readBody(req);
+    if (body.action === 'start') return sendJson(res,202,await startMeeting(session,String(body.text || ''),String(body.source_date || '')));
+    if (body.action === 'save') return sendJson(res,200,await meetingCommand(session,'save',body.item));
+    if (body.action === 'apply') {
+      const batch = await meetingCommand(session,'get',{meeting_id:body.meeting_id});
+      const ids = body.item_ids;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 50 || new Set(ids).size !== ids.length || ids.some(id => !batch.proposals.some(p => p.meeting_item_id === id))) throw new Error('ValueError: Seleccion de asuntos no valida.');
+      const results = [];
+      for (const id of ids) {
+        const proposal = batch.proposals.find(p => p.meeting_item_id === id);
+        if (proposal.confirmed) { results.push({id,ok:true,already_confirmed:true}); continue; }
+        const payload = {...proposal.payload,meeting_item_id:id,meeting_revision:proposal.revision};
+        const kind = proposal.action.endsWith('tarea') ? 'task' : 'project';
+        try {
+          if (proposal.action.startsWith('seguimiento_')) await writeEntityRecord(session,kind,proposal.entity.id,payload,req.socket.remoteAddress || 'web');
+          else if (proposal.action.startsWith('crear_')) await createEntity(session,kind,payload,req.socket.remoteAddress || 'web');
+          else throw new Error('Aclara el destino del asunto antes de confirmarlo.');
+          results.push({id,ok:true});
+        } catch (error) { results.push({id,ok:false,error:error.message}); }
+      }
+      return sendJson(res,200,{...await meetingCommand(session,'get',{meeting_id:body.meeting_id}),results});
+    }
+    throw new Error('ValueError: Accion de reunion no valida.');
   }
   if (req.method === "POST" && url.pathname === "/api/ai/batch-operate") {
     const session = readSession(req);

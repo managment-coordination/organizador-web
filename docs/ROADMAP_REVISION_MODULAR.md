@@ -1,8 +1,8 @@
 # Roadmap de revision modular
 
-## Punto de continuidad: 08/09/2026
+## Punto de continuidad: 10/09/2026
 
-Modulos 01, 02 y 04 implementados y publicados en Ubuntu. Ver `CIERRE_OPERATIVO_2026-09-08.md`, `MODULO_02_TAREAS_PROYECTOS.md` y `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`. Modulo 03 omitido por decision del usuario, sin eliminar su funcionalidad existente. Verificados cinco usuarios activos mediante consultas de solo lectura, integridad de datos y acceso por navegador Tailscale. Los modulos 05-10 siguen pendientes de su revision propia; continuar por orden y con sus preguntas de contexto.
+Modulos 01, 02, 04 y 05 publicados; modulo 03 omitido por decision del usuario, sin eliminar su funcionalidad. Modulo 06: seguimiento contextual, borradores y reuniones multiasunto publicados; pendientes aceptacion real y ampliacion de consultas generales. Ver `MODULO_06_IA_OPERATIVA.md`. No saltar a 07-10: el usuario aportara un nuevo roadmap cuando termine el actual. Cinco perfiles activos y SQLite verificados tras la ultima publicacion.
 
 ## Proposito
 
@@ -168,7 +168,7 @@ Si una mejora solo hace la app mas grande, mas vistosa o mas compleja sin resolv
 Punto de continuidad:
 
 ```text
-Modulo activo: 06 - Importadores y Centro IA. Definicion confirmada e implementacion autorizada el 09/09/2026. Bloques A/B de seguimiento contextual y borradores implementados al 100%, publicados y verificados en staging; aceptacion de uso real pendiente. Ver docs/MODULO_06_IA_OPERATIVA.md. Prioridad siguiente: reuniones, despues consultas.
+Modulo activo: 06 - Importadores y Centro IA. Bloques A/B/C de seguimiento, borradores y reuniones al 100% de implementacion y pruebas tecnicas, publicados. Reuniones publicadas el 10/09/2026. D: regresion completa; aceptacion real pendiente. Las consultas generales conservan funcionalidad anterior; su ampliacion sigue pendiente, no confundir con cierre total. Ver docs/MODULO_06_IA_OPERATIVA.md.
 Modulo 05: base funcional publicada y verificada en Ubuntu (09/09/2026). Aceptacion de uso real pendiente; sintesis ejecutiva determinista, no reescritura IA avanzada.
 Ficha de continuidad: docs/MODULO_05_INFORMES_DOCUMENTOS.md (incluye limites de sintesis ejecutiva e incrustacion de anexos).
 Decisiones 06 cerradas: confirmacion individual y por seleccion; borradores persistentes; Administracion con advertencia cuando no se identifica responsable. No repetir preguntas ya contestadas.
@@ -178,6 +178,6 @@ Modulo anterior: 02 publicado; ver ficha de cierre y limites documentados.
 Avance de definicion del modulo 02: 100% del bloque funcional, confirmado el 08/09/2026.
 Implementacion de la revision del modulo 02: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
 Porcentaje global: no recalculado; los modulos tienen alcances diferentes.
-Objetivo inmediato: validar con el usuario el seguimiento publicado y continuar el bloque C de reuniones: sin cortes silenciosos ni fallback mecanico, propuestas persistentes por asunto y confirmacion individual/seleccionada sin duplicados. Conservar las funciones de los modulos anteriores.
+Objetivo inmediato: validar seguimiento/reunion reales con el usuario y cerrar el alcance restante de consultas del modulo 06. Bloque C ya publicado con progreso, borradores privados, revision individual/seleccionada y confirmacion transaccional por asunto. No comenzar otro modulo ni un nuevo roadmap por inferencia.
 Ficha de ultimo cierre: docs/MODULO_04_NOTIFICACIONES_PRESIDENCIA.md
 ```
