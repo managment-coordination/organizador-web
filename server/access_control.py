@@ -242,7 +242,13 @@ def budget_permission(conn, session, community_id, field):
 
 def require_budget_permission(conn, session, community_id, field):
     if not budget_permission(conn, session, community_id, field):
-        raise PermissionError("No tienes permiso para esta operacion de presupuestos.")
+        action = {
+            "puede_ver": "consultar",
+            "puede_preparar": "crear o modificar",
+            "puede_aprobar": "aprobar",
+            "puede_configurar_cobro": "configurar el cobro de",
+        }[field]
+        raise PermissionError(f"Tu perfil no tiene permiso para {action} presupuestos en esta comunidad.")
 
 
 def profile(conn, user_id):

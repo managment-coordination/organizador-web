@@ -232,6 +232,31 @@ try {
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master groups horizontal overflow');
         await page.screenshot({path:path.join(output,`${viewport.width}-master-groups.png`),fullPage:true});
       }
+      if(view==='budgets') {
+        await page.locator('#budgetCreateOpen').click();
+        if(await page.locator('#budgetNoExercise').count()) {
+          const [exerciseResponse]=await Promise.all([
+            page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+            page.locator('#budgetExerciseCreate').click(),
+          ]);
+          assert.equal(exerciseResponse.status(),200,await exerciseResponse.text());
+        }
+        await page.locator('#budgetCreateExercise').waitFor();
+        assert.ok(await page.locator('#budgetCreateExercise option').count()>0);
+        const budgetName=`Presupuesto UX ${viewport.width} ${Date.now()}`;
+        await page.locator('#budgetCreateName').fill(budgetName);
+        const [budgetResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#budgetCreateConfirm').click(),
+        ]);
+        assert.equal(budgetResponse.status(),200,await budgetResponse.text());
+        await page.locator('[data-budget-id]').filter({hasText:budgetName}).waitFor();
+        await page.locator('[data-budget-id]').filter({hasText:budgetName}).click();
+        await page.locator('.budgetEditor').waitFor();
+        assert.match(await page.locator('.budgetMetric').first().innerText(),/0,00/);
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Budgets horizontal overflow');
+        await page.screenshot({path:path.join(output,`${viewport.width}-budget-created.png`),fullPage:true});
+      }
       if(view==='ai') {
         await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');
         const [lookupResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/ai/center')),page.locator('#aiUnifiedSend').click()]);
@@ -398,7 +423,7 @@ try {
     assert.deepEqual(errors,[]);
     await context.close();
   }
-  console.log(JSON.stringify({ok:true,viewports:2,views:5,screenshots:output},null,2));
+  console.log(JSON.stringify({ok:true,viewports:2,views:7,screenshots:output},null,2));
 }finally{
   await browser?.close();
   child.kill();

@@ -153,6 +153,10 @@ try:
         properties.append(property_id)
     general = make_group(conn, community, actor, properties, "GENERAL", "general", ["2.5"] * 40)
     gardens = make_group(conn, community, actor, properties[:16], "JARDINES_PRIVADOS", "jardines", ["6.25"] * 16)
+    conn.execute("""INSERT INTO erp_presupuesto_permisos
+        (id_usuario,id_comunidad,puede_ver,puede_preparar,puede_aprobar,
+         puede_configurar_cobro,activo,version,actualizado_en,actualizado_por)
+        VALUES (?,?,1,1,0,0,1,1,?,?)""", (actor, community, now, actor))
     conn.commit()
     conn.close()
 
@@ -160,6 +164,20 @@ try:
         {"id_comunidad": community, "nombre": "ERP2 Integral", "puede_ver": 1, "puede_actualizar": 1},
         {"id_comunidad": other, "nombre": "ERP2 Aislada", "puede_ver": 1, "puede_actualizar": 1},
     ]}
+    preparer = {"id_usuario": actor, "nombre": actor_name, "rol": "Usuario", "comunidades": [
+        {"id_comunidad": community, "nombre": "ERP2 Integral", "puede_ver": 1, "puede_actualizar": 1},
+    ]}
+    permissions = query(preparer, "erp2.reference.get", community)["permissions"]
+    assert permissions == {"puede_ver": True, "puede_preparar": True,
+                           "puede_aprobar": False, "puede_configurar_cobro": False}
+    try:
+        command(preparer, "erp2.budget.create", community, {
+            "id_ejercicio": 999999999, "denominacion": "No debe crearse", "periodicidad": "mensual",
+        })
+        raise AssertionError("El ejercicio inexistente no fue rechazado")
+    except ContractError as exc:
+        assert "ejercicio" in str(exc).lower()
+    checks.append("perfil preparador consulta permisos y alcanza la validacion de creacion sin poder aprobar")
 
     create_key = str(uuid.uuid4())
     created = command(session, "erp2.budget.create", community, {

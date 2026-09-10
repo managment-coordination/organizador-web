@@ -76,6 +76,7 @@ Solucion: periodos propios de simulacion y resultados periodicos separados, enla
 - Regularizaciones tienen huella semantica y descuentan ajustes previos para que repetir una propuesta no duplique cargos o abonos.
 - La interfaz separa Presupuestos, Cuotas calculadas, Derramas y Regularizaciones; parametros avanzados y exclusiones permanecen plegados hasta necesitarlos.
 - La puerta de publicacion incorpora `verify-erp2-complete.py` y la prueba visual incluye Presupuestos en escritorio y movil.
+- Ajuste UX posterior al cierre: una comunidad sin ejercicio ofrece crearlo desde el propio flujo de Nuevo presupuesto y continua automaticamente. Las acciones de preparar, aprobar y configurar se muestran segun los permisos economicos efectivos; un perfil preparador como Elena no ve acciones de aprobacion que no puede ejecutar.
 
 ## Decisiones tecnicas
 

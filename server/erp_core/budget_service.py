@@ -7,7 +7,7 @@ import hashlib
 import json
 import uuid
 
-from access_control import require_budget_permission
+from access_control import budget_permission, require_budget_permission
 
 from .audit import write_event
 from .budget_contracts import CONTRACT_VERSION, MOTOR_VERSION
@@ -226,7 +226,12 @@ class BudgetService:
         def op(conn, q):
             return {"ok": True, "query": q.query,
                     "community": dict(conn.execute("SELECT id_comunidad,nombre,moneda FROM comunidades WHERE id_comunidad=?", (q.community_id,)).fetchone()),
-                    "exercises": _rows(conn.execute("SELECT * FROM erp_ejercicios WHERE id_comunidad=? ORDER BY fecha_inicio DESC", (q.community_id,))),
+                    "permissions": {field: budget_permission(conn, session, q.community_id, field) for field in (
+                        "puede_ver", "puede_preparar", "puede_aprobar", "puede_configurar_cobro"
+                    )},
+                    "exercises": _rows(conn.execute("""SELECT * FROM erp_ejercicios WHERE id_comunidad=?
+                        ORDER BY CASE estado WHEN 'abierto' THEN 0 WHEN 'preparacion' THEN 1 ELSE 2 END,
+                        fecha_inicio DESC,id_ejercicio DESC""", (q.community_id,))),
                     "groups": _rows(conn.execute("""SELECT g.id_grupo,g.codigo,g.nombre,g.estado,v.id_grupo_version,
                         v.base,v.suma_esperada_decimal,v.estado AS estado_version
                         FROM erp_grupos_reparto g JOIN erp_grupo_versiones v ON v.id_grupo=g.id_grupo
