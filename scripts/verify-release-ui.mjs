@@ -66,6 +66,22 @@ try {
         await page.waitForTimeout(500);
         assert.ok(await page.locator('.masterShell').isVisible());
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master data horizontal overflow');
+        await page.locator('[data-master-section="owners"]').click();
+        await page.locator('[data-master-owner]').first().click();
+        const email=page.locator('[data-common-contact-type="email"]').first();
+        await email.waitFor();
+        const changedEmail=`erp1.ui.${viewport.width}@example.invalid`;
+        await email.fill(changedEmail);
+        const [contactResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterCommonContactsForm button').click(),
+        ]);
+        assert.equal(contactResponse.status(),200,await contactResponse.text());
+        await page.locator(`[data-common-contact-type="email"][value="${changedEmail}"]`).waitFor();
+        assert.ok(await page.locator('.masterAddContact summary').filter({hasText:'+ Añadir contacto'}).isVisible());
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master contacts horizontal overflow');
+        await page.evaluate(()=>window.scrollTo(0,0));
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-contacts.png`),fullPage:true});
       }
       if(view==='ai') {
         await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');

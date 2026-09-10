@@ -8308,6 +8308,13 @@ function homePage() {
     .masterSection h3 { margin:0 0 8px; font-size:15px; }
     .masterOwnershipRows { display:grid; gap:7px; }
     .masterOwnershipRow { display:grid; grid-template-columns:minmax(0,1fr) 130px; gap:8px; }
+    .masterContactGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .masterContactField { padding:10px; border:1px solid var(--line); border-radius:6px; background:#f8f9f8; }
+    .masterContactField label { display:grid; gap:6px; font-weight:700; }
+    .masterContactMeta { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; color:var(--muted); font-size:12px; }
+    .masterContactActions { display:flex; justify-content:flex-end; margin-top:12px; }
+    .masterAddContact { margin-top:14px; border-top:1px solid var(--line); padding-top:12px; }
+    .masterAddContact summary { cursor:pointer; color:var(--accent); font-weight:800; }
     .masterNotice { padding:10px; border-left:4px solid var(--gold); background:#faf7ef; }
 
     @media (max-width:1100px) {
@@ -8506,7 +8513,7 @@ function homePage() {
       .masterToolbar > label { min-width:0; width:100%; }
       .masterTabs { flex-wrap:nowrap; overflow-x:auto; }
       .masterTabs button { flex:0 0 auto; }
-      .masterFormGrid,.masterOwnershipRow { grid-template-columns:1fr; }
+      .masterFormGrid,.masterOwnershipRow,.masterContactGrid { grid-template-columns:1fr; }
       .masterList { max-height:320px; }
     }
   </style>
@@ -11633,11 +11640,35 @@ function homePage() {
       return '<form id="masterOwnerForm" class="masterForm"><input type="hidden" name="id_propietario" value="'+html(row.id_propietario)+'"><input type="hidden" name="version" value="'+html(row.version)+'"><div class="masterFormGrid"><label class="masterWide">Nombre / razon social<input name="nombre" required value="'+html(row.nombre)+'"></label><label>Tipo<select name="tipo_persona"><option value="desconocida">Sin verificar</option><option value="fisica">Persona fisica</option><option value="juridica">Persona juridica</option></select></label><label>NIF / identificacion<input name="nif" value="'+html(row.nif)+'"></label><label>Idioma<input name="idioma_preferido" value="'+html(row.idioma_preferido)+'"></label><label>Estado<select name="estado"><option value="activo">Activo</option><option value="preparacion">Preparacion</option><option value="inactivo">Inactivo</option><option value="baja">Baja</option></select></label><label>Calidad<select name="calidad_identidad"><option value="observada">Observada</option><option value="pendiente_desglosar">Pendiente desglosar</option><option value="pendiente_revision">Pendiente revision</option><option value="validada">Validada</option></select></label><label class="masterWide">Direccion<input name="direccion" value="'+html(row.direccion)+'"></label></div><button class="green">Guardar propietario</button></form>';
     }
 
+    function masterCommonContactsHtml(row) {
+      const all=(row.contactos||[]);const active=all.filter(contact=>contact.activo!==0);const used=new Set();const fields=[];
+      const labels={email:'Email',telefono:'Telefono',movil:'Telefono alternativo / movil',direccion:'Direccion de contacto'};
+      const append=(type,always=false)=>{
+        const matching=active.filter(contact=>safe(contact.tipo).toLowerCase()===type).sort((a,b)=>Number(b.principal)-Number(a.principal)||Number(a.id_contacto)-Number(b.id_contacto));
+        if(!matching.length&&always)matching.push({tipo:type,valor:'',principal:1,verificado:0});
+        matching.forEach((contact,index)=>{
+          if(contact.id_contacto)used.add(Number(contact.id_contacto));
+          const label=index ? labels[type]+' adicional '+(index+1) : labels[type];
+          fields.push(masterContactFieldHtml(contact,label));
+        });
+      };
+      append('email',true);append('telefono',true);append('movil');append('direccion');
+      active.filter(contact=>!used.has(Number(contact.id_contacto))).forEach(contact=>fields.push(masterContactFieldHtml(contact,safe(contact.tipo).replaceAll('_',' '))));
+      const inactive=all.filter(contact=>contact.activo===0).map(contact=>'<li>'+html(contact.tipo)+': '+html(contact.valor)+'</li>').join('');
+      return '<form id="masterCommonContactsForm"><div class="masterContactGrid">'+fields.join('')+'</div><div class="masterContactActions"><button class="green">Guardar contactos</button></div></form>'+
+        (inactive?'<details class="masterAddContact"><summary>Contactos anteriores</summary><ul>'+inactive+'</ul></details>':'');
+    }
+
+    function masterContactFieldHtml(contact,label) {
+      const verified=contact.verificado?'Verificado':'Pendiente de verificar';
+      const primary=contact.principal?'Principal':'';
+      return '<div class="masterContactField" data-contact-id="'+html(contact.id_contacto)+'" data-contact-version="'+html(contact.version)+'" data-contact-type="'+html(contact.tipo)+'" data-contact-original="'+html(contact.valor)+'" data-contact-principal="'+html(contact.principal?1:0)+'" data-contact-verified="'+html(contact.verificado?1:0)+'"><label>'+html(label)+'<input class="masterContactValue" data-common-contact-type="'+html(contact.tipo)+'" value="'+html(contact.valor)+'" autocomplete="off"></label><div class="masterContactMeta"><span>'+verified+'</span>'+(primary?'<span>'+primary+'</span>':'')+'</div></div>';
+    }
+
     function masterOwnerDetailHtml() {
       const row=masterData.owner;if(!row)return '<div class="masterPane"><h3>Ficha de propietario</h3><p class="muted">Selecciona un propietario o crea uno nuevo.</p><button id="masterNewOwner" class="green">Nuevo propietario</button></div>';
-      const contacts=(row.contactos||[]).map(c=>'<tr><td>'+html(c.tipo)+'</td><td>'+html(c.valor)+'</td><td>'+(c.principal?'Principal':'')+'</td><td>'+html(c.verificado?'Verificado':'No verificado')+'</td></tr>').join('');
       const properties=(row.propiedades||[]).map(p=>'<tr><td>'+html(p.codigo_propiedad)+'</td><td>'+html(p.porcentaje_titularidad_decimal||p.porcentaje_titularidad)+'</td><td>'+html(p.fecha_desde||'No acreditada')+'</td><td>'+html(p.fecha_hasta||'Actual')+'</td></tr>').join('');
-      return '<div class="masterPane"><div class="contentHead"><div><h3>'+html(row.nombre)+'</h3><p class="muted">ID estable '+html(row.id_propietario)+' · version '+html(row.version)+'</p></div><button id="masterNewOwner" class="ghost">Nuevo</button></div>'+masterOwnerForm(row)+'<div class="masterSection"><h3>Contactos</h3><table class="masterDataTable"><tbody>'+(contacts||'<tr><td>Sin contactos.</td></tr>')+'</tbody></table><form id="masterContactForm" class="masterFormGrid"><label>Tipo<select name="tipo"><option value="email">Email</option><option value="telefono">Telefono</option><option value="otro">Otro</option></select></label><label>Valor<input name="valor" required></label><label><input type="checkbox" name="principal"> Principal para este tipo</label><label><input type="checkbox" name="verificado"> Verificado</label><button>Añadir contacto</button></form></div><div class="masterSection"><h3>Propiedades actuales e historicas</h3><table class="masterDataTable"><thead><tr><th>Propiedad</th><th>%</th><th>Desde</th><th>Hasta</th></tr></thead><tbody>'+(properties||'<tr><td colspan="4">Sin relaciones.</td></tr>')+'</tbody></table></div></div>';
+      return '<div class="masterPane"><div class="contentHead"><div><h3>'+html(row.nombre)+'</h3><p class="muted">ID estable '+html(row.id_propietario)+' · version '+html(row.version)+'</p></div><button id="masterNewOwner" class="ghost">Nuevo</button></div>'+masterOwnerForm(row)+'<div class="masterSection"><h3>Contactos</h3>'+masterCommonContactsHtml(row)+'<details class="masterAddContact"><summary>+ Añadir contacto</summary><form id="masterContactForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Tipo<select name="tipo"><option value="email">Email adicional</option><option value="telefono">Telefono adicional</option><option value="movil">Movil</option><option value="direccion">Direccion</option><option value="otro">Otro</option></select></label><label>Nombre del tipo, si es otro<input name="tipo_personalizado" maxlength="50"></label><label class="masterWide">Valor<input name="valor" required></label><label><input type="checkbox" name="principal"> Contacto principal de este tipo</label><label><input type="checkbox" name="verificado"> Verificado</label></div><button>Añadir contacto</button></form></details></div><div class="masterSection"><h3>Propiedades actuales e historicas</h3><table class="masterDataTable"><thead><tr><th>Propiedad</th><th>%</th><th>Desde</th><th>Hasta</th></tr></thead><tbody>'+(properties||'<tr><td colspan="4">Sin relaciones.</td></tr>')+'</tbody></table></div></div>';
     }
 
     function masterOwnersHtml() {
@@ -11680,7 +11711,8 @@ function homePage() {
       const bindSubmit=(selector,handler)=>root.querySelector(selector)?.addEventListener('submit',async event=>{event.preventDefault();const button=event.target.querySelector('button');if(button)button.disabled=true;try{await handler(event.target);}catch(error){alert(error.message);}finally{if(button)button.disabled=false;}});
       bindSubmit('#masterPropertyForm',async form=>{const data=formObject(form);const id=Number(data.id_propiedad||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_propiedad;const result=await erpCommand('erp1.property.save',data,id?version:null);await loadMasterData();await selectMasterProperty(result.entity.id_propiedad);});
       bindSubmit('#masterOwnerForm',async form=>{const data=formObject(form);const id=Number(data.id_propietario||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_propietario;const result=await erpCommand('erp1.owner.save',data,id?version:null);await loadMasterData();await selectMasterOwner(result.entity.id_propietario);});
-      bindSubmit('#masterContactForm',async form=>{const data=compactPayload(formObject(form));data.id_propietario=masterData.owner.id_propietario;data.principal=form.principal.checked;data.verificado=form.verificado.checked;await erpCommand('erp1.owner.contact.save',data);await selectMasterOwner(masterData.owner.id_propietario);});
+      bindSubmit('#masterCommonContactsForm',async form=>{const changes=[];form.querySelectorAll('.masterContactField').forEach(field=>{const id=Number(field.dataset.contactId||0),version=Number(field.dataset.contactVersion||0),original=field.dataset.contactOriginal||'',value=field.querySelector('.masterContactValue').value.trim();if(value===original)return;if(!id&&!value)return;changes.push({id,version,payload:{id_propietario:masterData.owner.id_propietario,...(id?{id_contacto:id}:{}),tipo:field.dataset.contactType,valor:value||original,principal:Boolean(value)&&field.dataset.contactPrincipal==='1',verificado:false,activo:Boolean(value)}});});if(!changes.length){alert('No hay cambios en los contactos.');return;}for(const change of changes)await erpCommand('erp1.owner.contact.save',change.payload,change.id?change.version:null);await selectMasterOwner(masterData.owner.id_propietario);});
+      bindSubmit('#masterContactForm',async form=>{const data=compactPayload(formObject(form));if(data.tipo==='otro'&&data.tipo_personalizado)data.tipo=data.tipo_personalizado;delete data.tipo_personalizado;data.id_propietario=masterData.owner.id_propietario;data.principal=form.principal.checked;data.verificado=form.verificado.checked;await erpCommand('erp1.owner.contact.save',data);await selectMasterOwner(masterData.owner.id_propietario);});
       bindSubmit('#masterAliasForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;await erpCommand('erp1.property.alias.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterRelationForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad_origen=masterData.property.id_propiedad;data.id_propiedad_destino=Number(data.id_propiedad_destino);await erpCommand('erp1.property.relation.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterCoefficientForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;if(data.id_grupo)data.id_grupo=Number(data.id_grupo);await erpCommand('erp1.coefficient.save',data);await selectMasterProperty(masterData.property.id_propiedad);});

@@ -81,6 +81,14 @@ No se inventaron ejercicios ni agrupaciones a partir de nombres legacy: comienza
 
 Los lectores antiguos mantienen sus tablas e IDs. Los campos `coeficiente REAL` y `porcentaje_titularidad REAL` se conservan como compatibilidad temporal, pero ningun calculo nuevo debe usarlos. Las asambleas siguen usando sus snapshots y la deuda conserva su obligado historico.
 
+### Ajuste UX de contactos - 10/09/2026
+
+La ficha del propietario presenta `Email` y `Telefono` como campos directos, junto con `Telefono alternativo / movil`, `Direccion de contacto` y otros valores habituales cuando existen. Los contactos adicionales se crean desde la accion plegada `+ Añadir contacto`, que conserva la seleccion de tipo solo para ese caso excepcional.
+
+El ajuste no modifica ni duplica el modelo `cf_contactos_propietario`: cada campo edita o desactiva su misma fila mediante el comando normalizado, version esperada, permiso de comunidad, auditoria y procedencia. Al cambiar un valor previamente verificado, el nuevo valor queda pendiente de verificar. Los contactos inactivos permanecen consultables como historico.
+
+La persistencia, ausencia de duplicado, permisos y regresion se comprobaron mediante `verify-erp1-master-data.py`, `verify-operational-release.mjs` y el recorrido Playwright de `verify-release-ui.mjs` en escritorio y movil.
+
 La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de maestros, historicos, coeficientes y grupos. La importacion masiva revisable y las reglas economicas pertenecen a entregas posteriores. Antes de cualquier siguiente cambio estructural siguen siendo obligatorios checkpoint Git, backup independiente de SQLite y restauracion ensayada.
 
 ## Estado final

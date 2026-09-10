@@ -109,7 +109,28 @@ try:
     assert query(session, "erp1.owner.get", community, {
         "id_propietario": owner_a["id_propietario"],
     })["entity"]["contactos"][0]["principal"] == 1
-    checks.append("contactos tipados, verificables y auditados operativos")
+    updated_contact = command(session, "erp1.owner.contact.save", community, {
+        "id_contacto": contact["id_contacto"],
+        "id_propietario": owner_a["id_propietario"], "tipo": "email",
+        "valor": "titular.a.actualizado@example.invalid", "principal": True,
+        "verificado": False, "activo": True,
+    }, expected=contact["version"])["entity"]
+    assert updated_contact["id_contacto"] == contact["id_contacto"]
+    assert updated_contact["version"] == contact["version"] + 1
+    assert updated_contact["valor"] == "titular.a.actualizado@example.invalid"
+    assert updated_contact["procedencia"] == "test" and updated_contact["verificado"] == 0
+    read_only = {"id_usuario": actor_id, "nombre": actor_name, "rol": "Usuario",
+                 "comunidades": [{"id_comunidad": community, "puede_ver": 1, "puede_actualizar": 0}]}
+    try:
+        command(read_only, "erp1.owner.contact.save", community, {
+            "id_contacto": updated_contact["id_contacto"],
+            "id_propietario": owner_a["id_propietario"], "tipo": "email",
+            "valor": "sin-permiso@example.invalid",
+        }, expected=updated_contact["version"])
+        raise AssertionError("Se permitio editar un contacto sin permiso de actualizacion")
+    except PermissionError:
+        pass
+    checks.append("contactos editables sin duplicar fila, con version, procedencia, auditoria y permisos")
     prop_p = new_property("ERP1-P")
     prop_q = new_property("ERP1-Q")
 
