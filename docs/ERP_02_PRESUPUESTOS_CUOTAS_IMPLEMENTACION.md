@@ -151,6 +151,16 @@ La regresion final incluye ERP 0, ERP 1, ERP 2A, ERP 2B y el recorrido HTTP oper
 - Backup independiente posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-163352`.
 - Restauracion posterior verificada en `/tmp/organizador-erp0-restore-db49usu7`: integridad `ok`, 132 tablas, commit reconocido y runtime accesible.
 
+### Publicacion y cierre ERP 2
+
+- Commit funcional: `4a754acb7670ed0da2bcb2edced3de1220c84462` (`Complete ERP 2 operational workflow`). Commit documental publicado: `ba8c2288baf2d3c8154ddb35ea8aa53b054c1220`.
+- Backup independiente previo: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-180745`; restauracion aislada correcta en `/tmp/organizador-erp0-restore-2r5psnbn`.
+- Staging validado: `/home/coordinador/apps/organizador-web/backups/stage-operational-20260910-180828`. La puerta ejecuto ERP 1, ERP 2A, ERP 2B, ERP 2 completo y regresion HTTP antes de publicar.
+- Backup automatico de publicacion: `/home/coordinador/apps/organizador-web/backups/before-operational-publish-20260910-180828`.
+- Produccion: `organizador-web.service` activo, HTTP `200`, migracion ERP 5, 135 tablas, integridad `ok` y cero errores de FK. El JavaScript servido por `http://100.108.29.39:8771/` compila correctamente.
+- Backup independiente posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-181031`.
+- Restauracion final conservada en `/tmp/organizador-erp0-restore-j1n94jgz`: integridad `ok`, 135 tablas, commit reconocido y runtime accesible.
+
 ## Limites conservados
 
 ERP 2 calcula, explica y congela cuotas, derramas y regularizaciones. No materializa recibos, cobros, deuda, mandatos, SEPA, conciliacion, asientos ni IA economica. La preferencia de cuenta no es un mandato. La entrada manual de emitidos para regularizar se sustituira por la consulta estructurada de ERP 3 sin cambiar la formula.
