@@ -100,7 +100,7 @@ Caso de referencia superado: 40 viviendas en General y 16 bajos en Jardines priv
 - CIERRE ERP 2A: `erp2a-complete-20260910`, tras validar, publicar y restaurar el backup posterior.
 - PRE ERP 2B: `pre-erp2b-20260910` (`e7b244f`).
 - POST MOTOR ERP 2B: `erp2b-post-engine-20260910` (`e02320e`).
-- CIERRE ERP 2B: se registra en el commit/tag final tras publicar y restaurar el backup posterior.
+- CIERRE ERP 2B: `erp2b-complete-20260910`, tras publicar y restaurar el backup posterior.
 
 ## Publicacion y restauracion final
 
@@ -110,6 +110,15 @@ Caso de referencia superado: 40 viviendas en General y 16 bajos en Jardines priv
 - Base productiva posterior: migracion ERP 2A aplicada, integridad `ok`, 128 tablas y verificacion ERP 2A completa superada sobre copia aislada sin modificar produccion.
 - Backup independiente posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-153151`.
 - Restauracion posterior verificada en `/tmp/organizador-erp0-restore-174eht05`: integridad `ok`, 128 tablas, commit de aplicacion reconocido y runtime accesible.
+
+### Publicacion ERP 2B
+
+- Candidato publicado: `e35b8374fdfb32f89ef75f00453c816ef49f1ed0` (`Document ERP 2B implementation`).
+- Backup automatico inmediatamente anterior: `/home/coordinador/apps/organizador-web/backups/before-operational-publish-20260910-163202`.
+- Staging completo: ERP 1, ERP 2A, ERP 2B y recorrido operativo superados antes de publicar. La migracion 4 se probo sobre copia y no modifico produccion durante la verificacion.
+- Produccion: servicio de usuario activo, HTTP `200`, esquema ERP version 4, 132 tablas e integridad confirmada.
+- Backup independiente posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-163352`.
+- Restauracion posterior verificada en `/tmp/organizador-erp0-restore-db49usu7`: integridad `ok`, 132 tablas, commit reconocido y runtime accesible.
 
 ## Alcance no implementado
 
