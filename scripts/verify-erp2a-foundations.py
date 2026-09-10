@@ -20,7 +20,7 @@ from erp_core.budget_contracts import (
 )
 from erp_core.dispatcher import catalog, execute_command
 from erp_core.errors import ContractError, NotFoundError
-from erp_core.migrations import apply_all
+from erp_core.migrations import MIGRATIONS, apply_all
 
 
 parser = argparse.ArgumentParser()
@@ -53,10 +53,11 @@ try:
     before_counts = {table: conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0] for table in protected}
     before_hashes = {table: table_hash(conn, table) for table in protected}
 
-    first = apply_all(conn)
+    first = apply_all(conn, MIGRATIONS[:3])
     migrations = list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
-    second = apply_all(conn)
-    assert first["schema_version"] == 3 and second["schema_version"] == 3
+    second = apply_all(conn, MIGRATIONS[:3])
+    assert first["schema_version"] >= 3 and second["schema_version"] >= 3
+    assert conn.execute("SELECT name FROM erp_schema_migrations WHERE version=3").fetchone()[0] == "erp2a_budget_foundations"
     assert migrations == list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert not list(conn.execute("PRAGMA foreign_key_check"))
