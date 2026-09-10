@@ -43,7 +43,7 @@ try {
     const [loginResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/login')),page.locator('#loginButton').click()]);
     assert.equal(loginResponse.status(),200,await loginResponse.text());
     await page.locator('#appView').waitFor({state:'visible'});
-    for(const view of ['home','tasks','projects','master-data','admin','ai']){
+    for(const view of ['home','tasks','projects','master-data','budgets','admin','ai']){
       if(viewport.width<600){
         await page.locator('#mobileMenuToggle').click();
         await page.locator(`#mobileDrawerNav [data-mobile-view="${view}"]`).click();
@@ -88,8 +88,7 @@ try {
         await page.screenshot({path:path.join(output,`${viewport.width}-master-property-edit.png`),fullPage:true});
         await page.locator('#masterSearchForm input').fill('ERP');
         await page.locator('#masterSearchForm button').click();
-        await page.waitForTimeout(500);
-        assert.ok(await page.locator('.masterShell').isVisible());
+        await page.locator('.masterShell').waitFor({state:'visible'});
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master data horizontal overflow');
         await page.locator('[data-master-section="owners"]').click();
         await page.locator('[data-master-owner]').first().click();

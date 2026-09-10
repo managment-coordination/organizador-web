@@ -36,6 +36,8 @@ subprocess.run(['python3',str(stage/'scripts/verify-erp2a-foundations.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp2b-engine.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+subprocess.run(['python3',str(stage/'scripts/verify-erp2-complete.py'),
+    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-operational-release.mjs')],cwd=stage,env=env,check=True)
 print(json.dumps({'staging_verified':str(stage)}),flush=True)
 if not args.publish:

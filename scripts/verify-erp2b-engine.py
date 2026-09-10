@@ -393,7 +393,7 @@ try:
     db.close()
     checks.append("rollback completo y FKs impiden snapshots transversales entre comunidades")
 
-    assert contract_catalog()["implementation_stage"] == "2B-domain-engine"
+    assert contract_catalog()["implementation_stage"] == "ERP2-complete"
     assert "consumo" not in contract_catalog()["engine_rules_enabled"]
     assert not contract_catalog()["receipt_emission"]
     checks.append("motor sin formulas, IA, recibos, deuda, contabilidad, SEPA ni consumo adelantado")

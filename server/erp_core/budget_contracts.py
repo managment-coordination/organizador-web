@@ -31,6 +31,7 @@ class Frequency(str, Enum):
     QUARTERLY = "trimestral"
     SEMIANNUAL = "semestral"
     ANNUAL = "anual"
+    CUSTOM = "personalizada"
 
 
 class RuleType(str, Enum):
@@ -152,14 +153,14 @@ def contract_catalog():
         "contract_version": CONTRACT_VERSION,
         "motor_version": MOTOR_VERSION,
         "rounding_version": ROUNDING_VERSION,
-        "implementation_stage": "2B-domain-engine",
+        "implementation_stage": "ERP2-complete",
         "engine_rules_enabled": [
             RuleType.COEFFICIENT.value, RuleType.EQUAL.value, RuleType.FIXED.value,
             RuleType.UNITS.value, RuleType.SPECIAL_PERCENTAGE.value, RuleType.MIXED.value,
         ],
         "consumption_engine": "prepared-not-executable",
-        "commands_planned_not_enabled": sorted(PLANNED_COMMANDS),
-        "queries_planned_not_enabled": sorted(PLANNED_QUERIES),
+        "commands_enabled": sorted(PLANNED_COMMANDS),
+        "queries_enabled": sorted(PLANNED_QUERIES),
         "frequencies": [item.value for item in Frequency],
         "rule_types": [item.value for item in RuleType],
         "rule_parameter_schemas": RULE_PARAMETER_SCHEMAS,

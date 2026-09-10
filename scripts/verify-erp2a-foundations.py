@@ -18,8 +18,8 @@ from erp_core.budget_contracts import (
     CONTRACT_VERSION, Money, PLANNED_COMMANDS, ROUNDING_VERSION,
     contract_catalog, exact_decimal,
 )
-from erp_core.dispatcher import catalog, execute_command
-from erp_core.errors import ContractError, NotFoundError
+from erp_core.dispatcher import catalog
+from erp_core.errors import ContractError
 from erp_core.migrations import MIGRATIONS, apply_all
 
 
@@ -250,19 +250,11 @@ try:
     assert budget_catalog["contract_version"] == CONTRACT_VERSION
     assert budget_catalog["rounding_version"] == ROUNDING_VERSION
     assert not budget_catalog["arbitrary_formulas"] and not budget_catalog["receipt_emission"]
-    assert catalog()["erp2a"]["commands_planned_not_enabled"] == sorted(PLANNED_COMMANDS)
+    assert catalog()["erp2a"]["commands_enabled"] == sorted(PLANNED_COMMANDS)
     checks.append("contratos exactos, tipados, sin formulas ejecutables ni emision ERP 3")
 
-    super_session = profile(conn, actor_id)
-    try:
-        execute_command(str(database), super_session, {
-            "command": "erp2.budget.create", "id_comunidad": community,
-            "payload": {}, "idempotency_key": "not-enabled", "origin": "test",
-        })
-        raise AssertionError("Un comando ERP 2 incompleto quedo ejecutable.")
-    except NotFoundError:
-        pass
-    checks.append("contratos ERP 2 visibles pero no ejecutables antes del servicio determinista")
+    assert "erp2.budget.create" in catalog()["commands"]
+    checks.append("contratos ERP 2 visibles y registrados tras completar el servicio determinista")
 
     restored = work / "restored.db"
     target = sqlite3.connect(restored)

@@ -233,13 +233,15 @@ def _allocate_targets(total_cents, entries, context):
 
 def _validate_periods(manifest):
     frequency = str(manifest.get("periodicity") or "").strip()
-    if frequency not in PERIOD_COUNTS:
+    if frequency not in PERIOD_COUNTS and frequency != "personalizada":
         _block("INVALID_FREQUENCY", "La periodicidad ordinaria no es valida.", field="periodicity")
     periods = manifest.get("periods")
-    if not isinstance(periods, list) or len(periods) != PERIOD_COUNTS[frequency]:
+    expected_count = PERIOD_COUNTS.get(frequency)
+    if not isinstance(periods, list) or not periods or (expected_count is not None and len(periods) != expected_count):
         _block(
             "INVALID_PERIOD_COUNT",
-            f"La periodicidad {frequency} requiere {PERIOD_COUNTS[frequency]} periodos.",
+            (f"La periodicidad {frequency} requiere {expected_count} periodos."
+             if expected_count is not None else "El calendario personalizado requiere al menos un plazo."),
             field="periods",
         )
     keys, orders, normalized = set(), set(), []

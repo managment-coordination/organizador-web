@@ -1452,6 +1452,70 @@ MIGRATIONS = (
         "CREATE INDEX idx_erp_calculo_componente_propiedad ON erp_calculo_componentes(id_comunidad,id_simulacion,id_propiedad)",
         "CREATE INDEX idx_erp_calculo_periodo_resultado ON erp_calculo_periodo_resultados(id_comunidad,id_simulacion_periodo)",
     )),
+    Migration(5, "erp2_complete_workflow", (
+        """CREATE TABLE erp_comunidad_cuota_config (
+            id_comunidad INTEGER PRIMARY KEY,
+            periodicidad TEXT NOT NULL CHECK(periodicidad IN ('mensual','trimestral','semestral','anual')),
+            dia_emision_previsto INTEGER NOT NULL DEFAULT 3 CHECK(dia_emision_previsto BETWEEN 1 AND 31),
+            dia_vencimiento INTEGER NOT NULL DEFAULT 10 CHECK(dia_vencimiento BETWEEN 1 AND 31),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+            actualizada_en TEXT NOT NULL,
+            actualizada_por INTEGER NOT NULL,
+            origen TEXT NOT NULL,
+            FOREIGN KEY(id_comunidad) REFERENCES comunidades(id_comunidad),
+            FOREIGN KEY(actualizada_por) REFERENCES usuarios(id_usuario)
+        )""",
+        """CREATE TABLE erp_partida_reparto_valores (
+            id_valor INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_comunidad INTEGER NOT NULL,
+            id_asignacion INTEGER NOT NULL,
+            id_propiedad INTEGER NOT NULL,
+            tipo TEXT NOT NULL CHECK(tipo IN ('unidades')),
+            valor_decimal TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+            origen TEXT NOT NULL,
+            UNIQUE(id_asignacion,id_propiedad,tipo),
+            UNIQUE(id_comunidad,id_valor),
+            FOREIGN KEY(id_comunidad,id_asignacion) REFERENCES erp_partida_repartos(id_comunidad,id_asignacion),
+            FOREIGN KEY(id_comunidad,id_propiedad) REFERENCES cf_propiedades(id_comunidad,id_propiedad)
+        )""",
+        """CREATE TABLE erp_derrama_calendario (
+            id_plazo INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_comunidad INTEGER NOT NULL,
+            id_derrama INTEGER NOT NULL,
+            clave_plazo TEXT NOT NULL,
+            fecha_inicio TEXT NOT NULL,
+            fecha_fin TEXT NOT NULL,
+            fecha_emision_prevista TEXT,
+            fecha_vencimiento TEXT,
+            peso_decimal TEXT NOT NULL DEFAULT '1',
+            orden INTEGER NOT NULL CHECK(orden>=0),
+            UNIQUE(id_derrama,clave_plazo),
+            UNIQUE(id_derrama,orden),
+            UNIQUE(id_comunidad,id_plazo),
+            FOREIGN KEY(id_comunidad,id_derrama) REFERENCES erp_derramas(id_comunidad,id_derrama),
+            CHECK(fecha_fin>=fecha_inicio)
+        )""",
+        "CREATE INDEX idx_erp_reparto_valores ON erp_partida_reparto_valores(id_comunidad,id_asignacion,id_propiedad)",
+        "CREATE INDEX idx_erp_derrama_calendario ON erp_derrama_calendario(id_comunidad,id_derrama,orden)",
+        "ALTER TABLE erp_regularizaciones ADD COLUMN hash_calculo TEXT",
+        "CREATE UNIQUE INDEX ux_erp_regularizacion_hash ON erp_regularizaciones(id_comunidad,hash_calculo) WHERE hash_calculo IS NOT NULL",
+        """CREATE TRIGGER erp_presupuesto_aprobado_no_borrar
+            BEFORE DELETE ON erp_presupuestos WHEN OLD.estado IN ('aprobado','cerrado')
+            BEGIN SELECT RAISE(ABORT,'Un presupuesto aprobado no se puede borrar.'); END""",
+        """CREATE TRIGGER erp_presupuesto_version_aprobada_no_editar
+            BEFORE UPDATE ON erp_presupuesto_versiones WHEN OLD.estado='aprobada'
+            BEGIN SELECT RAISE(ABORT,'Una version aprobada no se puede editar.'); END""",
+        """CREATE TRIGGER erp_presupuesto_version_aprobada_no_borrar
+            BEFORE DELETE ON erp_presupuesto_versiones WHEN OLD.estado='aprobada'
+            BEGIN SELECT RAISE(ABORT,'Una version aprobada no se puede borrar.'); END""",
+        """CREATE TRIGGER erp_derrama_aprobada_no_editar
+            BEFORE UPDATE ON erp_derramas WHEN OLD.estado='aprobada'
+            BEGIN SELECT RAISE(ABORT,'Una derrama aprobada no se puede editar.'); END""",
+        """CREATE TRIGGER erp_derrama_aprobada_no_borrar
+            BEFORE DELETE ON erp_derramas WHEN OLD.estado='aprobada'
+            BEGIN SELECT RAISE(ABORT,'Una derrama aprobada no se puede borrar.'); END""",
+    )),
 )
 
 
