@@ -1,12 +1,12 @@
 # ERP Comunidades: roadmap de evolucion
 
-Fecha: 10/09/2026. Documento rector del nuevo ERP. Diseno, no autorizacion de implementacion.
+Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0 y ERP 1 estan implantados; las fases posteriores requieren autorizacion independiente.
 
 ## Alcance y continuidad
 
 El modulo 06 queda cerrado por aceptacion expresa del usuario para su alcance operativo probado. El [roadmap modular](ROADMAP_REVISION_MODULAR.md) permanece como consolidacion de la app; no se sustituye ni se suman sus porcentajes a estos. Los modulos pendientes no se consideran revisados por aparecer aqui.
 
-Entregables de esta ejecucion: este roadmap, [modelo maestro](ERP_MODELO_DATOS_MAESTROS.md) y [titularidades y reparto](ERP_TITULARIDADES_COEFICIENTES_REPARTO.md). Diseno documental: 3/3 entregables completados. No hay codigo ERP, migraciones ni datos nuevos.
+La linea de diseno se conserva en este roadmap, el [modelo maestro](ERP_MODELO_DATOS_MAESTROS.md) y [titularidades y reparto](ERP_TITULARIDADES_COEFICIENTES_REPARTO.md). La evidencia de implantacion se registra separadamente en [ERP 0](ERP_00_FUNDAMENTOS_IMPLEMENTACION.md) y [ERP 1](ERP_01_DATOS_MAESTROS_IMPLEMENTACION.md).
 
 ## Medicion y estados
 
@@ -39,10 +39,10 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Dependencias: ERP 0; modelo detallado enlazado arriba.
 - Componentes: comunidades, agrupaciones, tipos y relaciones de propiedades, propietarios y contactos, ejercicios, titularidades, coeficientes y grupos temporales, referencias de origen y documentos.
 - Reutiliza: `comunidades`, `cf_propiedades`, `cf_propietarios`, `cf_contactos_propietario`, `cf_propietario_propiedad`, etiquetas e importaciones. Conservar IDs y consumidores existentes.
-- Estado inicial: ANÁLISIS. Implantacion certificada: 0%. Modelo objetivo documentado; no migrado.
+- Estado: COMPLETADO. Implantacion certificada: 100% de ERP 1. Hito 1: contrato y migracion versionada validados en copia real y produccion. Hito 2: consultas y comandos deterministas con idempotencia, concurrencia, auditoria y outbox. Hito 3: recorrido web integrado en Datos maestros para comunidades autorizadas. Hito 4: 19 casos obligatorios, regresion completa, UI escritorio/movil y restauracion posterior superados. Evidencia en [ERP 1 - implementacion](ERP_01_DATOS_MAESTROS_IMPLEMENTACION.md). No concede avance a ERP 2-9.
 - Aceptacion: copropiedad y cambios con vigencia; consultas historicas o respuesta explicita de dato desconocido; propiedades repetidas en comunidades distintas; importacion repetida sin duplicar; cero fusiones por similitud; coeficientes versionados por grupo; inventario de discrepancias con fuente.
 - Riesgos: porcentajes por defecto 100, fechas nulas, propietarios de nombre compuesto y codigo unico global, coeficiente flotante y agrupaciones en texto.
-- Decisiones pendientes: confirmar la politica de identidad entre comunidades antes de permitir compartir un mismo titular fisico; por defecto del diseno se mantienen identidades aisladas, sin fusion automatica. No bloquea el documento.
+- Decisiones pendientes: ninguna para cerrar ERP 1. La politica confirmada mantiene propietarios separados por comunidad, sin fusion automatica. Los datos legacy observados requieren evidencia para elevarse a validados, pero esto es trabajo operativo y no una carencia estructural.
 
 ## ERP 2 - Presupuestos y cuotas
 
@@ -142,4 +142,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-Revisar estos contratos y resolver solo las decisiones materiales de ERP 1. Despues, con autorizacion separada, ejecutar ERP 0 y la preparacion de ERP 1 sobre copia: unicidad por comunidad, precision, procedencia y conflictos temporales. No empezar SEPA, agente nuevo ni una sustitucion de Netfincas al aprobar este documento.
+Definir el alcance ejecutable de ERP 2 sobre los maestros certificados: versiones de presupuesto, partidas, asignacion a grupos, reglas de reparto y redondeo exacto. Antes de implementar deben cerrarse fecha de corte/prorrateo, exenciones y reglas reales por grupo. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.

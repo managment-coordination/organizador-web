@@ -1,6 +1,6 @@
 # Titularidades, coeficientes y grupos de reparto
 
-Contrato de diseno, 10/09/2026. [Modelo maestro](ERP_MODELO_DATOS_MAESTROS.md) | [Roadmap](ERP_COMUNIDADES_ROADMAP.md). No contiene migraciones ni implementa el motor de reparto.
+Contrato de diseno, 10/09/2026. Su implantacion ERP 1 se documenta en [evidencia de cierre](ERP_01_DATOS_MAESTROS_IMPLEMENTACION.md). [Modelo maestro](ERP_MODELO_DATOS_MAESTROS.md) | [Roadmap](ERP_COMUNIDADES_ROADMAP.md). No implementa el motor de reparto de ERP 2.
 
 ## Cuatro conceptos independientes
 

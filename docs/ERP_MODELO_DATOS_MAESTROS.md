@@ -1,6 +1,6 @@
 # ERP: arquitectura y datos maestros
 
-Linea base de diseno, 10/09/2026. Sin codigo ni migraciones. [Roadmap](ERP_COMUNIDADES_ROADMAP.md) | [Titularidades y repartos](ERP_TITULARIDADES_COEFICIENTES_REPARTO.md).
+Contrato de diseno aprobado, 10/09/2026. La implantacion certificada se documenta en [ERP 1](ERP_01_DATOS_MAESTROS_IMPLEMENTACION.md). [Roadmap](ERP_COMUNIDADES_ROADMAP.md) | [Titularidades y repartos](ERP_TITULARIDADES_COEFICIENTES_REPARTO.md).
 
 ## Evidencia y limites de esta inspeccion
 
