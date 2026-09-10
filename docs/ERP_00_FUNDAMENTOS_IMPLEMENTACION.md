@@ -63,7 +63,8 @@ Crear copia:
 ```bash
 python3 scripts/erp0-backup.py \
   --app /home/coordinador/apps/organizador-web \
-  --output-root /home/coordinador/apps/organizador-web/backups
+  --output-root /home/coordinador/apps/organizador-web/backups \
+  --code-commit HASH_COMPLETO_PUBLICADO
 ```
 
 La copia usa la API de backup SQLite aunque el servicio este activo, empaqueta codigo/configuracion/documentos sin duplicar la base/WAL y genera manifiesto con commit, recuentos y SHA-256. No enviar `.env`, documentos o backup a GitHub.

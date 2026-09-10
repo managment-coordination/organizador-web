@@ -14,6 +14,7 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument("--app", type=Path, required=True)
 parser.add_argument("--output-root", type=Path, required=True)
+parser.add_argument("--code-commit", default="")
 args = parser.parse_args()
 app = args.app.resolve()
 output_root = args.output_root.resolve()
@@ -55,12 +56,15 @@ with tarfile.open(archive, "w:gz") as bundle:
                 continue
             bundle.add(candidate, arcname=str(relative))
 
-commit = "unknown"
-try:
-    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app, text=True,
-                            capture_output=True, check=True).stdout.strip()
-except (OSError, subprocess.CalledProcessError):
-    pass
+commit = str(args.code_commit or "").strip()
+if commit and (len(commit) != 40 or any(char not in "0123456789abcdefABCDEF" for char in commit)):
+    raise SystemExit("--code-commit debe ser un hash Git completo.")
+if not commit:
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app, text=True,
+                                capture_output=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        commit = "unknown"
 hashes = {}
 for item in (destination / "database.db", archive):
     with item.open("rb") as stream:
