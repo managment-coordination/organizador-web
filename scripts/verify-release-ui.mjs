@@ -61,6 +61,31 @@ try {
       if(view==='master-data') {
         await page.locator('#masterCommunity').waitFor();
         await page.locator('[data-master-section="properties"]').waitFor();
+        await page.locator('#masterNewProperty').click();
+        assert.equal(await page.locator('#masterPropertyForm [name="estado"]').count(),0);
+        assert.equal(await page.locator('#masterPropertyForm [name="calidad_dato"]').count(),0);
+        const propertyCode=`ERP1-UX-${viewport.width}-${Date.now()}`;
+        await page.locator('#masterPropertyForm [name="codigo_propiedad"]').fill(propertyCode);
+        const [propertyCreatedResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterPropertyForm button').click(),
+        ]);
+        const propertyCreated=await propertyCreatedResponse.json();
+        assert.equal(propertyCreated.entity.estado,'activa');
+        assert.equal(propertyCreated.entity.calidad_dato,'validada');
+        await page.locator(`#masterPropertyForm [name="codigo_propiedad"][value="${propertyCode}"]`).waitFor();
+        await page.locator('#masterPropertyForm [name="descripcion_direccion"]').fill('Descripcion UX editada');
+        const [propertyEditedResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterPropertyForm button').click(),
+        ]);
+        const propertyEdited=await propertyEditedResponse.json();
+        assert.equal(propertyEdited.entity.estado,'activa');
+        assert.equal(propertyEdited.entity.calidad_dato,'validada');
+        assert.equal(propertyEdited.entity.descripcion_direccion,'Descripcion UX editada');
+        await page.locator('#masterPropertyForm [name="descripcion_direccion"][value="Descripcion UX editada"]').waitFor();
+        assert.ok(await page.locator('.masterPropertyFlags').getByText('Datos validados').isVisible());
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-property-edit.png`),fullPage:true});
         await page.locator('#masterSearchForm input').fill('ERP');
         await page.locator('#masterSearchForm button').click();
         await page.waitForTimeout(500);

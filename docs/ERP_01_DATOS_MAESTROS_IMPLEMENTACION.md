@@ -89,6 +89,16 @@ El ajuste no modifica ni duplica el modelo `cf_contactos_propietario`: cada camp
 
 La persistencia, ausencia de duplicado, permisos y regresion se comprobaron mediante `verify-erp1-master-data.py`, `verify-operational-release.mjs` y el recorrido Playwright de `verify-release-ui.mjs` en escritorio y movil.
 
+### Ajuste UX de propiedades - 10/09/2026
+
+El formulario ordinario de alta y edicion ya no solicita `Estado` ni `Calidad`. Una propiedad creada manualmente por un usuario autorizado nace como `Activa` y `Validada`; una edicion posterior conserva ambos valores salvo que el usuario ejecute una accion especifica. El estado y la calidad se muestran como indicadores en la ficha, sin trasladar al usuario la complejidad tecnica del modelo.
+
+Los estados conservan finalidades distintas: `Activa` participa en la operativa normal; `Preparacion` identifica datos aun no activados; `Inactiva` suspende temporalmente la participacion operativa; y `Baja` representa el cese documentado. Los dos estados intermedios solo se muestran cuando ya existen y permiten activar la propiedad. La baja se gestiona como accion excepcional plegada, con fecha y motivo obligatorios, y puede revertirse mediante una reactivacion confirmada.
+
+La calidad sigue siendo una propiedad normalizada del dato: la creacion manual confirmada queda `Validada`, una importacion sin revision permanece `Observada` y un conflicto identificado queda `Pendiente de revision`. Estas dos ultimas situaciones generan un aviso contextual y una accion explicita de validacion. Editar un dato observado no lo valida implicitamente. Se mantienen procedencia, control de version, permisos, auditoria e historico; no se ha modificado el esquema ni se han duplicado campos.
+
+Este ajuste se verifica en servicio y navegador: alta manual con valores automaticos, edicion sin alterarlos, persistencia, permisos y representacion responsive en escritorio y movil.
+
 La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de maestros, historicos, coeficientes y grupos. La importacion masiva revisable y las reglas economicas pertenecen a entregas posteriores. Antes de cualquier siguiente cambio estructural siguen siendo obligatorios checkpoint Git, backup independiente de SQLite y restauracion ensayada.
 
 ## Estado final

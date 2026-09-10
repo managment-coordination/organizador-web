@@ -133,6 +133,13 @@ try:
     checks.append("contactos editables sin duplicar fila, con version, procedencia, auditoria y permisos")
     prop_p = new_property("ERP1-P")
     prop_q = new_property("ERP1-Q")
+    prop_p = command(session, "erp1.property.save", community, {
+        "id_propiedad": prop_p["id_propiedad"],
+        "descripcion_direccion": "Descripcion operativa actualizada",
+    }, expected=prop_p["version"])["entity"]
+    assert prop_p["descripcion_direccion"] == "Descripcion operativa actualizada"
+    assert prop_p["estado"] == "activa" and prop_p["calidad_dato"] == "validada"
+    checks.append("edicion ordinaria de propiedad conserva estado y calidad sin decision tecnica del usuario")
 
     def ownership(prop, lines, effective, *, complete=True, quality="validada", known="2026-01-02T10:00:00Z"):
         evidence = {"type": "test_document", "id": "ERP1-EVIDENCE"} if quality == "validada" else None
