@@ -14394,10 +14394,20 @@ finally:
   }
   if (req.method === "GET" && url.pathname === "/api/erp/query") {
     const session = readSession(req);
+    let filters = {};
+    const serializedFilters = url.searchParams.get("filters");
+    if (serializedFilters) {
+      try { filters = JSON.parse(serializedFilters); }
+      catch { return sendJson(res, 400, { ok: false, error: "Los filtros ERP no contienen JSON valido." }); }
+    } else {
+      for (const [key, value] of url.searchParams.entries()) {
+        if (!new Set(["query", "id_comunidad"]).has(key)) filters[key] = value;
+      }
+    }
     const envelope = {
       query: String(url.searchParams.get("query") || ""),
       id_comunidad: Number(url.searchParams.get("id_comunidad") || 0),
-      filters: {}
+      filters
     };
     return sendJson(res, 200, await runErpContract(session, "query", envelope));
   }
