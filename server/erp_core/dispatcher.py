@@ -22,6 +22,7 @@ COMMANDS = {
     "erp1.ownership.propose": "ownership_propose",
     "erp1.ownership.confirm": "ownership_confirm",
     "erp1.group.save": "group_save",
+    "erp1.group.configure": "group_configure",
     "erp1.group.membership.save": "membership_save",
     "erp1.coefficient.save": "coefficient_save",
     "erp1.provenance.record": "provenance_record",

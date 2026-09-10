@@ -218,7 +218,12 @@ class MasterDataService:
             sql="""SELECT p.*,t.codigo AS tipo_codigo,t.nombre AS tipo_nombre,
                 (SELECT group_concat(o.nombre, ' / ') FROM cf_propietario_propiedad r
                  JOIN cf_propietarios o ON o.id_propietario=r.id_propietario
-                 WHERE r.id_propiedad=p.id_propiedad AND r.activo=1) AS titulares_actuales
+                 WHERE r.id_propiedad=p.id_propiedad AND r.activo=1) AS titulares_actuales,
+                (SELECT group_concat(a.nombre, ' / ') FROM erp_propiedad_agrupaciones pa
+                 JOIN erp_agrupaciones a ON a.id_agrupacion=pa.id_agrupacion
+                 WHERE pa.id_propiedad=p.id_propiedad
+                   AND (pa.efectiva_desde IS NULL OR pa.efectiva_desde<=date('now'))
+                   AND (pa.efectiva_hasta IS NULL OR pa.efectiva_hasta>date('now'))) AS agrupaciones_actuales
                 FROM cf_propiedades p LEFT JOIN erp_tipos_propiedad t ON t.id_tipo_propiedad=p.id_tipo_propiedad
                 WHERE """+" AND ".join(clauses)+" ORDER BY p.codigo_normalizado LIMIT ? OFFSET ?"
             values += [limit,offset]
@@ -238,11 +243,13 @@ class MasterDataService:
             row["agrupaciones"]=_rows(conn.execute("""SELECT pa.*,a.codigo,a.nombre,a.tipo FROM erp_propiedad_agrupaciones pa
                 JOIN erp_agrupaciones a ON a.id_agrupacion=pa.id_agrupacion WHERE pa.id_comunidad=? AND pa.id_propiedad=? ORDER BY a.tipo,a.nombre""",(q.community_id,entity_id)))
             row["titularidades"]=self._ownership_snapshot(conn,q.community_id,entity_id,q.filters.get("fecha"),q.filters.get("conocido_en"))
+            row["historico_propietarios"]=self._ownership_history(conn,q.community_id,entity_id)
             row["coeficientes"]=_rows(conn.execute("""SELECT s.*,g.codigo AS grupo_codigo,g.nombre AS grupo_nombre,
                 v.valor_decimal,v.valor_original,v.efectiva_desde,v.efectiva_hasta,v.calidad,v.estado AS version_estado
                 FROM erp_coeficiente_series s LEFT JOIN erp_grupos_reparto g ON g.id_grupo=s.id_grupo
                 LEFT JOIN erp_coeficiente_versiones v ON v.id_serie=s.id_serie
                 WHERE s.id_comunidad=? AND s.id_propiedad=? ORDER BY g.nombre,s.finalidad,v.version DESC""",(q.community_id,entity_id)))
+            row["participaciones_grupos"]=self._property_group_participation(conn,q.community_id,entity_id,q.filters.get("fecha"))
             return {"ok":True,"query":q.query,"entity":row}
         return self._read(session,query,op)
 
@@ -294,8 +301,7 @@ class MasterDataService:
             entity_id=integer(q.filters.get("id_propietario"),"id_propietario",required=True)
             row=self._require_entity(conn,"cf_propietarios","id_propietario",entity_id,q.community_id)
             row["contactos"]=_rows(conn.execute("SELECT * FROM cf_contactos_propietario WHERE id_comunidad=? AND id_propietario=? ORDER BY tipo,principal DESC",(q.community_id,entity_id)))
-            row["propiedades"]=_rows(conn.execute("""SELECT r.*,p.codigo_propiedad,p.estado AS propiedad_estado FROM cf_propietario_propiedad r
-                JOIN cf_propiedades p ON p.id_propiedad=r.id_propiedad WHERE r.id_comunidad=? AND r.id_propietario=? ORDER BY r.activo DESC,r.fecha_desde DESC""",(q.community_id,entity_id)))
+            row["propiedades"]=self._owner_properties(conn,q.community_id,entity_id)
             return {"ok":True,"query":q.query,"entity":row}
         return self._read(session,query,op)
 
@@ -463,8 +469,15 @@ class MasterDataService:
                 entity=self._require_entity(conn,'erp_grupos_reparto','id_grupo',gid,q.community_id)
                 entity['versiones']=_rows(conn.execute('SELECT * FROM erp_grupo_versiones WHERE id_grupo=? ORDER BY version DESC',(gid,)))
                 entity['miembros']=self._group_members(conn,q.community_id,gid,q.filters.get('fecha'))
+                entity['configuracion_actual']=self._group_current_version(conn,gid,q.filters.get('fecha'))
+                self._add_group_summary(entity)
                 return {'ok':True,'query':q.query,'entity':entity}
-            return {'ok':True,'query':q.query,'items':_rows(conn.execute("""SELECT g.*,(SELECT COUNT(*) FROM erp_grupo_miembros m WHERE m.id_grupo=g.id_grupo) AS miembros FROM erp_grupos_reparto g WHERE g.id_comunidad=? ORDER BY g.nombre""",(q.community_id,)))}
+            items=_rows(conn.execute("SELECT * FROM erp_grupos_reparto WHERE id_comunidad=? ORDER BY nombre",(q.community_id,)))
+            for entity in items:
+                entity['configuracion_actual']=self._group_current_version(conn,entity['id_grupo'],q.filters.get('fecha'))
+                entity['miembros']=self._group_members(conn,q.community_id,entity['id_grupo'],q.filters.get('fecha'))
+                self._add_group_summary(entity)
+            return {'ok':True,'query':q.query,'items':items}
         return self._read(session,query,op)
 
     def group_save(self, session, envelope):
@@ -480,9 +493,88 @@ class MasterDataService:
             if not before or 'base' in env.payload:
                 start=iso_date(env.payload.get('efectiva_desde'),'efectiva_desde'); end=iso_date(env.payload.get('efectiva_hasta'),'efectiva_hasta'); valid_interval(start,end)
                 version=conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM erp_grupo_versiones WHERE id_grupo=?',(gid,)).fetchone()[0]
-                conn.execute("""INSERT INTO erp_grupo_versiones(id_comunidad,id_grupo,version,efectiva_desde,efectiva_hasta,base,suma_esperada_decimal,estado,registrada_en,registrada_por,origen) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(env.community_id,gid,version,start,end,one_of(env.payload.get('base'),'base',{'porcentaje','peso','sin_coeficiente','otra'},default='sin_coeficiente'),decimal_text(env.payload.get('suma_esperada_decimal'),'suma_esperada_decimal'),'borrador',now,actor.user_id,env.origin))
+                base=one_of(env.payload.get('base'),'base',{'porcentaje','peso','sin_coeficiente','otra'},default='sin_coeficiente')
+                expected=decimal_text(env.payload.get('suma_esperada_decimal'),'suma_esperada_decimal',positive=True)
+                if base=='porcentaje' and expected is None: expected='100'
+                conn.execute("""INSERT INTO erp_grupo_versiones(id_comunidad,id_grupo,version,efectiva_desde,efectiva_hasta,base,suma_esperada_decimal,estado,registrada_en,registrada_por,origen) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",(env.community_id,gid,version,start,end,base,expected,'borrador',now,actor.user_id,env.origin))
             after=self._require_entity(conn,'erp_grupos_reparto','id_grupo',gid,env.community_id)
             return self._outcome('Grupo de reparto guardado','grupo_reparto',gid,before,after,'erp1.group.saved')
+        return self._write(session,envelope,op)
+
+    def group_configure(self, session, envelope):
+        def op(conn,actor,env):
+            only(env.payload,{'id_grupo','efectiva_desde','miembros','motivo','simulate_failure'})
+            gid=integer(env.payload.get('id_grupo'),'id_grupo',required=True)
+            group=self._require_entity(conn,'erp_grupos_reparto','id_grupo',gid,env.community_id)
+            self._expected(env,group)
+            start=iso_date(env.payload.get('efectiva_desde'),'efectiva_desde',required=True)
+            reason=text(env.payload.get('motivo'),'motivo',maximum=1000) or 'Configuracion masiva de propiedades'
+            config=self._group_current_version(conn,gid,start)
+            if not config: raise ContractError('El grupo no tiene un tipo de participacion configurado.')
+            base=config['base']; raw_members=env.payload.get('miembros')
+            if not isinstance(raw_members,list): raise ContractError('La configuracion requiere una lista de propiedades.')
+            selected=[]; seen=set(); total=Decimal('0')
+            for raw in raw_members:
+                if not isinstance(raw,dict): raise ContractError('Cada propiedad seleccionada debe ser un objeto.')
+                only(raw,{'id_propiedad','valor_decimal'})
+                pid=integer(raw.get('id_propiedad'),'id_propiedad',required=True)
+                if pid in seen: raise ContractError('Una propiedad no puede repetirse en la seleccion.')
+                seen.add(pid); self._require_entity(conn,'cf_propiedades','id_propiedad',pid,env.community_id)
+                value=None
+                if base in {'porcentaje','peso'}:
+                    value=decimal_text(raw.get('valor_decimal'),'valor_decimal',required=True,positive=True,max_scale=12)
+                    total+=Decimal(value)
+                selected.append({'id_propiedad':pid,'valor_decimal':value})
+            expected=Decimal(config['suma_esperada_decimal']) if config.get('suma_esperada_decimal') is not None else None
+            if base=='porcentaje' and expected is not None and total!=expected:
+                relation='por debajo de' if total<expected else 'por encima de'
+                raise ContractError(f'La suma {format(total,"f")} % esta {relation} {format(expected,"f")} %. Revisa antes de confirmar.')
+            before_members=self._group_members(conn,env.community_id,gid,start)
+            before={'grupo':group,'configuracion':config,'miembros':before_members}
+            current={row['id_propiedad']:row for row in before_members if row['participa'] and not row['excluida']}
+            selected_by_id={row['id_propiedad']:row for row in selected}
+            now=utc_now()
+            for pid in sorted(set(current)|set(selected_by_id)):
+                should_participate=pid in selected_by_id
+                was_participating=pid in current
+                if should_participate==was_participating: continue
+                member=conn.execute('SELECT * FROM erp_grupo_miembros WHERE id_comunidad=? AND id_grupo=? AND id_propiedad=?',(env.community_id,gid,pid)).fetchone()
+                if member:
+                    mid=member['id_miembro']; version=conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM erp_grupo_miembro_versiones WHERE id_miembro=?',(mid,)).fetchone()[0]
+                else:
+                    cur=conn.execute('INSERT INTO erp_grupo_miembros(id_comunidad,id_grupo,id_propiedad,creado_en,creado_por,origen) VALUES(?,?,?,?,?,?)',(env.community_id,gid,pid,now,actor.user_id,env.origin)); mid=cur.lastrowid; version=1
+                conn.execute('INSERT INTO erp_grupo_miembro_versiones(id_comunidad,id_miembro,version,efectiva_desde,participa,excluida,motivo,registrada_en,registrada_por,origen) VALUES(?,?,?,?,?,?,?,?,?,?)',(env.community_id,mid,version,start,int(should_participate),int(not should_participate),reason,now,actor.user_id,env.origin))
+            if base in {'porcentaje','peso'}:
+                unit=base
+                for item in selected:
+                    pid=item['id_propiedad']; value=item['valor_decimal']
+                    series_rows=_rows(conn.execute("SELECT * FROM erp_coeficiente_series WHERE id_comunidad=? AND id_grupo=? AND id_propiedad=? AND estado<>'inactiva' ORDER BY id_serie",(env.community_id,gid,pid)))
+                    if len(series_rows)>1: raise ConflictError('La propiedad tiene varias series activas en este grupo. Requiere revision avanzada antes de la operacion masiva.')
+                    series=series_rows[0] if series_rows else None
+                    current_value=self._coefficient_version(conn,series['id_serie'],start) if series else None
+                    if current_value and current_value['valor_decimal']==value and series['unidad']==unit: continue
+                    if series:
+                        sid=series['id_serie']
+                        if series['unidad']!=unit: raise ConflictError('La unidad del coeficiente existente no coincide con el tipo del grupo.')
+                        conn.execute('UPDATE erp_coeficiente_series SET version=version+1 WHERE id_serie=?',(sid,))
+                        if current_value:
+                            if current_value.get('efectiva_desde') and current_value['efectiva_desde']>=start:
+                                conn.execute("UPDATE erp_coeficiente_versiones SET estado='sustituida' WHERE id_coeficiente_version=?",(current_value['id_coeficiente_version'],))
+                            else:
+                                conn.execute("UPDATE erp_coeficiente_versiones SET efectiva_hasta=?,estado='sustituida' WHERE id_coeficiente_version=?",(start,current_value['id_coeficiente_version']))
+                    else:
+                        cur=conn.execute("INSERT INTO erp_coeficiente_series(id_comunidad,id_propiedad,id_grupo,finalidad,unidad,escala,estado,creada_en,creada_por,origen) VALUES(?,?,?,?,?,12,'activa',?,?,?)",(env.community_id,pid,gid,'participacion',unit,now,actor.user_id,env.origin)); sid=cur.lastrowid
+                    version=conn.execute('SELECT COALESCE(MAX(version),0)+1 FROM erp_coeficiente_versiones WHERE id_serie=?',(sid,)).fetchone()[0]
+                    conn.execute("INSERT INTO erp_coeficiente_versiones(id_comunidad,id_serie,version,efectiva_desde,valor_decimal,valor_original,precision_original,calidad,estado,registrada_en,registrada_por,origen) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(env.community_id,sid,version,start,value,value,len(value.partition('.')[2]),'validada','aprobada',now,actor.user_id,env.origin))
+            if boolean(env.payload.get('simulate_failure'),'simulate_failure'):
+                if env.origin!='test': raise ContractError('La simulacion de fallo solo esta disponible en pruebas.')
+                raise RuntimeError('Fallo simulado durante la configuracion masiva.')
+            conn.execute('UPDATE erp_grupos_reparto SET version=version+1 WHERE id_grupo=?',(gid,))
+            after_group=self._require_entity(conn,'erp_grupos_reparto','id_grupo',gid,env.community_id)
+            after={'grupo':after_group,'configuracion':config,'miembros':self._group_members(conn,env.community_id,gid,start)}
+            self._add_group_summary(after_group,after['miembros'],config)
+            after['resumen']={'propiedades_participantes':after_group['propiedades_participantes'],'suma_decimal':after_group['suma_decimal'],'base':base}
+            return self._outcome('Propiedades y coeficientes del grupo configurados','grupo_reparto',gid,before,after,'erp1.group.configured')
         return self._write(session,envelope,op)
 
     def membership_save(self, session, envelope):
@@ -592,9 +684,101 @@ class MasterDataService:
         return {'items':active,'fecha_efectiva':effective,'conocido_en':known,'porcentaje_conocido':format(total,'f'),'composicion_completa':bool(active) and not unknown and total==Decimal('100'),'cobertura':'completa' if active and not unknown and total==Decimal('100') else ('sin_datos' if not active else 'incompleta')}
 
     @staticmethod
-    def _group_members(conn,community_id,group_id,effective_date=None):
+    def _ownership_history(conn,community_id,property_id):
+        return _rows(conn.execute("""SELECT v.*,o.nombre,o.nif FROM erp_titularidad_versiones v
+            JOIN cf_propietarios o ON o.id_propietario=v.id_propietario
+            WHERE v.id_comunidad=? AND v.id_propiedad=? AND v.anulada=0
+            ORDER BY COALESCE(v.efectiva_desde,'0001-01-01') DESC,v.id_titularidad_version DESC""",(community_id,property_id)))
+
+    @staticmethod
+    def _owner_properties(conn,community_id,owner_id):
+        return _rows(conn.execute("""SELECT v.*,p.codigo_propiedad,p.estado AS propiedad_estado
+            FROM erp_titularidad_versiones v JOIN cf_propiedades p ON p.id_propiedad=v.id_propiedad
+            WHERE v.id_comunidad=? AND v.id_propietario=? AND v.anulada=0
+            ORDER BY CASE WHEN (v.efectiva_desde IS NULL OR v.efectiva_desde<=date('now'))
+                     AND (v.efectiva_hasta IS NULL OR v.efectiva_hasta>date('now')) THEN 0 ELSE 1 END,
+                     COALESCE(v.efectiva_desde,'0001-01-01') DESC""",(community_id,owner_id)))
+
+    @staticmethod
+    def _group_current_version(conn,group_id,effective_date=None):
         effective=iso_date(effective_date,'fecha') or date.today().isoformat()
-        return _rows(conn.execute("""SELECT m.id_miembro,m.id_propiedad,p.codigo_propiedad,v.participa,v.excluida,v.efectiva_desde,v.efectiva_hasta,v.motivo FROM erp_grupo_miembros m JOIN cf_propiedades p ON p.id_propiedad=m.id_propiedad JOIN erp_grupo_miembro_versiones v ON v.id_miembro=m.id_miembro WHERE m.id_comunidad=? AND m.id_grupo=? AND v.version=(SELECT MAX(v2.version) FROM erp_grupo_miembro_versiones v2 WHERE v2.id_miembro=m.id_miembro AND (v2.efectiva_desde IS NULL OR v2.efectiva_desde<=?) AND (v2.efectiva_hasta IS NULL OR v2.efectiva_hasta>?)) ORDER BY p.codigo_normalizado""",(community_id,group_id,effective,effective)))
+        return _dict(conn.execute("""SELECT * FROM erp_grupo_versiones WHERE id_grupo=? AND estado<>'anulada'
+            AND (efectiva_desde IS NULL OR efectiva_desde<=?) AND (efectiva_hasta IS NULL OR efectiva_hasta>?)
+            ORDER BY version DESC LIMIT 1""",(group_id,effective,effective)).fetchone())
+
+    @staticmethod
+    def _current_group_coefficient(conn,community_id,group_id,property_id,effective_date=None):
+        series=_rows(conn.execute("""SELECT * FROM erp_coeficiente_series WHERE id_comunidad=? AND id_grupo=?
+            AND id_propiedad=? AND estado<>'inactiva' ORDER BY id_serie""",(community_id,group_id,property_id)))
+        values=[]
+        for item in series:
+            current=MasterDataService._coefficient_version(conn,item['id_serie'],effective_date)
+            if current: values.append({**item,**current})
+        return values
+
+    @classmethod
+    def _group_members(cls,conn,community_id,group_id,effective_date=None):
+        effective=iso_date(effective_date,'fecha') or date.today().isoformat()
+        rows=_rows(conn.execute("""SELECT m.id_miembro,m.id_propiedad,p.codigo_propiedad,p.bloque,p.planta,
+            t.codigo AS tipo_codigo,t.nombre AS tipo_nombre,v.version AS miembro_version,v.participa,v.excluida,
+            v.efectiva_desde,v.efectiva_hasta,v.motivo
+            FROM erp_grupo_miembros m JOIN cf_propiedades p ON p.id_propiedad=m.id_propiedad
+            LEFT JOIN erp_tipos_propiedad t ON t.id_tipo_propiedad=p.id_tipo_propiedad
+            JOIN erp_grupo_miembro_versiones v ON v.id_miembro=m.id_miembro
+            WHERE m.id_comunidad=? AND m.id_grupo=? AND v.version=(SELECT MAX(v2.version)
+              FROM erp_grupo_miembro_versiones v2 WHERE v2.id_miembro=m.id_miembro
+              AND (v2.efectiva_desde IS NULL OR v2.efectiva_desde<=?)
+              AND (v2.efectiva_hasta IS NULL OR v2.efectiva_hasta>?)) ORDER BY p.codigo_normalizado""",(community_id,group_id,effective,effective)))
+        coefficient_rows=_rows(conn.execute("""SELECT s.*,v.id_coeficiente_version,v.version AS coeficiente_version,
+            v.valor_decimal,v.valor_original,v.efectiva_desde AS coeficiente_desde,
+            v.efectiva_hasta AS coeficiente_hasta,v.calidad,v.estado AS coeficiente_estado
+            FROM erp_coeficiente_series s JOIN erp_coeficiente_versiones v ON v.id_serie=s.id_serie
+            WHERE s.id_comunidad=? AND s.id_grupo=? AND s.estado<>'inactiva' AND v.id_coeficiente_version=(
+              SELECT v2.id_coeficiente_version FROM erp_coeficiente_versiones v2
+              WHERE v2.id_serie=s.id_serie AND v2.estado<>'anulada'
+                AND (v2.efectiva_desde IS NULL OR v2.efectiva_desde<=?)
+                AND (v2.efectiva_hasta IS NULL OR v2.efectiva_hasta>?)
+              ORDER BY CASE v2.estado WHEN 'aprobada' THEN 0 WHEN 'observada' THEN 1 ELSE 2 END,
+                       v2.version DESC LIMIT 1)""",(community_id,group_id,effective,effective)))
+        coefficients_by_property={}
+        for coefficient in coefficient_rows:
+            coefficients_by_property.setdefault(coefficient['id_propiedad'],[]).append(coefficient)
+        for row in rows:
+            coefficients=coefficients_by_property.get(row['id_propiedad'],[])
+            row['coeficientes_actuales']=coefficients
+            row['valor_decimal']=coefficients[0]['valor_decimal'] if len(coefficients)==1 else None
+            row['conflicto_coeficientes']=len(coefficients)>1
+        return rows
+
+    @classmethod
+    def _property_group_participation(cls,conn,community_id,property_id,effective_date=None):
+        result=[]
+        groups=_rows(conn.execute("SELECT * FROM erp_grupos_reparto WHERE id_comunidad=? ORDER BY nombre",(community_id,)))
+        for group in groups:
+            members=cls._group_members(conn,community_id,group['id_grupo'],effective_date)
+            member=next((row for row in members if row['id_propiedad']==property_id),None)
+            config=cls._group_current_version(conn,group['id_grupo'],effective_date)
+            result.append({
+                'id_grupo':group['id_grupo'],'codigo':group['codigo'],'nombre':group['nombre'],
+                'estado':group['estado'],'base':config['base'] if config else None,
+                'participa':bool(member and member['participa'] and not member['excluida']),
+                'efectiva_desde':member and member['efectiva_desde'],
+                'efectiva_hasta':member and member['efectiva_hasta'],
+                'valor_decimal':member and member['valor_decimal'],
+                'conflicto_coeficientes':bool(member and member['conflicto_coeficientes']),
+            })
+        return result
+
+    @staticmethod
+    def _add_group_summary(entity,members=None,config=None):
+        members=members if members is not None else entity.get('miembros',[])
+        config=config if config is not None else entity.get('configuracion_actual')
+        active=[row for row in members if row.get('participa') and not row.get('excluida')]
+        total=sum((Decimal(row['valor_decimal']) for row in active if row.get('valor_decimal') is not None),Decimal('0'))
+        entity['propiedades_participantes']=len(active)
+        entity['suma_decimal']=format(total,'f')
+        entity['base']=config.get('base') if config else None
+        entity['suma_esperada_decimal']=config.get('suma_esperada_decimal') if config else None
 
     @staticmethod
     def _coefficient_version(conn,series_id,effective_date=None):

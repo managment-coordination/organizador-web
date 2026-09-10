@@ -67,7 +67,7 @@ No se inventaron ejercicios ni agrupaciones a partir de nombres legacy: comienza
 
 ## Pruebas y evidencias
 
-`scripts/verify-erp1-master-data.py` cubre los 19 escenarios obligatorios: varias propiedades por titular, copropiedad 60/40, venta efectiva, consultas 30/06 y 01/07, obligado historico intacto, exceso 110 bloqueado, cobertura parcial, idempotencia de importacion, correccion bitemporal, fecha incierta, varios coeficientes, salida de grupo, codigos aislados, anexos independientes, concurrencia, permisos, asamblea inmutable y restauracion. Tambien comprueba contactos, auditoria y outbox.
+`scripts/verify-erp1-master-data.py` cubre los escenarios obligatorios de dominio: varias propiedades por titular, copropiedad 60/40, venta efectiva, consultas 30/06 y 01/07, obligado historico intacto, exceso 110 bloqueado, cobertura parcial, idempotencia de importacion, correccion bitemporal, fecha incierta, varios coeficientes, salida de grupo, codigos aislados, anexos independientes, concurrencia, permisos, asamblea inmutable y restauracion. Tambien comprueba contactos, auditoria, outbox y operaciones masivas de grupos.
 
 `scripts/verify-operational-release.mjs` supero 19 grupos de regresion sobre una copia con forma de produccion. `scripts/verify-release-ui.mjs` supero las vistas principales, incluida Datos maestros, a 1440x1000 y 390x844 sin desbordamiento de pagina. El despliegue repitio las pruebas ERP 1 y la regresion antes de publicar.
 
@@ -99,7 +99,29 @@ La calidad sigue siendo una propiedad normalizada del dato: la creacion manual c
 
 Este ajuste se verifica en servicio y navegador: alta manual con valores automaticos, edicion sin alterarlos, persistencia, permisos y representacion responsive en escritorio y movil.
 
-La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de maestros, historicos, coeficientes y grupos. La importacion masiva revisable y las reglas economicas pertenecen a entregas posteriores. Antes de cualquier siguiente cambio estructural siguen siendo obligatorios checkpoint Git, backup independiente de SQLite y restauracion ensayada.
+### Ajuste UX de propietarios y titularidades - 10/09/2026
+
+La titularidad deja de presentarse como una entidad tecnica de navegacion cotidiana. Desde una propiedad se consultan los `Propietarios actuales`, se abre directamente cada propietario y se utiliza `Gestionar propietarios` para preparar un cambio o una copropiedad. El asistente permite seleccionar propietarios existentes, crear uno nuevo, indicar fecha efectiva y porcentajes, vincular el origen documental y revisar la composicion completa antes de confirmar. La ficha traduce los intervalos internos a fechas comprensibles y conserva un `Historico de propietarios` separado.
+
+La ficha de propietario deriva del mismo dominio sus `Propiedades actuales`, `Propiedades anteriores` y, cuando existen, cambios futuros programados, con navegacion directa en ambos sentidos. No se ha creado una relacion alternativa propietario-propiedad ni se ha eliminado la consulta avanzada: permanecen las versiones, el tiempo efectivo y de conocimiento, la procedencia, la calidad, la idempotencia y la auditoria. Los datos tecnicos se muestran solo ante una incidencia o en el detalle avanzado.
+
+La confirmacion sigue ejecutando el comando transaccional normalizado de titularidades. Cambiar propietarios no mueve deuda, no modifica recibos historicos, no altera censos o asambleas y no reasigna responsabilidad economica.
+
+### Ajuste UX de coeficientes y grupos - 10/09/2026
+
+Los grupos se crean con terminologia operativa: `Porcentaje`, `Peso relativo` o `Sin coeficiente`. La base extensible `Otro` permanece soportada internamente, pero no se ofrece en el flujo habitual al no tener todavia un comportamiento economico definido. Para porcentajes se declara el total esperado, normalmente 100; esta configuracion describe la participacion y no anticipa reglas de reparto de ERP 2.
+
+`Gestionar propiedades` abre una unica operacion masiva con busqueda, filtros por tipo, agrupacion, bloque y planta, seleccion de todas las filas visibles y edicion conjunta de coeficientes o pesos. En grupos sin coeficiente basta con seleccionar miembros. El total se calcula con aritmetica decimal exacta y muestra suma, pendiente o exceso permanentemente; nunca normaliza ni distribuye diferencias de forma automatica.
+
+La accion `Pegar datos` admite filas `codigo de propiedad + valor`, busca solo coincidencias exactas dentro de la comunidad activa y presenta una vista previa con codigos inexistentes, duplicados y valores invalidos. Ninguna coincidencia dudosa se aplica. Antes de guardar se resume el numero de altas, bajas y modificaciones y la suma final.
+
+La operacion masiva exige comunidad explicita, permiso backend, version esperada e idempotencia, y confirma miembros, coeficientes, auditoria y outbox en una sola transaccion. Un error produce rollback completo. Las bajas cierran la vigencia sin borrar el historico y cada coeficiente especial conserva su propia serie: editar jardines, por ejemplo, no altera el coeficiente general.
+
+Desde una propiedad se muestran todos los grupos de la comunidad, indicando participacion y valor actual. Desde el grupo se ven tipo, estado, participantes, suma exacta, tabla de propiedades e historico, mientras las versiones tecnicas quedan en un detalle avanzado. Este ajuste no calcula presupuestos, cuotas, derramas, recibos ni repartos economicos.
+
+Las pruebas de ERP 1 incorporan propietario unico, copropiedad, cambio efectivo, historico bidireccional, aislamiento por comunidad e inmutabilidad de deuda y asambleas; tambien cubren 40 propiedades, seleccion masiva de 16, suma exacta, exceso y defecto, peso, pertenencia sin coeficiente, coexistencia de coeficientes, baja historica, rollback, permisos y pegado revisable. El recorrido Playwright valida los flujos principales en escritorio y movil.
+
+La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de maestros, historicos, coeficientes y grupos. Las reglas economicas pertenecen a ERP 2. Antes de cualquier siguiente cambio estructural siguen siendo obligatorios checkpoint Git, backup independiente de SQLite y restauracion ensayada.
 
 ## Estado final
 

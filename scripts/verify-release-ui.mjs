@@ -95,7 +95,7 @@ try {
         await page.locator('[data-master-owner]').first().click();
         const email=page.locator('[data-common-contact-type="email"]').first();
         await email.waitFor();
-        const changedEmail=`erp1.ui.${viewport.width}@example.invalid`;
+        const changedEmail=`erp1.ui.${viewport.width}.${Date.now()}@example.invalid`;
         await email.fill(changedEmail);
         const [contactResponse]=await Promise.all([
           page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
@@ -107,6 +107,77 @@ try {
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master contacts horizontal overflow');
         await page.evaluate(()=>window.scrollTo(0,0));
         await page.screenshot({path:path.join(output,`${viewport.width}-master-contacts.png`),fullPage:true});
+
+        assert.equal(await page.locator('[data-master-section="ownership"]').count(),0);
+        await page.locator('[data-master-section="properties"]').click();
+        await page.locator(`[data-master-property="${propertyCreated.entity.id_propiedad}"]`).click();
+        await page.locator('#masterStartOwnership').click();
+        await page.locator('#masterOwnershipForm [name="efectiva_desde"]').fill(new Date().toISOString().slice(0,10));
+        await page.locator('#masterOwnershipForm .ownershipOwner').first().selectOption({index:1});
+        await page.locator('#masterOwnershipForm .ownershipPct').first().fill('100');
+        const [ownershipProposalResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterOwnershipForm button.green').click(),
+        ]);
+        assert.equal(ownershipProposalResponse.status(),200,await ownershipProposalResponse.text());
+        await page.locator('#masterConfirmOwnership').waitFor();
+        const [ownershipConfirmResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterConfirmOwnership').click(),
+          page.once('dialog',dialog=>dialog.accept()),
+        ]);
+        assert.equal(ownershipConfirmResponse.status(),200,await ownershipConfirmResponse.text());
+        await page.locator('[data-master-owner-link]').first().waitFor();
+        const ownerName=await page.locator('[data-master-owner-link]').first().innerText();
+        await page.locator('[data-master-owner-link]').first().click();
+        await page.locator('[data-master-section="owners"].active').waitFor();
+        await page.locator(`[data-master-property-link="${propertyCreated.entity.id_propiedad}"]`).waitFor();
+        await page.locator(`[data-master-property-link="${propertyCreated.entity.id_propiedad}"]`).click();
+        await page.locator('[data-master-section="properties"].active').waitFor();
+        assert.match(await page.locator('.masterOwnershipCard').first().innerText(),new RegExp(ownerName.trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-ownership.png`),fullPage:true});
+
+        await page.locator('[data-master-section="groups"]').click();
+        await page.locator('.masterAddContact summary').filter({hasText:'+ Crear grupo'}).click();
+        const groupCode=`UX-GROUP-${viewport.width}-${Date.now()}`;
+        await page.locator('#masterGroupForm [name="codigo"]').fill(groupCode);
+        await page.locator('#masterGroupForm [name="nombre"]').fill('Jardines privados UX');
+        await page.locator('#masterGroupForm [name="finalidad"]').fill('Prueba de seleccion masiva');
+        const [groupCreateResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterGroupForm button.green').click(),
+        ]);
+        assert.equal(groupCreateResponse.status(),200,await groupCreateResponse.text());
+        await page.locator('#masterManageGroup').waitFor();
+        await page.locator('#masterManageGroup').click();
+        const memberRows=page.locator('.masterMemberRow');
+        await memberRows.first().waitFor();
+        for(const [index,value] of [['0','40'],['1','60']]){
+          const row=memberRows.nth(Number(index));
+          await row.locator('.masterMemberCheck').check();
+          await row.locator('.masterMemberValue').fill(value);
+        }
+        await page.locator('#masterGroupLiveSummary').getByText('100 %').waitFor();
+        await page.locator('#masterReviewGroup').click();
+        await page.locator('#masterConfirmGroup').waitFor();
+        assert.ok(await page.locator('#masterConfirmGroup').isEnabled());
+        const [groupConfigureResponse]=await Promise.all([
+          page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
+          page.locator('#masterConfirmGroup').click(),
+          page.once('dialog',dialog=>dialog.accept()),
+        ]);
+        assert.equal(groupConfigureResponse.status(),200,await groupConfigureResponse.text());
+        await page.locator('#masterManageGroup').waitFor();
+        assert.match(await page.locator('.masterGroupSummary').first().innerText(),/100 %/);
+        await page.locator('#masterManageGroup').click();
+        const firstCode=await page.locator('.masterMemberRow').first().locator('strong').innerText();
+        await page.locator('.masterAddContact summary').filter({hasText:'Pegar datos desde Excel'}).click();
+        await page.locator('#masterGroupPaste').fill(`${firstCode}\t100\nNO-EXISTE\t5\n${firstCode}\t2`);
+        await page.locator('#masterPreviewPaste').click();
+        await page.locator('#masterPastePreview').getByText(/propiedad no encontrada/i).waitFor();
+        await page.locator('#masterPastePreview').getByText(/codigo duplicado/i).waitFor();
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master groups horizontal overflow');
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-groups.png`),fullPage:true});
       }
       if(view==='ai') {
         await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');

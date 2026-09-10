@@ -177,7 +177,14 @@ try:
     known_july=query(session,"erp1.ownership.known_at",community,{"id_propiedad":prop_sale["id_propiedad"],"fecha":"2026-07-15","conocido_en":"2026-07-20T00:00:00Z"})
     known_aug=query(session,"erp1.ownership.known_at",community,{"id_propiedad":prop_sale["id_propiedad"],"fecha":"2026-07-15","conocido_en":"2026-08-02T00:00:00Z"})
     assert not known_july["items"] and [r["id_propietario"] for r in known_aug["items"]]==[owner_b["id_propietario"]]
+    sale_detail=query(session,"erp1.property.get",community,{"id_propiedad":prop_sale["id_propiedad"]})["entity"]
+    assert len(sale_detail["historico_propietarios"])==2
+    owner_a_properties=query(session,"erp1.owner.get",community,{"id_propietario":owner_a["id_propietario"]})["entity"]["propiedades"]
+    owner_b_properties=query(session,"erp1.owner.get",community,{"id_propietario":owner_b["id_propietario"]})["entity"]["propiedades"]
+    assert any(row["id_propiedad"]==prop_sale["id_propiedad"] and row["efectiva_hasta"]=="2026-07-01" for row in owner_a_properties)
+    assert any(row["id_propiedad"]==prop_sale["id_propiedad"] and row["efectiva_hasta"] is None for row in owner_b_properties)
     checks.append("venta [desde,hasta) y tiempo efectivo/conocido diferenciados")
+    checks.append("fichas de propiedad y propietario derivan propietario actual e historico del dominio versionado")
 
     try:
         ownership(prop_shared,[
@@ -220,6 +227,60 @@ try:
     assert members_before[0]["participa"]==1 and members_after[0]["excluida"]==1
     checks.append("pertenencia y exclusion versionadas sin prorrateo implicito")
 
+    bulk_properties=[new_property(f"ERP1-BULK-{index:02d}") for index in range(1,41)]
+    gardens=command(session,"erp1.group.save",community,{"codigo":"ERP1-JARDINES","nombre":"Mantenimiento jardines privados","finalidad":"Mantenimiento de jardines de uso privativo","base":"porcentaje","suma_esperada_decimal":"100","estado":"activo","efectiva_desde":"2026-01-01"})["entity"]
+    selected=[{"id_propiedad":row["id_propiedad"],"valor_decimal":"6"} for row in bulk_properties[:15]]
+    selected.append({"id_propiedad":bulk_properties[15]["id_propiedad"],"valor_decimal":"10"})
+    bulk=command(session,"erp1.group.configure",community,{"id_grupo":gardens["id_grupo"],"efectiva_desde":"2026-01-01","miembros":selected},expected=gardens["version"])["entity"]
+    assert bulk["resumen"]=={"propiedades_participantes":16,"suma_decimal":"100","base":"porcentaje"}
+    gardens_version=bulk["grupo"]["version"]
+    for invalid_last in ("9","11"):
+        invalid=[*selected[:-1],{"id_propiedad":selected[-1]["id_propiedad"],"valor_decimal":invalid_last}]
+        try:
+            command(session,"erp1.group.configure",community,{"id_grupo":gardens["id_grupo"],"efectiva_desde":"2026-02-01","miembros":invalid},expected=gardens_version)
+            raise AssertionError("Se acepto un grupo porcentual cuya suma no es 100")
+        except ContractError:
+            pass
+    garden_detail=query(session,"erp1.group.get",community,{"id_grupo":gardens["id_grupo"]})["entity"]
+    assert garden_detail["propiedades_participantes"]==16 and garden_detail["suma_decimal"]=="100"
+    checks.append("grupo porcentual masivo: 16 de 40 propiedades, suma exacta y exceso/defecto bloqueados")
+
+    weight=command(session,"erp1.group.save",community,{"codigo":"ERP1-PESO","nombre":"Pesos ERP1","base":"peso","estado":"activo","efectiva_desde":"2026-01-01"})["entity"]
+    weight_result=command(session,"erp1.group.configure",community,{"id_grupo":weight["id_grupo"],"efectiva_desde":"2026-01-01","miembros":[{"id_propiedad":bulk_properties[0]["id_propiedad"],"valor_decimal":"1"},{"id_propiedad":bulk_properties[1]["id_propiedad"],"valor_decimal":"2"},{"id_propiedad":bulk_properties[2]["id_propiedad"],"valor_decimal":"3"}]},expected=weight["version"])["entity"]
+    assert weight_result["resumen"]["suma_decimal"]=="6"
+    no_coefficient=command(session,"erp1.group.save",community,{"codigo":"ERP1-SIN-COEF","nombre":"Limpieza garajes","base":"sin_coeficiente","estado":"activo","efectiva_desde":"2026-01-01"})["entity"]
+    no_coefficient_result=command(session,"erp1.group.configure",community,{"id_grupo":no_coefficient["id_grupo"],"efectiva_desde":"2026-01-01","miembros":[{"id_propiedad":row["id_propiedad"]} for row in bulk_properties[:4]]},expected=no_coefficient["version"])["entity"]
+    assert no_coefficient_result["resumen"]["propiedades_participantes"]==4 and no_coefficient_result["resumen"]["suma_decimal"]=="0"
+    checks.append("grupos de peso y sin coeficiente se configuran masivamente sin exigir suma 100 ni valores innecesarios")
+
+    separate_before=query(session,"erp1.coefficient.get",community,{"id_propiedad":prop_p["id_propiedad"],"id_grupo":second_group["id_grupo"]})["items"][0]["version_vigente"]["valor_decimal"]
+    special=command(session,"erp1.group.save",community,{"codigo":"ERP1-INDEPENDIENTE","nombre":"Coeficiente independiente","base":"peso","estado":"activo","efectiva_desde":"2026-01-01"})["entity"]
+    command(session,"erp1.group.configure",community,{"id_grupo":special["id_grupo"],"efectiva_desde":"2026-01-01","miembros":[{"id_propiedad":prop_p["id_propiedad"],"valor_decimal":"8.75"}]},expected=special["version"])
+    separate_after=query(session,"erp1.coefficient.get",community,{"id_propiedad":prop_p["id_propiedad"],"id_grupo":second_group["id_grupo"]})["items"][0]["version_vigente"]["valor_decimal"]
+    property_groups=query(session,"erp1.property.get",community,{"id_propiedad":prop_p["id_propiedad"]})["entity"]["participaciones_grupos"]
+    assert separate_before==separate_after=="5.000000000001"
+    assert any(row["id_grupo"]==special["id_grupo"] and row["valor_decimal"]=="8.75" for row in property_groups)
+    checks.append("coeficientes de grupos diferentes coexisten y la ficha muestra cada participacion sin sobrescribir")
+
+    reduced=[{"id_propiedad":row["id_propiedad"],"valor_decimal":"6"} for row in bulk_properties[1:15]]
+    reduced.append({"id_propiedad":bulk_properties[15]["id_propiedad"],"valor_decimal":"16"})
+    reduced_result=command(session,"erp1.group.configure",community,{"id_grupo":gardens["id_grupo"],"efectiva_desde":"2026-07-01","miembros":reduced,"motivo":"Baja de miembro conservando historico"},expected=gardens_version)["entity"]
+    before_reduction=query(session,"erp1.group.get",community,{"id_grupo":gardens["id_grupo"],"fecha":"2026-06-30"})["entity"]
+    after_reduction=query(session,"erp1.group.get",community,{"id_grupo":gardens["id_grupo"],"fecha":"2026-07-01"})["entity"]
+    assert before_reduction["propiedades_participantes"]==16 and after_reduction["propiedades_participantes"]==15
+    assert any(row["id_propiedad"]==bulk_properties[0]["id_propiedad"] and row["excluida"] for row in after_reduction["miembros"])
+    checks.append("salida masiva conserva pertenencia y coeficiente historicos por fecha")
+
+    rollback_group=query(session,"erp1.group.get",community,{"id_grupo":weight["id_grupo"]})["entity"]
+    try:
+        command(session,"erp1.group.configure",community,{"id_grupo":weight["id_grupo"],"efectiva_desde":"2026-08-01","miembros":[{"id_propiedad":bulk_properties[0]["id_propiedad"],"valor_decimal":"10"}],"simulate_failure":True},expected=rollback_group["version"])
+        raise AssertionError("No se produjo el fallo simulado")
+    except RuntimeError:
+        pass
+    rollback_after=query(session,"erp1.group.get",community,{"id_grupo":weight["id_grupo"]})["entity"]
+    assert rollback_after["version"]==rollback_group["version"] and rollback_after["suma_decimal"]==rollback_group["suma_decimal"]
+    checks.append("configuracion masiva usa una transaccion y revierte por completo ante un fallo")
+
     if second:
         same_1=new_property("ERP1-SAME-CODE",community)
         same_2=new_property("ERP1-SAME-CODE",second)
@@ -233,6 +294,11 @@ try:
         try:
             command(denied,"erp1.property.save",second,{"codigo_propiedad":"ERP1-DENIED"})
             raise AssertionError("Se permitio una escritura en otra comunidad")
+        except PermissionError:
+            pass
+        try:
+            command(denied,"erp1.group.configure",second,{"id_grupo":gardens["id_grupo"],"efectiva_desde":"2026-01-01","miembros":[]},expected=gardens_version)
+            raise AssertionError("Se permitio configurar un grupo de otra comunidad")
         except PermissionError:
             pass
         checks.append("mismo codigo aislado por comunidad y lectura/escritura transversal denegadas")
