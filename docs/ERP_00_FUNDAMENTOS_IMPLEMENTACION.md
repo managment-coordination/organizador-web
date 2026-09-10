@@ -1,6 +1,6 @@
 # ERP 0 - Fundamentos: implementacion
 
-Estado de esta ficha: implementacion candidata, 10/09/2026. [Roadmap ERP](ERP_COMUNIDADES_ROADMAP.md) | [Modelo maestro](ERP_MODELO_DATOS_MAESTROS.md). No implementa ERP 1.
+Estado: COMPLETADO, 10/09/2026. Implantacion certificada: 100% de ERP 0. [Roadmap ERP](ERP_COMUNIDADES_ROADMAP.md) | [Modelo maestro](ERP_MODELO_DATOS_MAESTROS.md). No implementa ERP 1.
 
 ## Estado inicial y checkpoint
 
@@ -72,7 +72,8 @@ La copia usa la API de backup SQLite aunque el servicio este activo, empaqueta c
 Verificar/restaurar de ensayo, sin tocar produccion:
 
 ```bash
-python3 scripts/verify-erp0-backup.py /ruta/al/backup
+python3 scripts/verify-erp0-backup.py /ruta/al/backup \
+  --runtime-node-modules /home/coordinador/apps/organizador-web/server/node_modules
 ```
 
 Procedimiento de recuperacion real:
@@ -96,8 +97,21 @@ Si existen operaciones reales posteriores al backup, no sobrescribirlas silencio
 
 Los scripts de backup/restauracion se probaron primero con una copia local. El checkpoint anterior se restauro y verifico en un directorio temporal de Ubuntu. Las rutas temporales nunca son la base real.
 
+Evidencia final:
+
+- Prueba especializada: 11 controles de migracion, permiso, contrato, rollback, idempotencia, version, auditoria, outbox, rechazo de secretos e integridad.
+- Regresion operativa: 19 grupos sobre copia local y dos repeticiones sobre copia de produccion en Ubuntu; todos correctos.
+- Regresiones especializadas: todos los `assert-*.mjs` correctos.
+- Interfaz: cinco vistas existentes en 1440x1000 y 390x844, sin errores; capturas locales en `C:/Users/EQUIPO/AppData/Local/Temp/organizador-ui-release-niFLS4`.
+- Staging Ubuntu: `/home/coordinador/apps/organizador-web/backups/stage-operational-20260910-105449` y repeticion de publicacion `stage-operational-20260910-105605`.
+- Backup automatico inmediatamente anterior a publicar: `/home/coordinador/apps/organizador-web/backups/before-operational-publish-20260910-105605`.
+- Backup posterior en formato ERP 0: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-105937`, asociado al commit de codigo `c03a95f8a9eb08e83ec1c34679c90365382ab824`; restauracion aislada correcta, 71 tablas, integridad `ok`, migracion compatible y servidor restaurado accesible por `/health` en un puerto temporal.
+- Produccion: migracion `1 / erp0_foundations`, `foreign_key_check=0`, cinco perfiles y rutas permitidas correctas, HTTP 200 local/Tailscale. Las cuatro tablas operativas ERP 0 quedaron sin filas de prueba y `ERP0_REFERENCE_COMMANDS` deshabilitado.
+
 ## Estado final y pendientes
 
-El estado/porcentaje definitivo se registra al terminar pruebas en staging Ubuntu, migracion de produccion, validacion posterior y copia ya en formato ERP 0. Hasta entonces no usar esta ficha para declarar COMPLETADO.
+ERP 0: COMPLETADO, 100%. Los cuatro hitos del roadmap valen 25 puntos y cuentan con evidencia independiente: migracion/contrato; servicios; recorrido integrado; pruebas/restauracion/regresion. No se ha inflado el porcentaje con funcionalidad preexistente.
 
-ERP 1 sigue sin implementar. Antes de comenzarlo hay que confirmar las decisiones funcionales ya documentadas sobre identidad entre comunidades y, antes del motor de cuotas, corte/prorrateo y destinatario en copropiedad. No bloquean ERP 0.
+Riesgos residuales aceptados: SQL antiguo permanece distribuido y se extraera solo al tocar cada dominio; claves naturales globales y campos `REAL` siguen intactos hasta sus migraciones seguras; SQLite serializa las escrituras ERP criticas y requiere medicion antes de un cambio de motor; auditoria no es criptograficamente inmutable; outbox no tiene worker ni integraciones en esta fase.
+
+ERP 1 no esta implementado, pero queda tecnicamente preparado para comenzar. Antes de migrar datos maestros hay que confirmar identidad aislada o compartida entre comunidades. Antes del posterior motor de cuotas se confirmaran corte/prorrateo y destinatario en copropiedad. Ninguna de esas decisiones queda inferida por ERP 0.

@@ -28,10 +28,10 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Dependencias: cierre 06 aceptado; inventario de esquema actual documentado.
 - Componentes: contratos internos, comunidad obligatoria, autorizacion por accion, auditoria estructurada, migraciones versionadas, transacciones, idempotencia, concurrencia, backups y restauracion, referencias documentales, observabilidad sin secretos.
 - Reutiliza: `access_control.py`, usuarios y permisos por comunidad, `web_migrations`, dominios Python existentes, HTTP Node, SQLite servidor, respaldos y revision de propuestas.
-- Estado inicial: ANÁLISIS. Implantacion certificada: 0%. Hay base operativa reutilizable, no certificacion financiera integral.
+- Estado: COMPLETADO. Implantacion certificada: 100% de ERP 0. Los cuatro hitos estan acreditados: contrato/migracion en copia y produccion; servicios deterministas; recorrido interno autenticado; pruebas, restauracion y regresion. Evidencia en [ERP 0 - implementacion](ERP_00_FUNDAMENTOS_IMPLEMENTACION.md). No concede avance a ERP 1-9 ni certifica contabilidad financiera.
 - Aceptacion: ninguna FK de negocio cruza comunidades; acceso denegado probado por endpoint/herramienta/archivo; migracion reproducible con recuentos e integridad; restauracion ensayada; reglas fuera de plantillas de texto y prompts; una operacion y su auditoria se confirman juntas.
 - Riesgos: SQL distribuido en `index.js`, migraciones invocadas desde accesos, claves globales heredadas y restricciones de concurrencia de SQLite. `id_comunidad` por si solo no prueba aislamiento referencial.
-- Decisiones pendientes: medir concurrencia antes de elegir cambio de motor; no migrar a PostgreSQL por anticipacion. Definir objetivo de recuperacion y politica de retencion antes de operar el ERP definitivo.
+- Decisiones pendientes: ninguna para cerrar ERP 0. Medir concurrencia antes de considerar otro motor. El objetivo de recuperacion y la retencion se acuerdan antes de operar datos financieros definitivos; el procedimiento actual ya permite checkpoint, backup consistente y restauracion comprobada.
 
 ## ERP 1 - Datos maestros
 
