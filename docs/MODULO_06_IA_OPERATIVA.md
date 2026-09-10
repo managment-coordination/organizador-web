@@ -1,5 +1,11 @@
 # Modulo 06 - IA operativa
 
+## Cierre por aceptacion del usuario: 10/09/2026
+
+Estado final: COMPLETADO. Porcentaje final: 100% del alcance operativo aceptado, no de la vision futura del agente. El usuario confirma que ha comprobado que funciona para lo que necesita y autoriza comenzar el diseno ERP. Las comprobaciones tecnicas y limites figuran abajo; las menciones posteriores a aceptacion pendiente corresponden al historial anterior al cierre. La ampliacion de consultas generales no se declara implementada: queda fuera del alcance cerrado y se encuadra posteriormente en ERP 9. No se modifica codigo ni se ejecutan pruebas nuevas por este cierre documental.
+
+Continuidad: [roadmap de consolidacion](ROADMAP_REVISION_MODULAR.md) y [roadmap ERP independiente](ERP_COMUNIDADES_ROADMAP.md).
+
 ## Alcance confirmado el 09/09/2026
 
 1. Seguimiento contextual primero: convertir lenguaje natural en comentario profesional, accion siguiente opcional, responsable siguiente obligatorio y fechas/estado solo respaldados. No reescribir manualmente lo que ya estaba en la entrada.

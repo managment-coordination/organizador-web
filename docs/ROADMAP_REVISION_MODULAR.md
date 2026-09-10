@@ -2,7 +2,9 @@
 
 ## Punto de continuidad: 10/09/2026
 
-Modulos 01, 02, 04 y 05 publicados; modulo 03 omitido por decision del usuario, sin eliminar su funcionalidad. Modulo 06: seguimiento contextual, borradores y reuniones multiasunto publicados; pendientes aceptacion real y ampliacion de consultas generales. Ver `MODULO_06_IA_OPERATIVA.md`. No saltar a 07-10: el usuario aportara un nuevo roadmap cuando termine el actual. Cinco perfiles activos y SQLite verificados tras la ultima publicacion.
+Actualizacion posterior por decision expresa del usuario: modulo 06 COMPLETADO para el alcance operativo que ha probado y aceptado. No equivale a consultas universales ni a IA infalible; los limites y ampliaciones se conservan en la ficha. El siguiente trabajo autorizado es exclusivamente el diseno documental de [ERP Comunidades](ERP_COMUNIDADES_ROADMAP.md), con porcentajes separados. Este roadmap sigue siendo el de consolidacion; no se ejecutan automaticamente los modulos 07-10. Las notas de continuidad inferiores se conservan como historial anterior a esta aceptacion.
+
+Modulos 01, 02, 04 y 05 publicados; modulo 03 omitido por decision del usuario, sin eliminar su funcionalidad. Modulo 06: cerrado por aceptacion, con seguimiento contextual, borradores, reuniones multiasunto y consultas del alcance probado. La ampliacion general futura se encuadra en ERP 9, no es trabajo realizado. Ver `MODULO_06_IA_OPERATIVA.md`. No saltar a 07-10. Cinco perfiles activos y SQLite verificados tras la ultima publicacion tecnica.
 
 ## Proposito
 
@@ -168,7 +170,7 @@ Si una mejora solo hace la app mas grande, mas vistosa o mas compleja sin resolv
 Punto de continuidad:
 
 ```text
-Modulo activo: 06 - Importadores y Centro IA. Bloques A/B/C de seguimiento, borradores y reuniones al 100% de implementacion y pruebas tecnicas, publicados. Reuniones publicadas el 10/09/2026. D: regresion completa; aceptacion real pendiente. Las consultas generales conservan funcionalidad anterior; su ampliacion sigue pendiente, no confundir con cierre total. Ver docs/MODULO_06_IA_OPERATIVA.md.
+Modulo 06: COMPLETADO, 100% del alcance operativo aceptado expresamente por el usuario el 10/09/2026. Ampliaciones de consultas y agentes fuera de este cierre. Ver docs/MODULO_06_IA_OPERATIVA.md.
 Modulo 05: base funcional publicada y verificada en Ubuntu (09/09/2026). Aceptacion de uso real pendiente; sintesis ejecutiva determinista, no reescritura IA avanzada.
 Ficha de continuidad: docs/MODULO_05_INFORMES_DOCUMENTOS.md (incluye limites de sintesis ejecutiva e incrustacion de anexos).
 Decisiones 06 cerradas: confirmacion individual y por seleccion; borradores persistentes; Administracion con advertencia cuando no se identifica responsable. No repetir preguntas ya contestadas.
@@ -178,6 +180,6 @@ Modulo anterior: 02 publicado; ver ficha de cierre y limites documentados.
 Avance de definicion del modulo 02: 100% del bloque funcional, confirmado el 08/09/2026.
 Implementacion de la revision del modulo 02: 100% del alcance confirmado, publicado y verificado. Aceptacion de uso real pendiente del usuario.
 Porcentaje global: no recalculado; los modulos tienen alcances diferentes.
-Objetivo inmediato: validar seguimiento/reunion reales con el usuario y cerrar el alcance restante de consultas del modulo 06. Bloque C ya publicado con progreso, borradores privados, revision individual/seleccionada y confirmacion transaccional por asunto. No comenzar otro modulo ni un nuevo roadmap por inferencia.
+Objetivo inmediato autorizado: diseno documental ERP, sin implementacion ni migraciones, en docs/ERP_COMUNIDADES_ROADMAP.md. Conservar este roadmap y sus modulos pendientes.
 Ficha de ultimo cierre: docs/MODULO_04_NOTIFICACIONES_PRESIDENCIA.md
 ```
