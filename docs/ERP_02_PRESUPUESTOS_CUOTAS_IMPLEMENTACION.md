@@ -72,7 +72,16 @@ Regresion ejecutada contra copia real: ERP 0 completa; ERP 1 completa, incluidos
 - PRE ERP 2A: `pre-erp2a-20260910` (`2e7f642`).
 - POST MIGRACION: `erp2a-post-migration-20260910` (`152191b`).
 - POST MOTOR y POST UX/INTEGRACION: no se crean artificialmente; pertenecen a ERP 2B/2C segun el diseno cerrado.
-- CIERRE ERP 2A: se registra en el commit/tag final de esta entrega tras validar y publicar.
+- CIERRE ERP 2A: `erp2a-complete-20260910`, tras validar, publicar y restaurar el backup posterior.
+
+## Publicacion y restauracion final
+
+- Candidato publicado: `8454943f9b860727bb94fbc5cf6e3aae2d4f3809` (`Close ERP 2A implementation`).
+- Backup automatico inmediatamente anterior a publicar: `/home/coordinador/apps/organizador-web/backups/before-operational-publish-20260910-152954`.
+- Publicacion completada en `/home/coordinador/apps/organizador-web`; el servicio de usuario `organizador-web.service` queda activo y la aplicacion responde por HTTP en el puerto 8771.
+- Base productiva posterior: migracion ERP 2A aplicada, integridad `ok`, 128 tablas y verificacion ERP 2A completa superada sobre copia aislada sin modificar produccion.
+- Backup independiente posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-153151`.
+- Restauracion posterior verificada en `/tmp/organizador-erp0-restore-174eht05`: integridad `ok`, 128 tablas, commit de aplicacion reconocido y runtime accesible.
 
 ## Alcance no implementado
 
