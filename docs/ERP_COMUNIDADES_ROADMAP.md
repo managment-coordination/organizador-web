@@ -1,6 +1,6 @@
 # ERP Comunidades: roadmap de evolucion
 
-Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0 y ERP 1 estan implantados; las fases posteriores requieren autorizacion independiente.
+Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0 y ERP 1 estan implantados; ERP 2A acredita el primer hito de ERP 2. Las fases posteriores requieren autorizacion independiente.
 
 ## Alcance y continuidad
 
@@ -50,12 +50,12 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Dependencias: 0 y 1; contrato de hechos economicos acordado con 6.
 - Componentes: presupuesto/capitulos/partidas, asignaciones multiples grupo/regla, calendario ordinario por comunidad, derramas con calendario propio, regularizaciones, ajustes, redondeo espacial/temporal, simulacion/aprobacion inmutable y explicacion de cuotas; ocupacion y destinatario/pagador separados de titularidad.
 - Reutiliza: servicios ERP 0/1, grupos/series temporales, documentos e informes existentes. `cf_repartos_cuotas` y `cf_reparto_lineas` son antecedentes de compatibilidad a inventariar, no motor ERP 2 certificado; no confundir cuenta Netfincas con cuenta PGC.
-- Estado: ANÁLISIS. Diseno funcional, tecnico y UX cerrado en [ERP 2 - producto](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) y [modelo, calculo y contratos](ERP_02_MODELO_CALCULO_CONTRATOS.md), con las precisiones del usuario incorporadas. Implantacion certificada: 0%. Preparado para iniciar ERP 2A tras autorizacion expresa; no se han creado tablas, motor, pantallas ni recibos ERP 2.
+- Estado: DESARROLLO. Diseno funcional, tecnico y UX cerrado en [ERP 2 - producto](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) y [modelo, calculo y contratos](ERP_02_MODELO_CALCULO_CONTRATOS.md). ERP 2A COMPLETADO: contrato de dominio, capacidades y migracion aditiva validados sobre copia real. Implantacion certificada de ERP 2: 25%. Evidencia en [implementacion ERP 2](ERP_02_PRESUPUESTOS_CUOTAS_IMPLEMENTACION.md). Motor, servicios, recorrido funcional y aceptacion permanecen pendientes; no existen recibos ERP 2.
 - Aceptacion: suma exacta al centimo; cada linea explica base, integrantes, coeficiente y regla versionados; ajuste manual motivado; presupuesto aprobado inmutable; nueva version/regularizacion para cambios posteriores; mismo snapshot produce mismo resultado.
 - Riesgos: datos legacy observados y versiones de grupo en borrador; reparto por cuota no equivale a porcentaje de dominio; regularizar contra cobrado duplicaria deuda; snapshots y redondeo entre periodos deben conservar totales. Ver puertas de validacion en el contrato tecnico.
 - Decisiones cerradas: sin prorrateo de cuotas por titularidad; un cargo operativo por propiedad/concepto/periodo; copropiedad no divide cargos; periodicidad ordinaria por comunidad; presupuesto aprobado inmutable; importes finales a dos decimales; destinatario/pagador/titular separados; SEPA reservado a ERP 4.
 - Precisiones confirmadas: recibos no emitidos resuelven destinatario con la configuracion vigente a fecha efectiva de emision, no al inicio del periodo; emitidos conservan destinatario sin cambios automaticos. Coeficientes, participantes, grupos y reglas del aprobado quedan congelados en snapshot; cambios economicos posteriores requieren operacion formal. Regularizaciones contra emitido neto, incluyendo recibos pendientes, no solo cobrado.
-- Decisiones pendientes: ninguna funcional material para iniciar ERP 2A. Usuarios autorizados a aprobar e importes/reglas concretos se configuran antes de puesta en servicio, no se infieren. Implementacion todavia no autorizada.
+- Decisiones pendientes: ninguna funcional material dentro de ERP 2A. Usuarios autorizados a aprobar e importes/reglas concretos se configuran antes de puesta en servicio, no se infieren. ERP 2B requiere autorizacion expresa.
 
 ## ERP 3 - Recibos, cobros y deuda
 
@@ -144,4 +144,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-Diseno ERP 2 cerrado, sin decisiones funcionales materiales pendientes para ERP 2A. Esperar autorizacion expresa para iniciar bloque 2A: contratos y migracion aditiva en copia, checkpoint Git y backup independiente con restauracion ensayada. Continuar por motor determinista antes de interfaz; secuencia y pruebas en el contrato tecnico. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.
+ERP 2A completado y publicado con el primer 25% certificado. Esperar autorizacion expresa para ERP 2B: motor puro y snapshots de coeficiente, partes iguales, fijo, unidades, porcentaje especial y mixta; consumo queda preparado. Ejecutar checkpoint/backup nuevos y validar el motor antes de interfaz. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.

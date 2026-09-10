@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "server"))
 from erp_core.contracts import CommandEnvelope, QueryEnvelope
 from erp_core.dispatcher import execute_command, execute_query
 from erp_core.errors import ConflictError, ContractError
-from erp_core.migrations import apply_all
+from erp_core.migrations import MIGRATIONS, apply_all
 
 
 parser = argparse.ArgumentParser()
@@ -59,9 +59,9 @@ try:
                                      "cf_propietario_propiedad", "asamblea_censo", "cf_recibos")}
     assembly_hash = rows_hash(conn, "asamblea_censo")
     debt_hash = rows_hash(conn, "cf_recibos")
-    apply_all(conn)
+    apply_all(conn, MIGRATIONS[:2])
     first_migrations = list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
-    apply_all(conn)
+    apply_all(conn, MIGRATIONS[:2])
     assert first_migrations == list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert not list(conn.execute("PRAGMA foreign_key_check"))
