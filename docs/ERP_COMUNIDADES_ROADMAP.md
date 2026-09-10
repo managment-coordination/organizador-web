@@ -48,12 +48,14 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 - Objetivo: presupuestos propios de la comunidad y cuotas justificables hasta la regla aplicada.
 - Dependencias: 0 y 1; contrato de hechos economicos acordado con 6.
-- Componentes: versiones de presupuesto, partidas, asignaciones grupo/regla, ordinarias mensuales, derramas, regularizaciones, ajustes, redondeo, aprobacion y simulacion.
-- Reutiliza: `cf_repartos_cuotas`, `cf_reparto_lineas`, informes contables y categorias actuales como insumo; no confundir cuenta Netfincas con cuenta PGC.
-- Estado inicial: PENDIENTE. Implantacion certificada: 0%.
+- Componentes: presupuesto/capitulos/partidas, asignaciones multiples grupo/regla, calendario ordinario por comunidad, derramas con calendario propio, regularizaciones, ajustes, redondeo espacial/temporal, simulacion/aprobacion inmutable y explicacion de cuotas; ocupacion y destinatario/pagador separados de titularidad.
+- Reutiliza: servicios ERP 0/1, grupos/series temporales, documentos e informes existentes. `cf_repartos_cuotas` y `cf_reparto_lineas` son antecedentes de compatibilidad a inventariar, no motor ERP 2 certificado; no confundir cuenta Netfincas con cuenta PGC.
+- Estado: ANÁLISIS. Diseno funcional, tecnico y UX cerrado en [ERP 2 - producto](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) y [modelo, calculo y contratos](ERP_02_MODELO_CALCULO_CONTRATOS.md), con las precisiones del usuario incorporadas. Implantacion certificada: 0%. Preparado para iniciar ERP 2A tras autorizacion expresa; no se han creado tablas, motor, pantallas ni recibos ERP 2.
 - Aceptacion: suma exacta al centimo; cada linea explica base, integrantes, coeficiente y regla versionados; ajuste manual motivado; presupuesto aprobado inmutable; nueva version/regularizacion para cambios posteriores; mismo snapshot produce mismo resultado.
-- Riesgos: lineas actuales ligadas a un solo propietario; reparto por cuota no equivale a porcentaje de dominio; reglas mixtas pueden duplicar cargos.
-- Decisiones pendientes: fecha de corte/prorrateo al cambiar titular o coeficiente, exenciones y reglas reales por grupo. Confirmarlas antes de activar calculos reales, no inferirlas del nombre de una zona.
+- Riesgos: datos legacy observados y versiones de grupo en borrador; reparto por cuota no equivale a porcentaje de dominio; regularizar contra cobrado duplicaria deuda; snapshots y redondeo entre periodos deben conservar totales. Ver puertas de validacion en el contrato tecnico.
+- Decisiones cerradas: sin prorrateo de cuotas por titularidad; un cargo operativo por propiedad/concepto/periodo; copropiedad no divide cargos; periodicidad ordinaria por comunidad; presupuesto aprobado inmutable; importes finales a dos decimales; destinatario/pagador/titular separados; SEPA reservado a ERP 4.
+- Precisiones confirmadas: recibos no emitidos resuelven destinatario con la configuracion vigente a fecha efectiva de emision, no al inicio del periodo; emitidos conservan destinatario sin cambios automaticos. Coeficientes, participantes, grupos y reglas del aprobado quedan congelados en snapshot; cambios economicos posteriores requieren operacion formal. Regularizaciones contra emitido neto, incluyendo recibos pendientes, no solo cobrado.
+- Decisiones pendientes: ninguna funcional material para iniciar ERP 2A. Usuarios autorizados a aprobar e importes/reglas concretos se configuran antes de puesta en servicio, no se infieren. Implementacion todavia no autorizada.
 
 ## ERP 3 - Recibos, cobros y deuda
 
@@ -64,7 +66,7 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Estado inicial: PENDIENTE. Implantacion certificada: 0%.
 - Aceptacion: saldo reconstruible a una fecha; pago parcial y devolucion reversible con contramovimiento; titular actual no sustituye al deudor historico; ninguna reduccion sin evento/motivo; duplicado de importacion no genera cobro nuevo.
 - Riesgos: saldo importado no prueba todos sus movimientos historicos; deuda de propiedad no equivale a deuda de titular actual.
-- Decisiones pendientes: destinatario/obligados del recibo en copropiedad y tratamiento documentado de transmisiones e incobrables. No resolver responsabilidad juridica automaticamente.
+- Decisiones pendientes: obligados del recibo y tratamiento documentado de transmisiones e incobrables. ERP 2 define destinatario operativo explicito en copropiedad sin dividir cuotas; esa eleccion no decide responsabilidad juridica ni mueve deuda.
 
 ## ERP 4 - Domiciliaciones, SEPA y remesas
 
@@ -142,4 +144,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-Definir el alcance ejecutable de ERP 2 sobre los maestros certificados: versiones de presupuesto, partidas, asignacion a grupos, reglas de reparto y redondeo exacto. Antes de implementar deben cerrarse fecha de corte/prorrateo, exenciones y reglas reales por grupo. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.
+Diseno ERP 2 cerrado, sin decisiones funcionales materiales pendientes para ERP 2A. Esperar autorizacion expresa para iniciar bloque 2A: contratos y migracion aditiva en copia, checkpoint Git y backup independiente con restauracion ensayada. Continuar por motor determinista antes de interfaz; secuencia y pruebas en el contrato tecnico. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.

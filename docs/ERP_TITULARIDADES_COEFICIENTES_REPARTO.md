@@ -105,7 +105,7 @@ Porcentajes generales tambien se representan como serie documentada; el grupo po
 
 Cuota ordinaria mensual por coeficiente se conserva como caso de uso ya acordado, no unica regla posible. Partida presupuestaria mantiene categoria propia y puede tener asignaciones a varios grupos. Referencia PGC independiente; no codificar cuenta 603003 como si fuera una cuenta financiera validada.
 
-Dos decisiones pendientes antes de activar el motor: fecha de corte/prorrateo cuando cambia titularidad/coeficiente dentro del periodo y a quien se emite el recibo en copropiedad. El modelo admite alternativas; no elegirlas a partir del porcentaje de dominio.
+Actualizacion de diseno ERP 2: el usuario cierra ausencia de prorrateo y cargo operativo unico sin division por copropiedad. Destinatario y pagador se configuran separadamente de titularidad. Las politicas confirmadas (destinatario vigente a fecha efectiva de emision para pendientes, emitidos protegidos, snapshot economico congelado y regularizacion contra emitido neto) se mantienen en [ERP 2 - producto](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md); algoritmos, precision real implementada en ERP 1 (escala hasta 30) y snapshots en [contrato ERP 2](ERP_02_MODELO_CALCULO_CONTRATOS.md). Diseno cerrado; no modifica el dominio ERP 1 ni implementa el motor.
 
 ## Precision y redondeo
 

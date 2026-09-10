@@ -140,6 +140,6 @@ No ligar futuros cargos a la FK "propietario actual": recibo conserva obligado/s
 
 El diseno conserva identidad aislada por comunidad. Si se desea ficha personal unica global, confirmar antes de migrar: afecta a claves, contactos, documentos y permisos. No es necesario resolverlo para finalizar este documento; si se acepta el aislamiento actual, continuar con el modelo propuesto.
 
-Antes de calculos reales confirmar el corte/prorrateo y criterio de facturacion en copropiedad (no necesariamente proporcional al dominio). Tipos de agrupacion, etiquetas y alias son configuraciones reversibles y no requieren bloquear el diseno.
+El [diseno ERP 2](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) recoge las decisiones confirmadas: sin prorrateo por cambio de titular, cuota unica sin division automatica por copropiedad, destinatario/pagador separados y periodicidad por comunidad. Los recibos pendientes resuelven destinatario a fecha efectiva de emision; los emitidos lo conservan. El snapshot economico aprobado queda congelado y las regularizaciones se basan en emitido neto. Diseno cerrado sin reabrir ERP 1. Tipos de agrupacion, etiquetas y alias son configuraciones reversibles y no requieren bloquear el diseno.
 
 No se ha hecho una auditoria legal ni una certificacion contable. Se ha identificado el soporte tecnico necesario para que esos criterios se configuren y revisen por personas autorizadas en sus fases.
