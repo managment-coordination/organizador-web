@@ -43,6 +43,7 @@ const adminBridgePath = path.join(__dirname, "admin-bridge.py");
 const securityBridgePath = path.join(__dirname, "security-bridge.py");
 const aiHistoryBridgePath = path.join(__dirname, "ai-history.py");
 const accessBridgePath = path.join(__dirname, "access-bridge.py");
+const erpBridgePath = path.join(__dirname, "erp-bridge.py");
 
 for (const dir of [dataDir, logsDir, backupsDir, uploadsDir, legacyAttachmentsDir, reportsDir, assemblyDocumentsDir, securityDocumentsDir]) {
   fs.mkdirSync(dir, { recursive: true });
@@ -125,8 +126,11 @@ function sendError(res, error) {
   const raw = String(error?.message || error || "Error de servidor");
   const permission = raw.match(/PermissionError:\s*([^\r\n]+)/);
   const value = raw.match(/ValueError:\s*([^\r\n]+)/);
-  const message = (permission?.[1] || value?.[1] || raw.split(/\r?\n/).filter(Boolean).at(-1) || raw).trim();
-  const status = permission ? 403 : value ? 400 : 500;
+  const contract = raw.match(/ContractError:\s*([^\r\n]+)/);
+  const conflict = raw.match(/ConflictError:\s*([^\r\n]+)/);
+  const notFound = raw.match(/NotFoundError:\s*([^\r\n]+)/);
+  const message = (permission?.[1] || value?.[1] || contract?.[1] || conflict?.[1] || notFound?.[1] || raw.split(/\r?\n/).filter(Boolean).at(-1) || raw).trim();
+  const status = permission ? 403 : value || contract ? 400 : conflict ? 409 : notFound ? 404 : 500;
   return sendJson(res, status, { ok: false, error: message });
 }
 
@@ -246,6 +250,29 @@ function runAccessCommand(request) {
       } catch (failure) { reject(failure); }
     });
     child.stdin.end(JSON.stringify(request));
+  });
+}
+
+function runErpContract(session, action, envelope = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(pythonBin, [erpBridgePath, databasePath], {
+      timeout: 30000, maxBuffer: 2 * 1024 * 1024,
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
+    }, (error, stdout, stderr) => {
+      let result;
+      try {
+        result = JSON.parse(String(stdout || "{}").trim() || "{}");
+      } catch {
+        reject(new Error(stderr || error?.message || "No se pudo leer el contrato ERP."));
+        return;
+      }
+      if (error || result?.error) {
+        reject(new Error(`${result?.error_type || "ValueError"}: ${result?.error || stderr || error?.message}`));
+        return;
+      }
+      resolve(result);
+    });
+    child.stdin.end(JSON.stringify({ session, action, envelope }));
   });
 }
 
@@ -14364,6 +14391,20 @@ finally:
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     return sendJson(res, 200, await runAdminCommand(session, "list", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/erp/query") {
+    const session = readSession(req);
+    const envelope = {
+      query: String(url.searchParams.get("query") || ""),
+      id_comunidad: Number(url.searchParams.get("id_comunidad") || 0),
+      filters: {}
+    };
+    return sendJson(res, 200, await runErpContract(session, "query", envelope));
+  }
+  if (req.method === "POST" && url.pathname === "/api/erp/command") {
+    const session = readSession(req);
+    const body = await readBody(req, 512 * 1024);
+    return sendJson(res, 200, await runErpContract(session, "command", body));
   }
   if (req.method === "POST" && url.pathname === "/api/admin/action") {
     const session = readSession(req);

@@ -39,13 +39,17 @@ with target:
 print('Migration: data counts and integrity preserved')
 `, [fixture,database,password]);
 results.push('Migration preserves rows, relationships and integrity');
+const erpFoundations = spawnSync(python,[path.join(root,'scripts/verify-erp0-foundations.py'),database],{encoding:'utf8',env,maxBuffer:4*1024*1024});
+assert.equal(erpFoundations.status,0,erpFoundations.stderr || erpFoundations.stdout);
+assert.equal(JSON.parse(erpFoundations.stdout).ok,true);
+results.push('ERP0 rollback, audit, outbox, migration replay, backup-ready schema and SQLite integrity');
 
 const socket = net.createServer();
 await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve));
 const port = socket.address().port;
 await new Promise(resolve=>socket.close(resolve));
 let serverLog = '';
-const child = spawn(process.execPath, [path.join(root,'server/index.js')], {cwd:root,env:{...env,PORT:String(port),HOST:'127.0.0.1',DATABASE_PATH:database,DATA_DIR:path.join(temp,'files'),PYTHON_BIN:python,AI_PROVIDER:'local',AI_API_KEY:'',NVIDIA_API_KEY:'',OPENAI_API_KEY:''},stdio:['ignore','pipe','pipe']});
+const child = spawn(process.execPath, [path.join(root,'server/index.js')], {cwd:root,env:{...env,PORT:String(port),HOST:'127.0.0.1',DATABASE_PATH:database,DATA_DIR:path.join(temp,'files'),PYTHON_BIN:python,AI_PROVIDER:'local',AI_API_KEY:'',NVIDIA_API_KEY:'',OPENAI_API_KEY:'',ERP0_REFERENCE_COMMANDS:'1'},stdio:['ignore','pipe','pipe']});
 child.stdout.on('data',d=>serverLog+=d);
 child.stderr.on('data',d=>serverLog+=d);
 const base = `http://127.0.0.1:${port}`;
@@ -80,6 +84,19 @@ try {
   const read=await user('Verification Read','Consulta',[communityA]);
   const reviewer=await user('Verification Reviewer','Usuario',[communityA],{gestionar_seguridad:true,community_permissions:[{id_comunidad:communityA,rol_en_comunidad:'Usuario',puede_gestionar_seguridad:1}]});
   results.push('First access with temporary key and real named roles');
+  const erpCommand={command:'erp0.foundation.set_status',id_comunidad:communityA,payload:{status:'prepared'},idempotency_key:'release-erp0-foundation',expected_version:0,reason:'Release reference path',origin:'test'};
+  const erpFirst=(await request('/api/erp/command',worker.cookie,erpCommand)).value;
+  assert.equal(erpFirst.entity.version,1);
+  assert.equal((await request('/api/erp/command',worker.cookie,erpCommand)).value.idempotent_replay,true);
+  await request('/api/erp/command',worker.cookie,{...erpCommand,payload:{status:'verified'}},409);
+  await request('/api/erp/command',worker.cookie,{...erpCommand,idempotency_key:'release-erp0-stale',payload:{status:'verified'}},409);
+  await request('/api/erp/command',worker.cookie,{...erpCommand,role:'Superusuario'},400);
+  await request('/api/erp/command',worker.cookie,{...erpCommand,id_comunidad:communityB,idempotency_key:'release-erp0-forbidden'},403);
+  await request('/api/erp/command',read.cookie,{...erpCommand,idempotency_key:'release-erp0-role-forbidden'},403);
+  await request(`/api/erp/query?query=erp0.foundation.get_status&id_comunidad=${communityA}`,worker.cookie);
+  await request(`/api/erp/query?query=erp0.foundation.get_status&id_comunidad=${communityA}`,other.cookie,undefined,403);
+  await request('/api/erp/command',worker.cookie,{...erpCommand,command:'sql.execute',idempotency_key:'release-no-sql'},404);
+  results.push('ERP0 internal contract: backend scope, strict actor, idempotency and optimistic conflict');
   for(const u of [worker,other,president,presidentB,guard,read]) await request('/api/admin',u.cookie,undefined,403);
   await request('/api/overview',guard.cookie,undefined,403);
   for(const url of ['/api/reports-center','/api/daily-operations','/api/assemblies','/api/options','/api/global-search?q=Verification']) await request(url,president.cookie,undefined,403);

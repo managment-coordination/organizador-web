@@ -48,6 +48,8 @@ def migrate(conn):
         migrate_work(conn)
         from presidency_domain import migrate as migrate_presidency
         migrate_presidency(conn)
+        from erp_core.migrations import apply_all as migrate_erp_foundations
+        migrate_erp_foundations(conn)
         return
     with conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS usuario_comunidad_permisos (
@@ -102,6 +104,8 @@ def migrate(conn):
     migrate_work(conn)
     from presidency_domain import migrate as migrate_presidency
     migrate_presidency(conn)
+    from erp_core.migrations import apply_all as migrate_erp_foundations
+    migrate_erp_foundations(conn)
 
 
 def migrate_data_scope(conn):
