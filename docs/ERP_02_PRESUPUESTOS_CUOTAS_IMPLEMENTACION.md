@@ -1,6 +1,6 @@
 # ERP 2 - Presupuestos y cuotas: implementacion
 
-Estado: ERP 2A COMPLETADO, 10/09/2026. Implantacion certificada de ERP 2: 25%. Aceptacion funcional del flujo completo: pendiente de ERP 2B-2E.
+Estado: ERP 2A y ERP 2B COMPLETADOS, 10/09/2026. Implantacion certificada de ERP 2: 50%. Aceptacion funcional del flujo completo: pendiente de ERP 2C-2E.
 
 [Diseno funcional y UX](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) | [Modelo y contratos](ERP_02_MODELO_CALCULO_CONTRATOS.md) | [Roadmap ERP](ERP_COMUNIDADES_ROADMAP.md)
 
@@ -13,6 +13,7 @@ Estado: ERP 2A COMPLETADO, 10/09/2026. Implantacion certificada de ERP 2: 25%. A
 - El manifiesto identifica el commit, conserva SQLite mediante API de backup, aplicacion/configuracion/documentos y hashes SHA-256.
 - Restauracion previa verificada en `/tmp/organizador-erp0-restore-8muaacck`: integridad `ok`, 91 tablas y runtime accesible. No sustituye ni sobrescribe backups ERP 0/1.
 - Copia de trabajo local ignorada por Git: `backups/erp2a-source-20260910-150439.db`; se utiliza solo como fuente de pruebas aisladas.
+- Backup previo ERP 2B: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260910-160027`; restauracion aislada correcta, integridad `ok`, 128 tablas y runtime accesible.
 
 ## Alcance ERP 2A implementado
 
@@ -35,6 +36,24 @@ ERP 2A implementa exclusivamente el bloque definido en el contrato vigente: capa
 - Configuracion de recibo tiene vigencia por fecha efectiva, preparada para resolver destinatario en la futura fecha real de emision. No incorpora prorrateo.
 - Regularizacion conserva por linea debido, emitido neto, cobrado informativo, ajustes anteriores y la restriccion exacta `diferencia = debido - emitido_neto - ajustes_previos`.
 - La base no permite que un fallo de insercion transversal deje una operacion parcial en las pruebas transaccionales.
+
+## ERP 2B - motor determinista
+
+- Motor puro `budget_engine.py`, sin acceso a base de datos, red, IA ni estado global. Recibe exclusivamente un manifiesto estructurado/versionado y utiliza enteros y racionales `Fraction`.
+- Reglas ejecutables: coeficiente, partes iguales, importe fijo, unidades, porcentaje especial y mixta controlada de un nivel. Consumo permanece preparado pero no ejecutable.
+- Asignaciones por importe o porcentaje exclusivo, multiples grupos por partida, financiacion explicita y exclusion con redistribucion declarada. Los descuadres no se corrigen silenciosamente.
+- Mayores restos espacial sobre magnitudes, con desempate por identificador estable; importes negativos conservan signo y criterio. La suma distribuida coincide exactamente con el objetivo.
+- Periodificacion por pesos aprobados y orden cronologico estable. Cada linea anual coincide exactamente con la suma de sus periodos para mensual, trimestral, semestral y anual.
+- Resultado explicable por propiedad, partida, asignacion, grupo, regla, valor, racional exacto, base, ajuste de centimo, importe final y periodo.
+- `budget_simulation.py` calcula fuera del bloqueo y guarda manifest, resultado, lineas, componentes, periodos e incidencias en una unica transaccion. La huella de entrada hace idempotente la persistencia.
+- Migracion aditiva `4 / erp2b_deterministic_results`: separa los periodos de simulacion del futuro plan aprobado y conserva trazas de componentes y residuos. No modifica ni elimina tablas ERP 2A.
+- Los comandos web `erp2.budget.simulate` y consultas de interfaz siguen deshabilitados hasta que ERP 2C incorpore servicio, permisos y recorrido funcional.
+
+### MEJORA AUTÓNOMA IMPLEMENTADA ERP 2B
+
+Problema: la tabla de periodos calculados de ERP 2A dependia de un plan de cuota, pero una simulacion debe existir antes de aprobar y crear ese plan.
+
+Solucion: periodos propios de simulacion y resultados periodicos separados, enlazados al snapshot calculado. Beneficio: simular no crea planes ni anticipa ERP 3, y el aprobado futuro puede consumir el resultado sin recalcularlo. Impacto: migracion aditiva de cuatro tablas, sin cambio de datos previos. La puerta de despliegue ejecuta desde ahora la regresion ERP 2B completa.
 
 ## Decisiones tecnicas
 
@@ -67,12 +86,21 @@ Solucion: `deploy-operational-release.py` ejecuta tambien `verify-erp2a-foundati
 
 Regresion ejecutada contra copia real: ERP 0 completa; ERP 1 completa, incluidos 40 inmuebles/16 miembros, copropiedad, titularidad temporal, coeficientes multiples, permisos, auditoria, outbox, deuda y asamblea intactas. Sintaxis Python y `git diff --check` correctos.
 
+### Evidencia ERP 2B
+
+`scripts/verify-erp2b-engine.py` valida sobre copia aislada migracion 4, ausencia de tipos flotantes, mayores restos positivos/negativos, pesos 1/2/3, coeficientes porcentuales, controles de ausencia/ambiguedad/calidad, exclusiones, varios grupos por partida, importes fijos, unidades, regla mixta, cuatro periodicidades, orden arbitrario de entrada, explicacion racional, idempotencia, inmutabilidad del snapshot tras cambiar un coeficiente, rollback y aislamiento entre comunidades.
+
+Caso de referencia superado: 40 viviendas en General y 16 bajos en Jardines privados, con coeficientes general y especial simultaneos. Solo los 16 bajos reciben la partida de jardines; ambos fondos y todos los periodos cuadran al centimo, sin modificar el coeficiente general.
+
 ## Checkpoints
 
 - PRE ERP 2A: `pre-erp2a-20260910` (`2e7f642`).
 - POST MIGRACION: `erp2a-post-migration-20260910` (`152191b`).
-- POST MOTOR y POST UX/INTEGRACION: no se crean artificialmente; pertenecen a ERP 2B/2C segun el diseno cerrado.
+- POST UX/INTEGRACION: no se crea artificialmente; pertenece a ERP 2C segun el diseno cerrado.
 - CIERRE ERP 2A: `erp2a-complete-20260910`, tras validar, publicar y restaurar el backup posterior.
+- PRE ERP 2B: `pre-erp2b-20260910` (`e7b244f`).
+- POST MOTOR ERP 2B: `erp2b-post-engine-20260910` (`e02320e`).
+- CIERRE ERP 2B: se registra en el commit/tag final tras publicar y restaurar el backup posterior.
 
 ## Publicacion y restauracion final
 
@@ -85,10 +113,10 @@ Regresion ejecutada contra copia real: ERP 0 completa; ERP 1 completa, incluidos
 
 ## Alcance no implementado
 
-ERP 2B-2E permanecen pendientes: motor racional, snapshots calculados, redondeo espacial/temporal, servicios de presupuesto, copia/importacion operativa, simulacion/comparacion/aprobacion, UX, ocupacion/configuracion operativa, derramas, regularizaciones y explicabilidad. No hay recibos, cobros, SEPA, conciliacion, asientos ni IA economica.
+ERP 2C-2E permanecen pendientes: servicios de preparacion presupuestaria, copia/importacion operativa, recorrido web de simulacion/comparacion/aprobacion, ocupacion/configuracion operativa, derramas, regularizaciones y exportaciones. No hay recibos, cobros, SEPA, conciliacion, asientos ni IA economica.
 
-La matriz de 30 casos del diseno se conserva para esas fases. En ERP 2A solo se prueban sus precondiciones estructurales; no se declara que una tabla vacia equivalga a una funcionalidad terminada.
+La matriz de 30 casos del diseno se conserva para esas fases. ERP 2B certifica el motor y snapshot de dominio, no declara terminada una interfaz ni una aprobacion todavia inexistentes.
 
 ## Estado final
 
-ERP 2A acredita el hito 1 del roadmap: contrato de dominio y migracion validados sobre copia. Por metodologia acordada, ERP 2 pasa de 0% a 25% de implantacion. No se concede porcentaje de servicios, recorrido funcional ni aceptacion de usuario.
+ERP 2A acredita el hito 1 del roadmap y ERP 2B acredita el hito 2: contrato/migraciones y motor determinista con persistencia de dominio validados. Por metodologia acordada, ERP 2 alcanza 50% de implantacion. No se concede porcentaje de recorrido web ni aceptacion de usuario.
