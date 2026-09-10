@@ -1,6 +1,6 @@
 # ERP Comunidades: roadmap de evolucion
 
-Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0 y ERP 1 estan implantados; ERP 2A y ERP 2B acreditan los dos primeros hitos de ERP 2. Las fases posteriores requieren autorizacion independiente.
+Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0, ERP 1 y ERP 2 estan implantados y certificados. Las fases posteriores requieren autorizacion independiente.
 
 ## Alcance y continuidad
 
@@ -50,12 +50,12 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Dependencias: 0 y 1; contrato de hechos economicos acordado con 6.
 - Componentes: presupuesto/capitulos/partidas, asignaciones multiples grupo/regla, calendario ordinario por comunidad, derramas con calendario propio, regularizaciones, ajustes, redondeo espacial/temporal, simulacion/aprobacion inmutable y explicacion de cuotas; ocupacion y destinatario/pagador separados de titularidad.
 - Reutiliza: servicios ERP 0/1, grupos/series temporales, documentos e informes existentes. `cf_repartos_cuotas` y `cf_reparto_lineas` son antecedentes de compatibilidad a inventariar, no motor ERP 2 certificado; no confundir cuenta Netfincas con cuenta PGC.
-- Estado: DESARROLLO. Diseno funcional, tecnico y UX cerrado en [ERP 2 - producto](ERP_02_PRESUPUESTOS_CUOTAS_DISENO.md) y [modelo, calculo y contratos](ERP_02_MODELO_CALCULO_CONTRATOS.md). ERP 2A COMPLETADO: contrato, capacidades y migracion base. ERP 2B COMPLETADO: motor racional, reglas, redondeo espacial/temporal, snapshots calculados y explicacion de dominio. Implantacion certificada de ERP 2: 50%. Evidencia en [implementacion ERP 2](ERP_02_PRESUPUESTOS_CUOTAS_IMPLEMENTACION.md). Servicios web, recorrido funcional y aceptacion permanecen pendientes; no existen recibos ERP 2.
+- Estado: COMPLETADO. Implantacion certificada: 100% de ERP 2. Hito 1: contrato, capacidades y migraciones aditivas validados. Hito 2: motor racional, reglas, redondeo espacial/temporal, snapshots y servicios deterministas. Hito 3: recorrido web integrado para crear, copiar, importar, editar, simular, comparar, aprobar y explicar cuotas, mas derramas, regularizaciones y configuracion de ocupacion/cobro. Hito 4: pruebas integrales, regresion ERP 0/1, escritorio/movil, publicacion y restauracion superadas. Evidencia en [implementacion ERP 2](ERP_02_PRESUPUESTOS_CUOTAS_IMPLEMENTACION.md). ERP 2 no emite recibos ni modifica deuda.
 - Aceptacion: suma exacta al centimo; cada linea explica base, integrantes, coeficiente y regla versionados; ajuste manual motivado; presupuesto aprobado inmutable; nueva version/regularizacion para cambios posteriores; mismo snapshot produce mismo resultado.
 - Riesgos: datos legacy observados y versiones de grupo en borrador; reparto por cuota no equivale a porcentaje de dominio; regularizar contra cobrado duplicaria deuda; snapshots y redondeo entre periodos deben conservar totales. Ver puertas de validacion en el contrato tecnico.
 - Decisiones cerradas: sin prorrateo de cuotas por titularidad; un cargo operativo por propiedad/concepto/periodo; copropiedad no divide cargos; periodicidad ordinaria por comunidad; presupuesto aprobado inmutable; importes finales a dos decimales; destinatario/pagador/titular separados; SEPA reservado a ERP 4.
 - Precisiones confirmadas: recibos no emitidos resuelven destinatario con la configuracion vigente a fecha efectiva de emision, no al inicio del periodo; emitidos conservan destinatario sin cambios automaticos. Coeficientes, participantes, grupos y reglas del aprobado quedan congelados en snapshot; cambios economicos posteriores requieren operacion formal. Regularizaciones contra emitido neto, incluyendo recibos pendientes, no solo cobrado.
-- Decisiones pendientes: ninguna funcional material dentro de ERP 2B. Usuarios autorizados a aprobar e importes/reglas concretos se configuran antes de puesta en servicio, no se infieren. ERP 2C requiere autorizacion expresa.
+- Decisiones pendientes: ninguna funcional material para el cierre de ERP 2. Usuarios autorizados a aprobar e importes/reglas concretos se configuran operativamente y no se infieren. La materializacion de recibos requiere el diseno y autorizacion de ERP 3.
 
 ## ERP 3 - Recibos, cobros y deuda
 
@@ -144,4 +144,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-ERP 2A y ERP 2B completados con 50% certificado. Esperar autorizacion expresa para ERP 2C: servicios de presupuesto y recorrido de edicion, copia/importacion, calendario, simulacion, comparacion y aprobacion sobre el motor ya validado. No iniciar recibos, SEPA ni contabilidad definitiva por inferencia.
+ERP 2 completado con 100% certificado. El siguiente paso es disenar ERP 3 - Recibos, cobros y deuda, manteniendo como entrada inmutable los planes y cuotas explicables de ERP 2. No iniciar recibos, SEPA ni contabilidad definitiva sin autorizacion expresa.
