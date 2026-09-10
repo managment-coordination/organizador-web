@@ -43,7 +43,7 @@ try {
     const [loginResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/login')),page.locator('#loginButton').click()]);
     assert.equal(loginResponse.status(),200,await loginResponse.text());
     await page.locator('#appView').waitFor({state:'visible'});
-    for(const view of ['home','tasks','projects','admin','ai']){
+    for(const view of ['home','tasks','projects','master-data','admin','ai']){
       if(viewport.width<600){
         await page.locator('#mobileMenuToggle').click();
         await page.locator(`#mobileDrawerNav [data-mobile-view="${view}"]`).click();
@@ -58,6 +58,15 @@ try {
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);
       assert.ok(!overflow, `Horizontal overflow in ${view} at ${viewport.width}`);
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
+      if(view==='master-data') {
+        await page.locator('#masterCommunity').waitFor();
+        await page.locator('[data-master-section="properties"]').waitFor();
+        await page.locator('#masterSearchForm input').fill('ERP');
+        await page.locator('#masterSearchForm button').click();
+        await page.waitForTimeout(500);
+        assert.ok(await page.locator('.masterShell').isVisible());
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master data horizontal overflow');
+      }
       if(view==='ai') {
         await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');
         const [lookupResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/ai/center')),page.locator('#aiUnifiedSend').click()]);

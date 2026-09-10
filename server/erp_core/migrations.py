@@ -320,7 +320,9 @@ MIGRATIONS = (
         "ALTER TABLE cf_propietario_propiedad ADD COLUMN fecha_conocimiento TEXT",
         "ALTER TABLE cf_propietario_propiedad ADD COLUMN version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0)",
         "UPDATE cf_propietario_propiedad SET porcentaje_titularidad_decimal=CAST(porcentaje_titularidad AS TEXT) WHERE porcentaje_titularidad_decimal IS NULL",
-        "UPDATE cf_propietario_propiedad SET fecha_conocimiento=COALESCE(fecha_desde,CURRENT_TIMESTAMP) WHERE fecha_conocimiento IS NULL",
+        """UPDATE cf_propietario_propiedad SET fecha_conocimiento=COALESCE(
+            (SELECT i.fecha_importacion FROM cf_importaciones_netfincas i WHERE i.id_importacion=cf_propietario_propiedad.id_importacion_origen),
+            CURRENT_TIMESTAMP) WHERE fecha_conocimiento IS NULL""",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_cf_relacion_tenant_id ON cf_propietario_propiedad(id_comunidad,id_relacion)",
         """CREATE TABLE IF NOT EXISTS erp_propiedad_aliases (
             id_alias INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -8286,6 +8286,30 @@ function homePage() {
     .login details { background:#f5f4f0; box-shadow:none; }
     .login summary { cursor:pointer; }
 
+    .masterShell { display:grid; gap:12px; }
+    .masterToolbar { display:flex; gap:8px; align-items:end; flex-wrap:wrap; padding:12px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
+    .masterToolbar > label { min-width:220px; }
+    .masterTabs { display:flex; gap:6px; flex-wrap:wrap; }
+    .masterTabs button { background:#eceeec; color:#353937; border-color:#d4d7d4; }
+    .masterTabs button.active { background:var(--teal); color:#fff; border-color:var(--teal); }
+    .masterLayout { display:grid; grid-template-columns:minmax(260px,.75fr) minmax(0,1.6fr); gap:12px; align-items:start; }
+    .masterPane { padding:14px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
+    .masterList { display:grid; gap:6px; max-height:65vh; overflow:auto; }
+    .masterRow { width:100%; display:grid; gap:3px; padding:10px 11px; text-align:left; background:#f5f6f5; color:var(--ink); border-color:#d9dcda; }
+    .masterRow.selected { border-color:var(--teal); box-shadow:inset 4px 0 var(--teal); background:#edf6f3; }
+    .masterRow span { color:var(--muted); font-size:12px; }
+    .masterForm { display:grid; gap:10px; }
+    .masterFormGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+    .masterWide { grid-column:1 / -1; }
+    .masterDataTable { width:100%; border-collapse:collapse; font-size:13px; }
+    .masterDataTable th,.masterDataTable td { padding:8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    .masterDataTable th { color:var(--muted); background:#f1f2f1; }
+    .masterSection { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
+    .masterSection h3 { margin:0 0 8px; font-size:15px; }
+    .masterOwnershipRows { display:grid; gap:7px; }
+    .masterOwnershipRow { display:grid; grid-template-columns:minmax(0,1fr) 130px; gap:8px; }
+    .masterNotice { padding:10px; border-left:4px solid var(--gold); background:#faf7ef; }
+
     @media (max-width:1100px) {
       main { padding:15px; }
       .workbench { grid-template-columns:1fr; gap:13px; }
@@ -8298,6 +8322,7 @@ function homePage() {
       .workTodayGrid { grid-template-columns:1fr; }
       .aiQueryLayout { grid-template-columns:1fr; }
       .aiHistoryList { max-height:300px; }
+      .masterLayout { grid-template-columns:1fr; }
     }
     @media (max-width:700px) {
       html, body { max-width:100%; overflow-x:hidden; }
@@ -8413,6 +8438,13 @@ function homePage() {
       .voteActions { width:100%; }
       .voteActions button { flex:1 1 62px; }
       .adminMetrics, .communityChecks { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .masterLayout, .masterFormGrid { grid-template-columns:1fr; }
+      .masterToolbar { align-items:stretch; }
+      .masterToolbar > label { min-width:0; width:100%; }
+      .masterTabs { flex-wrap:nowrap; overflow-x:auto; padding-bottom:4px; }
+      .masterTabs button { flex:0 0 auto; }
+      .masterList { max-height:40vh; }
+      .masterDataTable { display:block; overflow-x:auto; }
       .adminLayout { gap:9px; }
       .adminList { max-height:360px; }
       .securityDashboard { gap:9px; }
@@ -8470,6 +8502,12 @@ function homePage() {
       .mobileDrawerDivider { height:1px; margin:7px 3px; background:rgba(255,255,255,.13); }
       .mobileDrawerFoot { padding:10px 12px; border-top:1px solid rgba(255,255,255,.13); display:grid; gap:7px; color:rgba(255,255,255,.55); font-size:11px; }
       .mobileDrawerRefresh { width:100%; min-height:44px; background:#2b2d2c; color:#fff; border-color:#4a4c4b; }
+      .masterToolbar { align-items:stretch; }
+      .masterToolbar > label { min-width:0; width:100%; }
+      .masterTabs { flex-wrap:nowrap; overflow-x:auto; }
+      .masterTabs button { flex:0 0 auto; }
+      .masterFormGrid,.masterOwnershipRow { grid-template-columns:1fr; }
+      .masterList { max-height:320px; }
     }
   </style>
 </head>
@@ -8542,6 +8580,7 @@ function homePage() {
               <div class="navGroupBody">
                 <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
                 <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
+                <button class="tab hidden" id="masterDataTab" data-view="master-data"><span>Datos maestros</span><span>ERP</span></button>
                 <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
                 <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
                 <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
@@ -8905,6 +8944,7 @@ function homePage() {
     let assemblyOwnerQuery = "";
     let selectedAssemblyPoint = 0;
     let adminData = { users: [], communities: [], roles: [], loaded: false };
+    let masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, proposal:null, error:"" };
     let selectedAdminUserId = 0;
     let selectedAdminCommunityId = 0;
     let lastTemporaryKey = null;
@@ -9132,6 +9172,7 @@ function homePage() {
       selectedAdminUserId = 0;
       selectedAdminCommunityId = 0;
       lastTemporaryKey = null;
+      masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, proposal:null, error:"" };
       pendingCommunityUser = null;
       communityScopeRequired = false;
       currentView = "home";
@@ -9892,8 +9933,8 @@ function homePage() {
     }
 
     function setActiveNavigation(view) {
-      ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
-      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
+      ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "masterDataTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
+      const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", "master-data":"masterDataTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
       const navGroup = document.querySelector(".navGroup");
       if (navGroup && target && navGroup.contains($(target))) navGroup.open = true;
@@ -11459,8 +11500,204 @@ function homePage() {
       catch(error){ $('securityConvertMessage').innerHTML = '<span class="dangerText">' + html(error.message) + '</span>'; }
     }
 
+    function masterCommunities() {
+      return ((state.usuario || {}).comunidades || []).filter(row => row.puede_ver !== 0);
+    }
+
+    async function erpQuery(name, filters = {}) {
+      const communityId = Number(masterData.communityId || masterCommunities()[0]?.id_comunidad || 0);
+      if (!communityId) throw new Error("Selecciona una comunidad.");
+      const params = new URLSearchParams({ query:name, id_comunidad:String(communityId), filters:JSON.stringify(filters) });
+      return api("/api/erp/query?" + params.toString());
+    }
+
+    async function erpCommand(name, payload, expectedVersion, evidence) {
+      const key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + "-" + Math.random());
+      return api("/api/erp/command", { method:"POST", body:JSON.stringify({
+        command:name, id_comunidad:Number(masterData.communityId), payload,
+        idempotency_key:key, expected_version:expectedVersion == null ? null : Number(expectedVersion),
+        reason:"Gestion desde Datos maestros", origin:"web", evidence:evidence || null
+      }) });
+    }
+
+    async function loadMasterData(options = {}) {
+      const communities = masterCommunities();
+      if (!masterData.communityId || !communities.some(row => Number(row.id_comunidad) === Number(masterData.communityId))) {
+        const preferred = communities.find(row => /macrocomunidad/i.test(safe(row.nombre))) || communities[0];
+        masterData.communityId = Number(preferred?.id_comunidad || 0);
+      }
+      masterData.loaded = false;
+      masterData.error = "";
+      if (currentView === "master-data") render();
+      try {
+        const section = masterData.section;
+        const common = erpQuery("erp1.community.get");
+        const properties = erpQuery("erp1.property.list", {
+          search:section === "properties" ? masterData.search : "", limit:1000
+        });
+        const owners = erpQuery("erp1.owner.list", {
+          search:section === "owners" ? masterData.search : "", limit:1000
+        });
+        const groups = section === "groups" || section === "properties"
+          ? erpQuery("erp1.group.list") : Promise.resolve({ items:masterData.groups || [] });
+        const [communityResult, propertyResult, ownerResult, groupResult] = await Promise.all([common,properties,owners,groups]);
+        masterData.community = communityResult.entity;
+        masterData.properties = propertyResult.items || [];
+        masterData.owners = ownerResult.items || [];
+        masterData.groups = groupResult.items || [];
+        masterData.propertyTotal = Number(propertyResult.total || masterData.properties.length);
+        masterData.ownerTotal = Number(ownerResult.total || masterData.owners.length);
+        masterData.loaded = true;
+        if (options.keepSelection && masterData.property?.id_propiedad) await selectMasterProperty(masterData.property.id_propiedad, false);
+        else if (options.keepOwner && masterData.owner?.id_propietario) await selectMasterOwner(masterData.owner.id_propietario, false);
+      } catch (error) {
+        masterData.loaded = true;
+        masterData.error = error.message;
+      }
+      if (currentView === "master-data") render();
+    }
+
+    async function selectMasterProperty(id, shouldRender = true) {
+      masterData.property = (await erpQuery("erp1.property.get", { id_propiedad:Number(id) })).entity;
+      masterData.owner = null;
+      masterData.proposal = null;
+      if (shouldRender) render();
+    }
+
+    async function selectMasterOwner(id, shouldRender = true) {
+      masterData.owner = (await erpQuery("erp1.owner.get", { id_propietario:Number(id) })).entity;
+      masterData.property = null;
+      if (shouldRender) render();
+    }
+
+    function masterOptions(items, idField, labelField, selected) {
+      return (items || []).map(row => '<option value="' + html(row[idField]) + '"' + (Number(row[idField]) === Number(selected) ? ' selected' : '') + '>' + html(row[labelField]) + '</option>').join("");
+    }
+
+    function masterHeaderHtml() {
+      const communityOptions = masterCommunities().map(row => '<option value="' + html(row.id_comunidad) + '"' + (Number(row.id_comunidad)===Number(masterData.communityId)?' selected':'') + '>' + html(row.nombre) + '</option>').join("");
+      const tabs = [["properties","Propiedades"],["owners","Propietarios"],["ownership","Titularidades"],["groups","Coeficientes y grupos"],["community","Comunidad y ejercicios"]];
+      return '<div class="masterToolbar"><label>Comunidad<select id="masterCommunity">' + communityOptions + '</select></label><div class="masterTabs">' + tabs.map(row => '<button type="button" data-master-section="' + row[0] + '" class="' + (masterData.section===row[0]?'active':'') + '">' + row[1] + '</button>').join("") + '</div></div>';
+    }
+
+    function masterPropertyForm(row = {}) {
+      const types = (masterData.community?.tipos_propiedad || []).map(type => '<option value="' + type.id_tipo_propiedad + '"' + (Number(type.id_tipo_propiedad)===Number(row.id_tipo_propiedad)?' selected':'') + '>' + html(type.nombre) + '</option>').join("");
+      return '<form id="masterPropertyForm" class="masterForm"><input type="hidden" name="id_propiedad" value="' + html(row.id_propiedad) + '"><input type="hidden" name="version" value="' + html(row.version) + '"><div class="masterFormGrid">' +
+        '<label>Codigo<input name="codigo_propiedad" required value="' + html(row.codigo_propiedad) + '"></label><label>Tipo<select name="tipo_id">' + types + '</select></label>' +
+        '<label>Bloque<input name="bloque" value="' + html(row.bloque) + '"></label><label>Portal<input name="portal" value="' + html(row.portal) + '"></label><label>Planta<input name="planta" value="' + html(row.planta) + '"></label><label>Puerta<input name="puerta" value="' + html(row.puerta) + '"></label>' +
+        '<label>Estado<select name="estado"><option value="activa">Activa</option><option value="preparacion">Preparacion</option><option value="inactiva">Inactiva</option><option value="baja">Baja</option></select></label><label>Calidad<select name="calidad_dato"><option value="observada">Observada</option><option value="pendiente_revision">Pendiente revision</option><option value="validada">Validada</option></select></label>' +
+        '<label class="masterWide">Descripcion / direccion<input name="descripcion_direccion" value="' + html(row.descripcion_direccion) + '"></label><label>Referencia registral<input name="referencia_registral" value="' + html(row.referencia_registral) + '"></label><label>Referencia catastral<input name="referencia_catastral" value="' + html(row.referencia_catastral) + '"></label></div><div class="toolbar"><button class="green">Guardar propiedad</button></div></form>';
+    }
+
+    function masterOwnershipSummary(snapshot) {
+      const rows = (snapshot?.items || []).map(row => '<tr><td>' + html(row.nombre) + '</td><td>' + html(row.porcentaje_decimal || 'Desconocido') + '</td><td>' + html(row.efectiva_desde || 'Inicio no acreditado') + '</td><td>' + html(row.calidad) + '</td></tr>').join("");
+      return '<div class="masterNotice"><strong>Cobertura: ' + html(snapshot?.cobertura || 'sin datos') + '</strong> · Porcentaje conocido: ' + html(snapshot?.porcentaje_conocido || '0') + ' %</div><table class="masterDataTable"><thead><tr><th>Titular</th><th>%</th><th>Desde</th><th>Calidad</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4">Sin titularidad conocida para la fecha.</td></tr>') + '</tbody></table>';
+    }
+
+    function masterPropertyDetailHtml() {
+      const row = masterData.property;
+      if (!row) return '<div class="masterPane"><h3>Ficha de propiedad</h3><p class="muted">Selecciona una propiedad o crea una nueva.</p><button id="masterNewProperty" class="green">Nueva propiedad</button></div>';
+      const aliases=(row.aliases||[]).map(item=>'<span class="pill">'+html(item.alias)+'</span>').join(' ') || '<span class="muted">Sin aliases.</span>';
+      const relations=(row.relaciones||[]).map(item=>'<li>'+html(item.tipo)+' → '+html(item.propiedad_destino)+'</li>').join('') || '<li>Sin relaciones.</li>';
+      const coefficients=(row.coeficientes||[]).map(item=>'<tr><td>'+html(item.grupo_nombre||'Sin grupo')+'</td><td>'+html(item.finalidad)+'</td><td>'+html(item.valor_decimal)+'</td><td>'+html(item.version_estado)+'</td></tr>').join('');
+      return '<div class="masterPane"><div class="contentHead"><div><h3>' + html(row.codigo_propiedad) + '</h3><p class="muted">ID estable ' + html(row.id_propiedad) + ' · version ' + html(row.version) + '</p></div><button id="masterNewProperty" class="ghost">Nueva</button></div>' + masterPropertyForm(row) +
+        '<div class="masterSection"><h3>Titularidad actual</h3>' + masterOwnershipSummary(row.titularidades) + '<button id="masterStartOwnership">Proponer cambio</button></div>' +
+        '<div class="masterSection"><h3>Aliases de busqueda</h3><div>' + aliases + '</div><form id="masterAliasForm" class="toolbar"><input name="alias" required placeholder="Nuevo alias"><button>Añadir alias</button></form></div>' +
+        '<div class="masterSection"><h3>Relaciones</h3><ul>' + relations + '</ul><form id="masterRelationForm" class="masterFormGrid"><label>ID propiedad relacionada<input name="id_propiedad_destino" type="number" required></label><label>Tipo<select name="tipo"><option value="anexo">Anexo</option><option value="segregacion">Segregacion</option><option value="agrupacion">Agrupacion</option><option value="otra">Otra</option></select></label><button>Guardar relacion</button></form></div>' +
+        '<div class="masterSection"><h3>Coeficientes</h3><table class="masterDataTable"><thead><tr><th>Grupo</th><th>Finalidad</th><th>Valor exacto</th><th>Estado</th></tr></thead><tbody>' + (coefficients||'<tr><td colspan="4">Sin coeficientes.</td></tr>') + '</tbody></table>' + masterCoefficientForm(row) + '</div>' +
+        (masterData.proposal ? masterProposalHtml() : '') + '</div>';
+    }
+
+    function masterCoefficientForm(row) {
+      const groups='<option value="">Sin grupo</option>'+masterOptions(masterData.groups,'id_grupo','nombre');
+      return '<form id="masterCoefficientForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Grupo<select name="id_grupo">'+groups+'</select></label><label>Finalidad<input name="finalidad" value="general"></label><label>Unidad<select name="unidad"><option value="porcentaje">Porcentaje</option><option value="peso">Peso</option><option value="tanto_por_uno">Tanto por uno</option><option value="otra">Otra</option></select></label><label>Valor exacto<input name="valor_decimal" required inputmode="decimal"></label><label>Vigente desde<input name="efectiva_desde" type="date"></label><label>Calidad<select name="calidad"><option value="observada">Observada</option><option value="pendiente_documentacion">Pendiente documentacion</option><option value="validada">Validada</option></select></label></div><button>Guardar nueva version</button></form>';
+    }
+
+    function masterOwnershipFormHtml() {
+      const options='<option value="">Selecciona titular</option>'+masterOptions(masterData.owners,'id_propietario','nombre');
+      return '<div class="masterPane"><h3>Proponer composicion de titularidad</h3><p class="muted">La propuesta no cambia datos hasta revisar y confirmar.</p><form id="masterOwnershipForm" class="masterForm"><div class="masterFormGrid"><label>Propiedad<select name="id_propiedad">'+masterOptions(masterData.properties,'id_propiedad','codigo_propiedad',masterData.property?.id_propiedad)+'</select></label><label>Fecha efectiva<input name="efectiva_desde" type="date"></label><label>Calidad<select name="calidad"><option value="pendiente_documentacion">Pendiente documentacion</option><option value="observada">Observada</option><option value="validada">Validada con evidencia</option></select></label><label><input name="composicion_completa" type="checkbox" checked> Composicion completa (100 %)</label><label>Evidencia, tipo<input name="evidencia_tipo" placeholder="documento"></label><label>Evidencia, ID<input name="evidencia_id" placeholder="Referencia"></label></div><div class="masterOwnershipRows">' + [0,1,2,3].map(()=>'<div class="masterOwnershipRow"><select class="ownershipOwner">'+options+'</select><input class="ownershipPct" inputmode="decimal" placeholder="Porcentaje"></div>').join('') + '</div><label>Motivo<textarea name="motivo"></textarea></label><button class="green">Preparar propuesta</button></form>' + (masterData.proposal?masterProposalHtml():'') + '</div>';
+    }
+
+    function masterProposalHtml() {
+      const proposal=masterData.proposal;
+      const lines=(proposal.lineas||[]).map(row=>'<li>'+html(row.nombre)+' · '+html(row.porcentaje_decimal||'porcentaje desconocido')+' %</li>').join('');
+      return '<div class="masterSection masterNotice"><h3>Vista previa pendiente</h3><p>Fecha efectiva: '+html(proposal.efectiva_desde||'no acreditada')+' · calidad: '+html(proposal.calidad)+'</p><ul>'+lines+'</ul><p><strong>La deuda y los registros historicos no se moveran.</strong></p><button id="masterConfirmOwnership" class="green">Confirmar composicion</button></div>';
+    }
+
+    function masterPropertiesHtml() {
+      const list=(masterData.properties||[]).map(row=>'<button class="masterRow'+(Number(masterData.property?.id_propiedad)===Number(row.id_propiedad)?' selected':'')+'" data-master-property="'+row.id_propiedad+'"><strong>'+html(row.codigo_propiedad)+'</strong><span>'+html(row.tipo_nombre||row.tipo_propiedad||'Sin tipo')+' · '+html(row.titulares_actuales||'Sin titular actual')+'</span></button>').join('');
+      return '<div class="masterLayout"><div class="masterPane"><form id="masterSearchForm" class="toolbar"><input name="search" value="'+html(masterData.search)+'" placeholder="Codigo, alias..."><button>Buscar</button></form><div class="masterList">'+(list||'<div class="empty">Sin propiedades.</div>')+'</div></div>'+masterPropertyDetailHtml()+'</div>';
+    }
+
+    function masterOwnerForm(row={}) {
+      return '<form id="masterOwnerForm" class="masterForm"><input type="hidden" name="id_propietario" value="'+html(row.id_propietario)+'"><input type="hidden" name="version" value="'+html(row.version)+'"><div class="masterFormGrid"><label class="masterWide">Nombre / razon social<input name="nombre" required value="'+html(row.nombre)+'"></label><label>Tipo<select name="tipo_persona"><option value="desconocida">Sin verificar</option><option value="fisica">Persona fisica</option><option value="juridica">Persona juridica</option></select></label><label>NIF / identificacion<input name="nif" value="'+html(row.nif)+'"></label><label>Idioma<input name="idioma_preferido" value="'+html(row.idioma_preferido)+'"></label><label>Estado<select name="estado"><option value="activo">Activo</option><option value="preparacion">Preparacion</option><option value="inactivo">Inactivo</option><option value="baja">Baja</option></select></label><label>Calidad<select name="calidad_identidad"><option value="observada">Observada</option><option value="pendiente_desglosar">Pendiente desglosar</option><option value="pendiente_revision">Pendiente revision</option><option value="validada">Validada</option></select></label><label class="masterWide">Direccion<input name="direccion" value="'+html(row.direccion)+'"></label></div><button class="green">Guardar propietario</button></form>';
+    }
+
+    function masterOwnerDetailHtml() {
+      const row=masterData.owner;if(!row)return '<div class="masterPane"><h3>Ficha de propietario</h3><p class="muted">Selecciona un propietario o crea uno nuevo.</p><button id="masterNewOwner" class="green">Nuevo propietario</button></div>';
+      const contacts=(row.contactos||[]).map(c=>'<tr><td>'+html(c.tipo)+'</td><td>'+html(c.valor)+'</td><td>'+(c.principal?'Principal':'')+'</td><td>'+html(c.verificado?'Verificado':'No verificado')+'</td></tr>').join('');
+      const properties=(row.propiedades||[]).map(p=>'<tr><td>'+html(p.codigo_propiedad)+'</td><td>'+html(p.porcentaje_titularidad_decimal||p.porcentaje_titularidad)+'</td><td>'+html(p.fecha_desde||'No acreditada')+'</td><td>'+html(p.fecha_hasta||'Actual')+'</td></tr>').join('');
+      return '<div class="masterPane"><div class="contentHead"><div><h3>'+html(row.nombre)+'</h3><p class="muted">ID estable '+html(row.id_propietario)+' · version '+html(row.version)+'</p></div><button id="masterNewOwner" class="ghost">Nuevo</button></div>'+masterOwnerForm(row)+'<div class="masterSection"><h3>Contactos</h3><table class="masterDataTable"><tbody>'+(contacts||'<tr><td>Sin contactos.</td></tr>')+'</tbody></table><form id="masterContactForm" class="masterFormGrid"><label>Tipo<select name="tipo"><option value="email">Email</option><option value="telefono">Telefono</option><option value="otro">Otro</option></select></label><label>Valor<input name="valor" required></label><label><input type="checkbox" name="principal"> Principal para este tipo</label><label><input type="checkbox" name="verificado"> Verificado</label><button>Añadir contacto</button></form></div><div class="masterSection"><h3>Propiedades actuales e historicas</h3><table class="masterDataTable"><thead><tr><th>Propiedad</th><th>%</th><th>Desde</th><th>Hasta</th></tr></thead><tbody>'+(properties||'<tr><td colspan="4">Sin relaciones.</td></tr>')+'</tbody></table></div></div>';
+    }
+
+    function masterOwnersHtml() {
+      const list=(masterData.owners||[]).map(row=>'<button class="masterRow'+(Number(masterData.owner?.id_propietario)===Number(row.id_propietario)?' selected':'')+'" data-master-owner="'+row.id_propietario+'"><strong>'+html(row.nombre)+'</strong><span>'+html(row.nif||'Sin NIF')+' · '+html(row.propiedades_actuales||'Sin propiedad actual')+'</span></button>').join('');
+      return '<div class="masterLayout"><div class="masterPane"><form id="masterSearchForm" class="toolbar"><input name="search" value="'+html(masterData.search)+'" placeholder="Nombre, NIF, email o telefono"><button>Buscar</button></form><div class="masterList">'+(list||'<div class="empty">Sin propietarios.</div>')+'</div></div>'+masterOwnerDetailHtml()+'</div>';
+    }
+
+    function masterCommunityHtml() {
+      const c=masterData.community||{};const exercises=(c.ejercicios||[]).map(e=>'<tr><td>'+html(e.codigo)+'</td><td>'+html(e.fecha_inicio)+' a '+html(e.fecha_fin)+'</td><td>'+html(e.estado)+'</td></tr>').join('');const aggregations=(c.agrupaciones||[]).map(a=>'<tr><td>'+html(a.codigo)+'</td><td>'+html(a.nombre)+'</td><td>'+html(a.tipo)+'</td></tr>').join('');
+      return '<div class="masterLayout"><div class="masterPane"><h3>Datos de comunidad</h3><form id="masterCommunityForm" class="masterForm"><input type="hidden" name="version" value="'+html(c.version)+'"><label>Codigo estable<input name="codigo" value="'+html(c.codigo)+'"></label><label>Denominacion<input name="denominacion" value="'+html(c.denominacion)+'"></label><label>NIF<input name="nif" value="'+html(c.nif)+'"></label><label>Domicilio<input name="domicilio" value="'+html(c.domicilio)+'"></label><label>Contacto administrativo<input name="contacto_administrativo" value="'+html(c.contacto_administrativo)+'"></label><div class="masterFormGrid"><label>Zona horaria<input name="zona_horaria" value="'+html(c.zona_horaria)+'"></label><label>Moneda<input name="moneda" value="'+html(c.moneda)+'"></label></div>'+(state.usuario?.rol==='Superusuario'?'<button class="green">Guardar comunidad</button>':'<p class="muted">Solo el Superusuario puede modificar estos datos.</p>')+'</form></div><div class="masterPane"><h3>Ejercicios</h3><table class="masterDataTable"><tbody>'+(exercises||'<tr><td>Sin ejercicios.</td></tr>')+'</tbody></table><form id="masterExerciseForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Codigo<input name="codigo" required placeholder="2026"></label><label>Estado<select name="estado"><option value="preparacion">Preparacion</option><option value="abierto">Abierto</option></select></label><label>Inicio<input name="fecha_inicio" type="date" required></label><label>Fin<input name="fecha_fin" type="date" required></label></div><button>Crear ejercicio</button></form><div class="masterSection"><h3>Agrupaciones</h3><table class="masterDataTable"><tbody>'+(aggregations||'<tr><td>Sin agrupaciones.</td></tr>')+'</tbody></table><form id="masterAggregationForm" class="masterFormGrid"><label>Codigo<input name="codigo" required></label><label>Nombre<input name="nombre" required></label><label>Tipo<input name="tipo" placeholder="bloque, fase, zona..."></label><label>ID padre opcional<input name="id_padre" type="number"></label><button>Crear agrupacion</button></form></div></div></div>';
+    }
+
+    function masterGroupsHtml() {
+      const list=(masterData.groups||[]).map(g=>'<button class="masterRow" data-master-group="'+g.id_grupo+'"><strong>'+html(g.nombre)+'</strong><span>'+html(g.codigo)+' · '+html(g.miembros)+' miembros · '+html(g.estado)+'</span></button>').join('');
+      return '<div class="masterLayout"><div class="masterPane"><h3>Grupos configurados</h3><div class="masterList">'+(list||'<div class="empty">Sin grupos.</div>')+'</div><form id="masterGroupForm" class="masterForm masterSection"><label>Codigo<input name="codigo" required></label><label>Nombre<input name="nombre" required></label><label>Finalidad<input name="finalidad"></label><label>Base<select name="base"><option value="sin_coeficiente">Sin coeficiente</option><option value="porcentaje">Porcentaje</option><option value="peso">Peso</option><option value="otra">Otra</option></select></label><button class="green">Crear grupo</button></form></div><div class="masterPane">'+(masterData.group?masterGroupDetailHtml():'<h3>Miembros y vigencia</h3><p class="muted">Selecciona un grupo para consultar o modificar sus miembros.</p>')+'</div></div>';
+    }
+
+    function masterGroupDetailHtml(){const g=masterData.group;const members=(g.miembros||[]).map(m=>'<tr><td>'+html(m.codigo_propiedad)+'</td><td>'+html(m.participa?'Participa':'No participa')+'</td><td>'+html(m.excluida?'Excluida':'')+'</td><td>'+html(m.efectiva_desde||'Sin fecha')+'</td></tr>').join('');return '<h3>'+html(g.nombre)+'</h3><p class="muted">'+html(g.finalidad||'Sin finalidad indicada')+'</p><table class="masterDataTable"><tbody>'+(members||'<tr><td>Sin miembros.</td></tr>')+'</tbody></table><form id="masterMembershipForm" class="masterForm masterSection"><label>Propiedad<select name="id_propiedad">'+masterOptions(masterData.properties,'id_propiedad','codigo_propiedad')+'</select></label><div class="masterFormGrid"><label>Desde<input name="efectiva_desde" type="date"></label><label><input name="excluida" type="checkbox"> Excluir del grupo</label></div><label>Motivo<input name="motivo"></label><button>Guardar nueva vigencia</button></form>';}
+
+    function masterDataPanelHtml() {
+      if(!masterData.loaded)return '<div class="empty">Cargando datos maestros...</div>';
+      if(masterData.error)return '<div class="empty dangerText">'+html(masterData.error)+'</div>';
+      let content=masterData.section==='properties'?masterPropertiesHtml():masterData.section==='owners'?masterOwnersHtml():masterData.section==='ownership'?masterOwnershipFormHtml():masterData.section==='groups'?masterGroupsHtml():masterCommunityHtml();
+      return '<div class="masterShell">'+masterHeaderHtml()+content+'</div>';
+    }
+
+    function formObject(form) { const result={}; new FormData(form).forEach((value,key)=>{result[key]=value;}); return result; }
+    function compactPayload(payload){Object.keys(payload).forEach(key=>{if(payload[key]===""||payload[key]==null)delete payload[key];});return payload;}
+
+    function bindMasterDataPanel() {
+      const root=$('cards');
+      root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.property=null;masterData.owner=null;masterData.group=null;loadMasterData();});
+      root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;loadMasterData();}));
+      root.querySelectorAll('[data-master-property]').forEach(button=>button.addEventListener('click',()=>selectMasterProperty(button.dataset.masterProperty).catch(error=>alert(error.message))));
+      root.querySelectorAll('[data-master-owner]').forEach(button=>button.addEventListener('click',()=>selectMasterOwner(button.dataset.masterOwner).catch(error=>alert(error.message))));
+      root.querySelectorAll('[data-master-group]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.group=(await erpQuery('erp1.group.get',{id_grupo:Number(button.dataset.masterGroup)})).entity;render();}catch(error){alert(error.message);}}));
+      root.querySelector('#masterSearchForm')?.addEventListener('submit',event=>{event.preventDefault();masterData.search=new FormData(event.target).get('search')||'';loadMasterData();});
+      root.querySelectorAll('#masterNewProperty').forEach(button=>button.addEventListener('click',()=>{masterData.property={};render();}));
+      root.querySelectorAll('#masterNewOwner').forEach(button=>button.addEventListener('click',()=>{masterData.owner={};render();}));
+      const bindSubmit=(selector,handler)=>root.querySelector(selector)?.addEventListener('submit',async event=>{event.preventDefault();const button=event.target.querySelector('button');if(button)button.disabled=true;try{await handler(event.target);}catch(error){alert(error.message);}finally{if(button)button.disabled=false;}});
+      bindSubmit('#masterPropertyForm',async form=>{const data=formObject(form);const id=Number(data.id_propiedad||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_propiedad;const result=await erpCommand('erp1.property.save',data,id?version:null);await loadMasterData();await selectMasterProperty(result.entity.id_propiedad);});
+      bindSubmit('#masterOwnerForm',async form=>{const data=formObject(form);const id=Number(data.id_propietario||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_propietario;const result=await erpCommand('erp1.owner.save',data,id?version:null);await loadMasterData();await selectMasterOwner(result.entity.id_propietario);});
+      bindSubmit('#masterContactForm',async form=>{const data=compactPayload(formObject(form));data.id_propietario=masterData.owner.id_propietario;data.principal=form.principal.checked;data.verificado=form.verificado.checked;await erpCommand('erp1.owner.contact.save',data);await selectMasterOwner(masterData.owner.id_propietario);});
+      bindSubmit('#masterAliasForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;await erpCommand('erp1.property.alias.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
+      bindSubmit('#masterRelationForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad_origen=masterData.property.id_propiedad;data.id_propiedad_destino=Number(data.id_propiedad_destino);await erpCommand('erp1.property.relation.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
+      bindSubmit('#masterCoefficientForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;if(data.id_grupo)data.id_grupo=Number(data.id_grupo);await erpCommand('erp1.coefficient.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
+      bindSubmit('#masterExerciseForm',async form=>{await erpCommand('erp1.exercise.save',compactPayload(formObject(form)));await loadMasterData();});
+      bindSubmit('#masterAggregationForm',async form=>{const data=compactPayload(formObject(form));if(data.id_padre)data.id_padre=Number(data.id_padre);await erpCommand('erp1.aggregation.save',data);await loadMasterData();});
+      bindSubmit('#masterCommunityForm',async form=>{if(state.usuario?.rol!=='Superusuario')return;const data=formObject(form);const version=Number(data.version);delete data.version;await erpCommand('erp1.community.update',data,version);await loadMasterData();});
+      bindSubmit('#masterGroupForm',async form=>{await erpCommand('erp1.group.save',compactPayload(formObject(form)));await loadMasterData();});
+      bindSubmit('#masterMembershipForm',async form=>{const data=compactPayload(formObject(form));data.id_grupo=masterData.group.id_grupo;data.id_propiedad=Number(data.id_propiedad);data.excluida=form.excluida.checked;data.participa=!data.excluida;await erpCommand('erp1.group.membership.save',data);masterData.group=(await erpQuery('erp1.group.get',{id_grupo:masterData.group.id_grupo})).entity;render();});
+      root.querySelector('#masterStartOwnership')?.addEventListener('click',()=>{masterData.section='ownership';masterData.search='';loadMasterData({keepSelection:true});});
+      bindSubmit('#masterOwnershipForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=Number(data.id_propiedad);data.composicion_completa=form.composicion_completa.checked;data.lineas=[...form.querySelectorAll('.masterOwnershipRow')].map(row=>({id_propietario:Number(row.querySelector('.ownershipOwner').value||0),porcentaje_decimal:row.querySelector('.ownershipPct').value})).filter(row=>row.id_propietario);const evidence=data.evidencia_tipo&&data.evidencia_id?{type:data.evidencia_tipo,id:data.evidencia_id}:null;delete data.evidencia_tipo;delete data.evidencia_id;const result=await erpCommand('erp1.ownership.propose',data,null,evidence);masterData.proposal=result.entity;render();});
+      root.querySelector('#masterConfirmOwnership')?.addEventListener('click',async()=>{if(!confirm('Confirmar esta composicion? La deuda y los documentos historicos no se modificaran.'))return;try{await erpCommand('erp1.ownership.confirm',{id_propuesta:masterData.proposal.id_propuesta},masterData.proposal.version);const pid=masterData.proposal.id_propiedad;masterData.proposal=null;await selectMasterProperty(pid,false);masterData.section='properties';await loadMasterData({keepSelection:true});}catch(error){alert(error.message);}});
+      const setSelect=(form,name,value)=>{const field=form?.elements?.[name];if(field&&value)field.value=value;};
+      setSelect(root.querySelector('#masterPropertyForm'),'estado',masterData.property?.estado);setSelect(root.querySelector('#masterPropertyForm'),'calidad_dato',masterData.property?.calidad_dato);setSelect(root.querySelector('#masterOwnerForm'),'tipo_persona',masterData.owner?.tipo_persona);setSelect(root.querySelector('#masterOwnerForm'),'estado',masterData.owner?.estado);setSelect(root.querySelector('#masterOwnerForm'),'calidad_identidad',masterData.owner?.calidad_identidad);
+    }
+
     function render() {
-      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin"].includes(currentView);
+      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin", "master-data"].includes(currentView);
       $("copilotFab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol));
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
@@ -11578,6 +11815,15 @@ function homePage() {
         $("viewActions").classList.add("hidden");
         $("cards").innerHTML = adminPanelHtml();
         bindAdminPanel();
+        return;
+      }
+      if (currentView === "master-data") {
+        $("contentTitle").textContent = "Datos maestros";
+        $("contentSubtitle").textContent = "Comunidades, propiedades, propietarios, titularidades, coeficientes y ejercicios con trazabilidad.";
+        $("visibleCount").textContent = masterData.loaded ? (masterData.propertyTotal + " propiedades · " + masterData.ownerTotal + " propietarios") : "Cargando...";
+        $("viewActions").classList.add("hidden");
+        $("cards").innerHTML = masterDataPanelHtml();
+        bindMasterDataPanel();
         return;
       }
       const search = safe($("search").value).toLowerCase();
@@ -13321,7 +13567,7 @@ function homePage() {
         const scopeLabel = user.alcance_comunidades !== "seleccion" ? "Todas mis comunidades" : (activeCommunities[0]?.nombre || "Sin comunidad");
         $("sessionStatus").innerHTML = html(user.nombre || "") + " - " + html(user.rol || "") + " - " + html(scopeLabel);
         $("changeCommunityTop").classList.toggle("hidden", assignedCommunities.length <= 1);
-        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai"].includes(currentView))) currentView = "work";
+        if (user.rol === "Presidente" && (firstSessionLoad || ["tasks", "assemblies", "review", "imports", "ai", "master-data"].includes(currentView))) currentView = "work";
         if (currentView === "admin" && user.rol !== "Superusuario") currentView = user.rol === "Presidente" ? "work" : "home";
         $("taskTab").classList.toggle("hidden", user.rol === "Presidente");
         $("documentsTab").classList.toggle("hidden", user.rol === "Presidente");
@@ -13331,6 +13577,7 @@ function homePage() {
         $("workTab").classList.toggle("hidden", user.rol !== "Presidente");
         $("reviewTab").classList.add("hidden");
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
+        $("masterDataTab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes(user.rol));
         $("reportsTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
         $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
@@ -13367,6 +13614,7 @@ function homePage() {
 
     function switchView(view) {
       if (view === "reports" && (state.usuario || {}).rol === "Presidente") view = "work";
+      if (view === "master-data" && !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol)) view = "home";
       currentView = view;
       closeMobileDrawer();
       $("listFilters").classList.remove("mobile-open");
@@ -13382,6 +13630,7 @@ function homePage() {
       if (view === "reports" && !reportsCenter.loaded) loadReportsCenter();
       if (view === "assemblies" && !assembliesData.loaded) loadAssemblies();
       if (view === "admin" && !adminData.loaded) loadAdmin();
+      if (view === "master-data" && !masterData.loaded) loadMasterData();
       if (view === "security" && (securityData.access || {}).can_manage && !securityData.overview) loadSecurityData();
     }
 
@@ -13395,6 +13644,7 @@ function homePage() {
     $("reviewTab").addEventListener("click", () => switchView("review"));
     $("globalSearchTab").addEventListener("click", () => switchView("global-search"));
     $("documentsTab").addEventListener("click", () => switchView("documents"));
+    $("masterDataTab").addEventListener("click", () => switchView("master-data"));
     $("reportsTab").addEventListener("click", () => switchView("reports"));
     $("importTab").addEventListener("click", () => switchView("imports"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));

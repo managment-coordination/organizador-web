@@ -99,6 +99,17 @@ try:
     owner_a = new_owner("Titular A ERP1", "A")
     owner_b = new_owner("Titular B ERP1", "B")
     owner_c = new_owner("Titular C ERP1", "C")
+    contact = command(session, "erp1.owner.contact.save", community, {
+        "id_propietario": owner_a["id_propietario"], "tipo": "email",
+        "valor": "titular.a@example.invalid", "principal": True,
+        "verificado": True, "uso_preferido": "notificaciones",
+    })["entity"]
+    assert contact["valor"] == "titular.a@example.invalid"
+    assert contact["valor_normalizado"] == "titular a example invalid"
+    assert query(session, "erp1.owner.get", community, {
+        "id_propietario": owner_a["id_propietario"],
+    })["entity"]["contactos"][0]["principal"] == 1
+    checks.append("contactos tipados, verificables y auditados operativos")
     prop_p = new_property("ERP1-P")
     prop_q = new_property("ERP1-Q")
 
@@ -191,7 +202,12 @@ try:
             raise AssertionError("Se permitio una lectura de otra comunidad")
         except PermissionError:
             pass
-        checks.append("mismo codigo aislado por comunidad y permiso transversal denegado")
+        try:
+            command(denied,"erp1.property.save",second,{"codigo_propiedad":"ERP1-DENIED"})
+            raise AssertionError("Se permitio una escritura en otra comunidad")
+        except PermissionError:
+            pass
+        checks.append("mismo codigo aislado por comunidad y lectura/escritura transversal denegadas")
 
     command(session,"erp1.property.relation.save",community,{"id_propiedad_origen":prop_p["id_propiedad"],"id_propiedad_destino":prop_q["id_propiedad"],"tipo":"anexo","estado":"activa"})
     p_detail=query(session,"erp1.property.get",community,{"id_propiedad":prop_p["id_propiedad"]})["entity"]
@@ -211,6 +227,10 @@ try:
     checks.append("confirmacion concurrente idempotente y version obsoleta bloqueada")
 
     conn=sqlite3.connect(database)
+    audit_count=conn.execute("SELECT COUNT(*) FROM erp_audit_events WHERE metadata_json LIKE '%erp_master_data_v1%'").fetchone()[0]
+    outbox_count=conn.execute("SELECT COUNT(*) FROM erp_outbox WHERE aggregate_type IN ('propietario','propiedad','titularidad_propuesta','titularidad')").fetchone()[0]
+    assert audit_count > 0 and outbox_count > 0
+    checks.append("auditoria y outbox confirmados en la misma transaccion de dominio")
     assert rows_hash(conn,"asamblea_censo")==assembly_hash
     assert rows_hash(conn,"cf_recibos")==debt_hash
     assert conn.execute("PRAGMA integrity_check").fetchone()[0]=='ok'

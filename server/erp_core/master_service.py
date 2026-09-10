@@ -207,7 +207,7 @@ class MasterDataService:
         def op(conn, q):
             only(q.filters, {"search","estado","tipo","limit","offset","fecha"})
             search = normalized(q.filters.get("search"))
-            limit = min(integer(q.filters.get("limit",100),"limit",minimum=1),500)
+            limit = min(integer(q.filters.get("limit",100),"limit",minimum=1),1000)
             offset = integer(q.filters.get("offset",0),"offset",minimum=0)
             clauses=["p.id_comunidad=?"]; values=[q.community_id]
             if q.filters.get("estado"): clauses.append("p.estado=?"); values.append(str(q.filters["estado"]))
@@ -276,7 +276,7 @@ class MasterDataService:
     def owner_list(self, session, query):
         def op(conn,q):
             only(q.filters,{"search","estado","limit","offset","fecha"})
-            search=normalized(q.filters.get("search")); limit=min(integer(q.filters.get("limit",100),"limit",minimum=1),500); offset=integer(q.filters.get("offset",0),"offset",minimum=0)
+            search=normalized(q.filters.get("search")); limit=min(integer(q.filters.get("limit",100),"limit",minimum=1),1000); offset=integer(q.filters.get("offset",0),"offset",minimum=0)
             clauses=["o.id_comunidad=?"]; values=[q.community_id]
             if q.filters.get("estado"):clauses.append("o.estado=?");values.append(str(q.filters["estado"]))
             if search:
