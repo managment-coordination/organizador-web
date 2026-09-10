@@ -197,6 +197,29 @@ assert c.execute("SELECT count(*) FROM auditoria WHERE accion='Clasificar docume
   results.push('Assembly creation, editing, agenda and community/write restrictions');
   const ai=(await request('/api/ai/center',worker.cookie,{text:'que tareas tengo pendientes',mode:'consulta'})).value;
   assert.ok(ai.ok !== false,JSON.stringify(ai));
+  assert.equal(ai.intent,'consulta');
+  pythonRun(`import sqlite3,sys,json
+c=sqlite3.connect(sys.argv[1])
+with c:
+    c.execute('INSERT INTO cf_propietarios(nombre,activo,id_comunidad) VALUES(?,1,?)',('MARCHITO PRUEBA',int(sys.argv[2])))
+    c.execute('INSERT INTO ia_contexto_conversacion(id_usuario,usuario,rol,texto_usuario,texto_contextual,intent,fecha_creacion,comunidades_json) VALUES(?,?,?,?,?,?,?,?)',
+        (int(sys.argv[3]),sys.argv[4],'Usuario','Speaker 1: Reunion de proyectos. '*500,'Reunion extensa anterior. '*500,'lote','2099-01-01',json.dumps([int(sys.argv[2]),int(sys.argv[5])])))
+`,[database,String(communityA),String(worker.id),worker.name,String(communityB)]);
+  for (const url of ['/api/ai/center','/api/agent/message']) {
+    const ownerReply=(await request(url,worker.cookie,{text:'quien es el propietario marchito',context:{screen_context:'Reunion larga, proyectos y presupuestos. '.repeat(500)},attachments:[{name:'anterior.txt',text:'Speaker 1: Reunion anterior sobre proyectos.\n'.repeat(500)}]})).value;
+    assert.equal(ownerReply.intent,'consulta',JSON.stringify(ownerReply));
+    assert.equal(ownerReply.conversation_context.used,false);
+    assert.equal(ownerReply.result.query_domain,'propietario_identidad');
+    assert.match(ownerReply.result.answer,/MARCHITO PRUEBA/);
+    assert.equal(ownerReply.requires_confirmation,false);
+    assert.ok(!ownerReply.result.meeting_id);
+  }
+  const hiddenOwner=(await request('/api/ai/center',other.cookie,{text:'quien es el propietario marchito'})).value;
+  assert.equal(hiddenOwner.intent,'consulta');
+  assert.ok(!JSON.stringify(hiddenOwner).includes('MARCHITO PRUEBA'));
+  const absent=(await request('/api/ai/center',worker.cookie,{text:'quien es el propietario ZZZNOEXISTE'})).value;
+  assert.equal(absent.intent,'consulta');
+  assert.match(absent.result.answer,/No he encontrado/);
   for(const url of ['/api/agent/context','/api/ai/history','/api/ai/rules']) await request(url,worker.cookie);
   await request('/api/ai/rules/action',worker.cookie,{action:'learn_redaction',data:{source_text:'Private community A preference',original_payload:{comentario:'old'},final_payload:{comentario:'Private community A preference'}}});
   const ownMemory=(await request('/api/ai/rules',worker.cookie)).value;

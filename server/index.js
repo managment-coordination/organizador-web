@@ -12,6 +12,7 @@ import { analyzeSecurityText, extractSecurityDocument } from "./security-parser.
 import { pythonScript } from "./python-template.js";
 import { analyzeTargetedFollowup } from "./ai-followup.js";
 import { analyzeMeeting, meetingChunks } from './ai-meetings.js';
+import { isExplicitReadQuery, currentInstruction, readNeedsPreviousContext, readNeedsSupportingData } from './ai-input-routing.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -4301,6 +4302,10 @@ def handle_accounting_query():
 
 def handle_property_query():
     prop_query = extract_property_query(question)
+    if not prop_query:
+        named = re.search(r"(?:QUIEN(?:ES)?\\s+(?:ES|SON)|BUSCA|BUSCAR|CONSULTA|DATOS\\s+DE)\\s+(?:(?:EL|LA|LOS|LAS)\\s+)?(?:PROPIETARI[OA]S?|TITULAR)\\s+(.+)$", norm(question))
+        if named:
+            return handle_named_owner_query(named.group(1))
     props = find_properties(prop_query or question)
     if len(props) == 1:
         prop = props[0]
@@ -4319,6 +4324,22 @@ def handle_property_query():
         answer = "He encontrado varias propiedades posibles. Necesito que concretes cual es:\\n" + "\\n".join([f"- {p['codigo_propiedad']} ({p['zona']}, coef. {p['coeficiente']})" for p in props[:10]])
         return response(answer, 0.55, candidates=[{"type":"property","id":p["id_propiedad"],"title":p["codigo_propiedad"],"score":1} for p in props[:10]], questions=["Propiedad exacta"], sources=source_refs("properties"), data_status="incompleto", query_domain="propiedad")
     return response("No he encontrado esa propiedad. Prueba con el codigo exacto de Netfincas, por ejemplo CB 2 -1 DCH.", 0.45, questions=["Codigo de propiedad"], sources=source_refs("properties"), data_status="incompleto", query_domain="propiedad")
+
+def handle_named_owner_query(name):
+    matches = find_owners(name)
+    exact = [o for o in matches if norm(o['nombre']) == norm(name)]
+    if exact:
+        matches = exact
+    if not matches:
+        return response('No he encontrado un propietario con ese nombre en las comunidades visibles. Indica el apellido completo o una propiedad para localizarlo.',0.4,questions=['Nombre completo o propiedad'],sources=source_refs('owners'),data_status='incompleto',query_domain='propietario_identidad')
+    if len(matches) > 1:
+        return response('He encontrado varios propietarios que coinciden. Selecciona uno para consultar su ficha.',0.55,candidates=[{'type':'owner','id':o['id_propietario'],'title':o['nombre'],'score':1} for o in matches],questions=['Propietario exacto'],sources=source_refs('owners'),data_status='incompleto',query_domain='propietario_identidad')
+    owner = matches[0]
+    properties = properties_for_owner(owner['id_propietario'])
+    answer = ('Propietario encontrado: ' if exact else 'Coincidencia por nombre: ') + owner['nombre'] + '.'
+    codes = [str(p.get('codigo_propiedad') or '') for p in properties]
+    answer += (' Propiedades vinculadas: ' + ', '.join(codes) + '.') if codes else ' No constan propiedades activas vinculadas.'
+    return response(answer,0.9 if exact else 0.7,facts={'id_propietario':owner['id_propietario'],'nombre':owner['nombre']},sources=source_refs('owners','properties','owner_properties'),data_status='confirmado' if exact else 'inferido',query_domain='propietario_identidad')
 
 def handle_global_debt_year(year):
     total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
@@ -4560,7 +4581,7 @@ try:
     explicit_debt_verb = bool(re.match(r"^(?:CUANTO|CUANDO|QUE CANTIDAD|QUE IMPORTE|IMPORTE|SALDO)?\\s*(?:DEBE|ADEUDA)\\s+.+$", q_norm))
     is_list_request = any(token in q_norm for token in ["LISTA", "LISTADO", "RELACION", "DETALLE", "DESGLOSE"])
     is_debt_question = any(token in q_norm for token in ["DEUDA", "DEUDOR", "MOROS", "RECIBO PENDIENTE", "RECIBOS PENDIENTES", "SALDO PENDIENTE", "IMPORTE PENDIENTE"]) or explicit_debt_verb or (is_list_request and "DEBEN" in q_norm)
-    is_owner_question = "PROPIETARIO" in q_norm and any(token in q_norm for token in ["QUIEN", "CUAL", "DE "])
+    is_owner_question = any(token in q_norm for token in ['PROPIETARIO','PROPIETARIA','TITULAR']) and any(token in q_norm for token in ['QUIEN','CUAL','DE ','BUSCA','CONSULTA','DATOS'])
     is_work_question = any(token in q_norm for token in ["TAREA", "PROYECTO", "PENDIENTE", "RESPONSABLE", "PROXIMO PASO"]) and any(token in q_norm for token in ["COMO", "ESTADO", "QUIEN", "CUAL", "LISTA", "BUSCA"])
     is_assembly_question = any(token in q_norm for token in ["ASAMBLEA", "JUNTA", "QUORUM", "VOTACION", "VOTOS", "ACTA"]) or bool(re.search(r"\\bPUNTO\\s+\\d+\\b", q_norm))
     is_security_question = any(token in q_norm for token in ["SEGURIDAD", "VIGILANCIA", "INCIDENCIA", "INCIDENCIAS", "PARTE", "PARTES"]) and not is_work_question
@@ -5253,6 +5274,7 @@ async function analyzeWithAi(session, text, target = null) {
 }
 
 async function externalPolishQueryAnswer(result, question) {
+  if (['propietario_identidad','propietarios_contacto','propiedad'].includes(result?.query_domain)) return result;
   if (!aiExternalAvailable() || !result?.handled || !result?.answer) return result;
   if (!["consulta", "fuera_de_alcance"].includes(String(result.action || "consulta"))) return result;
   const system = [
@@ -6197,6 +6219,7 @@ function detectAgentIntent(text) {
     };
   }
   const normalized = normalizeText(cleanText);
+  if (isExplicitReadQuery(cleanText)) return {intent:'consulta',confidence:0.9,reason:'Consulta explicita del mensaje actual; no solicita modificar registros.',questions:[]};
   const segments = splitGuidedAutomationText(cleanText);
   if (looksLikePastedOperationalConversation(cleanText) || looksLikeMeetingOrMultiTopicText(cleanText)) {
     return {
@@ -6313,6 +6336,7 @@ async function externalAgentIntent(text, localDecision, tools) {
 
 async function decideAgentIntent(text, tools) {
   const local = detectAgentIntent(text);
+  if (isExplicitReadQuery(text)) return {...local,source:'explicit_read_request'};
   if (!aiExternalAvailable()) return { ...local, source: "local" };
   try {
     const external = normalizeAgentIntentDecision(await externalAgentIntent(text, local, tools), local);
@@ -6357,6 +6381,7 @@ function agentContextExcerpt(value, limit = 1200) {
 function buildAgentContextualText(text, recentContext) {
   const cleanText = String(text || "").trim();
   const recent = Array.isArray(recentContext) ? recentContext : [];
+  if (isExplicitReadQuery(cleanText) && !readNeedsPreviousContext(cleanText)) return {text:cleanText,used:false,source:null};
   if (!cleanText || !agentNeedsPreviousContext(cleanText) || !recent.length) {
     return { text: cleanText, used: false, source: null };
   }
@@ -6489,8 +6514,9 @@ function buildAgentGuidance(response) {
   return guidance;
 }
 
-async function answerAgentMessage(session, text) {
+async function answerAgentMessage(session, text, inputOptions = {}) {
   const cleanText = String(text || "").trim();
+  const input = currentInstruction(cleanText,inputOptions.supportingText);
   let recentContext = [];
   try {
     recentContext = (await runAgentContextCommand(session, "list", { limit: 8 })).context || [];
@@ -6498,10 +6524,10 @@ async function answerAgentMessage(session, text) {
     recentContext = [];
   }
   const contextual = buildAgentContextualText(cleanText, recentContext);
-  const effectiveText = contextual.text || cleanText;
+  const effectiveText = contextual.used ? contextual.text : input.explicitRead && !readNeedsSupportingData(cleanText) ? cleanText : input.supportingText || cleanText;
   const availableTools = getAgentToolCatalog(session);
-  const decision = await decideAgentIntent(effectiveText, availableTools);
-  const selectedTool = selectAgentTool(session, effectiveText, decision.intent);
+  const decision = await decideAgentIntent(input.instruction, availableTools);
+  const selectedTool = selectAgentTool(session, input.instruction, decision.intent);
   const base = {
     ok: true,
     agent_contract: "agent_router_v1",
@@ -6706,7 +6732,7 @@ function buildAiCenterText(text, attachments, context) {
 
 async function answerAiCenterMessage(session, body) {
   const meetingInput = [String(body?.text || ''), ...(Array.isArray(body?.attachments) ? body.attachments.map(a => String(a?.text || '')) : [])].filter(Boolean).join('\n\n');
-  if (isLongMeetingTranscript(meetingInput)) {
+  if (!isExplicitReadQuery(body?.text) && isLongMeetingTranscript(meetingInput)) {
     const result = await startMeeting(session,meetingInput,String(body?.source_date || ''));
     return {ok:true,intent:'lote',message:'Reunion en analisis. Puedes recuperar el progreso desde Reuniones guardadas.',result,center_contract:'ai_center_v1'};
   }
@@ -6716,7 +6742,7 @@ async function answerAiCenterMessage(session, body) {
     throw new Error("Escribe, dicta o adjunta al menos un documento para analizar.");
   }
   const combinedText = buildAiCenterText(directText, attachments, body?.context || {});
-  const response = await answerAgentMessage(session, combinedText);
+  const response = await answerAgentMessage(session, directText || attachments.map(a => a.text).join('\n\n'), {supportingText:combinedText});
   return {
     ...response,
     center_contract: "ai_center_v1",
@@ -12316,6 +12342,7 @@ function homePage() {
       if (!container) return;
       const confidence = Math.round((response.confidence || 0) * 100);
       const embedPrepared = resultId === "aiUnifiedResult" && ["accion", "lote"].includes(response.intent);
+      const queryPreviewId = resultId + "QueryPreview";
       const targetLabel = response.intent === "accion"
         ? "Ver propuesta en Entrada inteligente"
         : response.intent === "lote"
@@ -12333,17 +12360,18 @@ function homePage() {
         (response.context_warning ? '<div class="dangerText">' + html(response.context_warning) + '</div>' : '') +
         (response.action_warning ? '<div class="dangerText">' + html(response.action_warning) + '</div>' : '') +
         (response.action_center_id ? '<div class="answerNote">Propuesta guardada en el centro de acciones con ID ' + html(response.action_center_id) + '.</div>' : '') +
+        (response.intent === "consulta" ? '<div id="' + queryPreviewId + '"></div><details class="detailBox"><summary>Detalles de interpretacion</summary>' : '') +
         renderSelectedAgentTool(response.selected_tool) +
         renderAgentGuidance(response.guidance) +
+        (response.intent === "consulta" ? '</details>' : '') +
         (targetLabel ? '<div class="toolbar"><button id="agentOpenPrepared" class="ghost">' + html(targetLabel) + '</button></div>' : '') +
-        (response.intent === "consulta" ? '<div id="agentQueryPreview"></div>' : '') +
         (response.intent === "informe" ? '<div id="agentReportPreview"></div>' : '') +
         (response.intent === "email" ? '<div id="agentEmailPreview"></div>' : '') +
         (embedPrepared ? '<div id="aiUnifiedPrepared"></div>' : '') +
         (response.intent === "aclaracion" && (response.questions || []).length ? '<div class="detailBox"><strong>Para seguir</strong>' + response.questions.map(q => '<div>- ' + html(q) + '</div>').join("") + '</div>' : '') +
       '</div>';
       if (response.intent === "consulta" && response.result) {
-        renderAiProposal(response.result, "agentQueryPreview");
+        renderAiProposal(response.result, queryPreviewId);
       }
       if (response.intent === "informe" && response.result) {
         agentReportProposal = response.result;
@@ -12816,6 +12844,7 @@ function homePage() {
       }
       if (proposal.action === "consulta" && !payload.comentario && !payload.titulo) {
         const displayHtml = renderDisplay(proposal.display || {});
+        const collapseAnswer = (proposal.answer || '').length > 700 && ((proposal.display?.tables || []).length > 0 || (proposal.display?.cards || []).length > 0);
         const evidenceHtml = renderAiEvidence(proposal);
         const copyButtonId = resultId + "CopyAnswer";
         const copyMessageId = resultId + "CopyMessage";
@@ -12823,8 +12852,8 @@ function homePage() {
           '<div class="proposalHead"><h2>Respuesta de consulta</h2><span class="confidence">Confianza: ' + html(Math.round((proposal.confidence || 0) * 100)) + '%</span></div>' +
           (proposal.warning ? '<p class="dangerText">' + html(proposal.warning) + '</p>' : '') +
           displayHtml +
+          (proposal.answer ? (collapseAnswer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary>' : '<div class="detailBox">') + '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0">' + html(proposal.answer) + '</pre>' + (collapseAnswer ? '</details>' : '</div>') : '') +
           evidenceHtml +
-          (proposal.answer ? '<details class="detailBox"><summary><strong>Ver respuesta en texto</strong></summary><pre style="white-space:pre-wrap;margin:8px 0 0">' + html(proposal.answer) + '</pre></details>' : '') +
           questionsHtml +
           candidatesTextHtml +
           (proposal.answer ? '<div class="toolbar"><button class="ghost" id="' + copyButtonId + '">Copiar respuesta</button><span class="muted" id="' + copyMessageId + '"></span></div>' : '') +

@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import { currentInstruction, isExplicitReadQuery, readNeedsPreviousContext } from '../server/ai-input-routing.js';
+for (const text of ['quien es el propietario marchito','¿Quién es el propietario Marchito?','que tareas tengo pendientes','cuanto debe PROMAGA','donde esta la vivienda de Luis','busca el email de Elena','muestrame los recibos pendientes']) assert.equal(isExplicitReadQuery(text),true,text);
+for (const text of ['crea una tarea para revisar el presupuesto','actualiza el proyecto con esta llamada','prepara un email al propietario','elimina el propietario Luis','quien es Luis y envia un correo','Speaker 1: Hoy he hablado con Juan.\n'.repeat(50)]) assert.equal(isExplicitReadQuery(text),false,text);
+const input=currentInstruction('quien es el propietario marchito','Contexto: reunion larga.\n'.repeat(1000));
+assert.equal(input.instruction,'quien es el propietario marchito');
+assert.equal(input.explicitRead,true);
+assert.equal(readNeedsPreviousContext('donde esta la vivienda de Luis'),false);
+assert.equal(readNeedsPreviousContext('cuanto debe ese propietario'),true);
+console.log('Raw instruction routing: standalone queries, stale context, attachments and explicit write requests OK');

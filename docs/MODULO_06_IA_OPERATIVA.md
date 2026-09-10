@@ -103,3 +103,15 @@ Validacion posterior: 28 rutas, cinco perfiles activos, integridad SQLite ok. Re
 Siguiente verificacion funcional: una reunion real del usuario, revisando omisiones, asociaciones y redaccion antes de confirmar. La ampliacion de consultas generales queda pendiente, no se considera ejecutada por haber cerrado el bloque C. No iniciar Seguridad, Asambleas ni un nuevo roadmap sin indicacion del usuario.
 
 La idempotencia corresponde a la confirmacion de cada asunto del mismo borrador. Reanalizar deliberadamente el mismo texto como una reunion nueva crea otro borrador y requiere revisar posibles seguimientos repetidos; no hay deduplicacion universal entre reuniones diferentes.
+
+## Correccion de enrutamiento de consultas (10/09/2026)
+
+Incidencia comunicada: "quien es el propietario marchito" se trataba como lote. El Centro IA construia un texto con instrucciones, palabras de herramientas y contexto de pantalla y lo pasaba al clasificador como si fuera la entrada del usuario. El contexto conversacional podia contaminar tambien la decision. Ademas, la consulta de propietario se derivaba siempre a buscar una propiedad, no a buscar una persona por nombre.
+
+- La decision de intencion y herramienta se toma ahora sobre la instruccion actual, separada del contexto auxiliar. Una pregunta explicita de lectura no se convierte en lote por adjuntos antiguos o por el historico. Las peticiones explicitas de escritura, informes y emails conservan su ruta.
+- Las consultas autonomas no heredan contexto previo. Las referencias expresas ("ese propietario", "esa tarea") conservan posibilidad de contexto; las preguntas sobre documentos pueden seguir usando sus datos de apoyo sin convertirlos en instrucciones de escritura.
+- Identidad por nombre: consulta las tablas autorizadas, devuelve coincidencia, candidatos o aclaracion. Se conserva la consulta por vivienda/codigo y por email. No se inventa un propietario si no existe.
+- Identidad, contacto y propiedad se devuelven directamente desde los datos estructurados, sin esperar una reescritura de NVIDIA. Un fallo o truncamiento de esa reescritura no debe impedir una respuesta que ya existe en base de datos.
+- Regresion: pregunta comunicada, variantes, contexto de reunion de 500 repeticiones, adjunto anterior, propietario inexistente, aislamiento por comunidad y solicitudes de escritura que no deben convertirse en consultas. Se mantienen los 14 casos de consulta anteriores.
+- Lectura: la respuesta de consulta aparece antes de los detalles de interpretacion (desplegables). Las respuestas breves no quedan ocultas tras "Ver respuesta en texto". Cada contenedor usa un identificador propio para no renderizar en otro panel oculto.
+- Verificacion local: 17 grupos operativos; 14 consultas existentes y tres comprobaciones de permisos; pruebas de enrutamiento y contexto; interfaz en escritorio y movil sobre copias aisladas, sin crear propietarios ni expedientes de prueba en produccion.

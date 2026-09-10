@@ -59,6 +59,13 @@ try {
       assert.ok(!overflow, `Horizontal overflow in ${view} at ${viewport.width}`);
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
       if(view==='ai') {
+        await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');
+        const [lookupResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/ai/center')),page.locator('#aiUnifiedSend').click()]);
+        const lookup=await lookupResponse.json();
+        assert.equal(lookup.intent,'consulta');
+        assert.match(lookup.result.answer,/MARCHITO PRUEBA/);
+        await page.locator('#aiUnifiedResult').getByText(/MARCHITO PRUEBA/).first().waitFor();
+        await page.screenshot({path:path.join(output,`${viewport.width}-owner-query.png`),fullPage:true});
         const meeting={ok:true,meeting_id:'ui-meeting',status:'revision',progress:100,message:'Propuestas listas',
           communities:[{id_comunidad:1,nombre:'Comunidad de prueba'}],catalog:[],
           proposals:[0,1].map(i=>({meeting_item_id:'ui-item-'+i,revision:1,action:'crear_tarea',selected:true,entity:{type:'task',id:null},
