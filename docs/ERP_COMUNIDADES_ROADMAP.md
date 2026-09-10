@@ -1,6 +1,6 @@
 # ERP Comunidades: roadmap de evolucion
 
-Fecha: 10/09/2026. Documento rector del nuevo ERP. ERP 0, ERP 1 y ERP 2 estan implantados y certificados. Las fases posteriores requieren autorizacion independiente.
+Fecha: 11/09/2026. Documento rector del nuevo ERP. ERP 0, ERP 1 y ERP 2 estan implantados y certificados. La revision transversal previa a ERP 3 aplica el estandar [ERP UX](ERP_UX_PRINCIPIOS.md), onboarding Excel y simplificacion operativa sin cambiar porcentajes ni reglas certificadas. Las fases posteriores requieren autorizacion independiente.
 
 ## Alcance y continuidad
 
@@ -144,4 +144,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-ERP 2 completado con 100% certificado. El siguiente paso es disenar ERP 3 - Recibos, cobros y deuda, manteniendo como entrada inmutable los planes y cuotas explicables de ERP 2. No iniciar recibos, SEPA ni contabilidad definitiva sin autorizacion expresa.
+ERP 2 completado con 100% certificado y revision UX/onboarding previa superada. El siguiente paso es disenar ERP 3 - Recibos, cobros y deuda, manteniendo como entrada inmutable los planes y cuotas explicables de ERP 2. No iniciar recibos, SEPA ni contabilidad definitiva sin autorizacion expresa.

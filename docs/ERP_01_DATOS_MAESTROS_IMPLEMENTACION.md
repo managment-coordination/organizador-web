@@ -136,3 +136,22 @@ La interfaz es deliberadamente la minima de ERP 1: alta/edicion y consulta de ma
 ## Estado final
 
 ERP 1 queda operativo y desplegado en el servidor Ubuntu en el puerto 8771. No quedan decisiones funcionales bloqueantes dentro de su alcance aprobado. El siguiente trabajo recomendado es definir y autorizar ERP 2 sobre estos maestros, sin reinterpretar los datos observados como evidencia validada.
+
+## Revision UX transversal y onboarding - 11/09/2026
+
+Se adopta el estandar permanente [ERP UX](ERP_UX_PRINCIPIOS.md). `Datos maestros` incorpora `Configuracion inicial`, un asistente revisable para importar propietarios y propiedades desde plantillas descargables o Excel/CSV propios. Detecta cabeceras, propone su correspondencia, permite corregirla, conserva el archivo por hash y utiliza staging antes de confirmar. Las coincidencias son exactas dentro de la comunidad; NIF en conflicto, propietario inexistente, copropiedad distinta de 100, tipo desconocido o coeficiente incoherente bloquean la confirmacion.
+
+La confirmacion escribe en `cf_propietarios`, `cf_contactos_propietario`, `cf_propiedades`, titularidades y series/grupos ERP 1 existentes. No existe un maestro alternativo. La migracion aditiva `6 / erp1_onboarding_staging` solo conserva importaciones, filas, incidencias, decisiones y trazabilidad. La reimportacion del mismo archivo confirmado es idempotente.
+
+Los grupos se inician ahora desde `¿Como se reparte?`: Por coeficiente, A partes iguales, Por peso relativo o Configuracion avanzada. Por coeficiente permite reutilizar una serie existente o crear una especial; la gestion posterior conserva busqueda, filtros estructurales, seleccion masiva, pegado tabular y una unica tabla exacta de valores y sumas. Coeficientes generales y especiales siguen siendo independientes.
+
+La ficha de propiedad presenta `¿Tiene inquilino?` como eleccion directa y solo revela sus campos al responder Si. Destinatario/pagador, ciclos de vida, alias, relaciones y detalle avanzado quedan plegados cuando no son necesarios. IDs y versiones internas dejan de mostrarse en el flujo ordinario, sin modificar el modelo.
+
+### MEJORAS UX AUTÓNOMAS
+
+- La propia plantilla reconoce automaticamente sus encabezados, incluidos nombres con preposiciones.
+- Las columnas de pertenencia interpretan `No`, `0` y `Falso` como ausencia y nunca como alta accidental.
+- Una carga requiere permiso de actualizacion antes de almacenar el archivo y exige mapear los campos obligatorios antes de crear staging.
+- El asistente ofrece coeficientes existentes antes de crear otro, reduciendo duplicados conceptuales.
+
+La verificacion `verify-erp-ux-onboarding.py` cubre migracion reentrante, propietarios/contactos, reimportacion, propiedades, titularidades, coeficiente especial, incidencias, permisos e invariabilidad economica ERP 2. Playwright recorre onboarding, propietarios, contactos, titularidades, estructuras y grupos en 1440x1000 y 390x844.

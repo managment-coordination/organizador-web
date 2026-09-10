@@ -98,13 +98,14 @@ try:
     first = apply_all(conn, MIGRATIONS)
     migrations = list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
     second = apply_all(conn, MIGRATIONS)
-    assert first["schema_version"] == 5 and second["schema_version"] == 5
+    expected_schema = MIGRATIONS[-1].version
+    assert first["schema_version"] == expected_schema and second["schema_version"] == expected_schema
     assert migrations == list(conn.execute("SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version"))
     assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert not list(conn.execute("PRAGMA foreign_key_check"))
     for table, count in before.items():
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == count
-    checks.append("migracion 5 aditiva, reentrante e integra")
+    checks.append(f"migracion {expected_schema} aditiva, reentrante e integra")
 
     actor_row = conn.execute("SELECT id_usuario,nombre FROM usuarios WHERE activo=1 ORDER BY CASE rol WHEN 'Superusuario' THEN 0 ELSE 1 END,id_usuario LIMIT 1").fetchone()
     actor, actor_name = int(actor_row[0]), str(actor_row[1])

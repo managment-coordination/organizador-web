@@ -11,7 +11,8 @@ const root = path.resolve(import.meta.dirname, '..');
 const database = process.env.UI_FIXTURE_DB;
 assert.ok(database && fs.existsSync(database), 'Use the isolated fixture from KEEP_VERIFY_FIXTURE=1, never the live database.');
 assert.ok(path.basename(path.dirname(database)).startsWith('organizador-release-'), 'Only a release-test fixture is accepted.');
-const {chromium} = await import(process.env.PLAYWRIGHT_MODULE ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
+const playwrightModule = await import(process.env.PLAYWRIGHT_MODULE ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href : 'playwright');
+const {chromium} = playwrightModule.default || playwrightModule;
 const output = fs.mkdtempSync(path.join(os.tmpdir(), 'organizador-ui-release-'));
 const socket = net.createServer();
 await new Promise(resolve=>socket.listen(0, '127.0.0.1', resolve));
@@ -60,7 +61,40 @@ try {
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
       if(view==='master-data') {
         await page.locator('#masterCommunity').waitFor();
+        await page.locator('[data-master-section="setup"]').click();
+        await page.getByRole('heading',{name:'Configuracion inicial'}).waitFor();
+        const templateHref=await page.getByRole('link',{name:'Descargar plantilla'}).getAttribute('href');
+        const templateResponse=await context.request.get(base+templateHref);
+        assert.equal(templateResponse.status(),200);
+        assert.equal((await templateResponse.body()).subarray(0,2).toString(),'PK');
+        const ExcelJS=(await import(pathToFileURL(path.join(root,'server/node_modules/exceljs/excel.js')).href)).default;
+        const workbook=new ExcelJS.Workbook();
+        const sheet=workbook.addWorksheet('Propietarios');
+        sheet.addRow(['Codigo de propietario','Nombre / razon social','Email']);
+        const onboardingOwner=`UX-IMPORT-${viewport.width}-${Date.now()}`;
+        sheet.addRow([onboardingOwner,`Propietario importado ${viewport.width}`,`${onboardingOwner.toLowerCase()}@example.invalid`]);
+        const workbookBuffer=Buffer.from(await workbook.xlsx.writeBuffer());
+        await page.locator('#masterOnboardingFile').setInputFiles({name:'propietarios-ux.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:workbookBuffer});
+        await page.locator('#masterOnboardingUpload').click();
+        await page.getByRole('heading',{name:'Relacionar columnas'}).waitFor();
+        assert.equal(await page.locator('.masterOnboardingMap').nth(0).inputValue(),'codigo_propietario');
+        assert.equal(await page.locator('.masterOnboardingMap').nth(1).inputValue(),'nombre');
+        await page.locator('#masterOnboardingPreview').click();
+        await page.locator('#masterOnboardingConfirm').waitFor();
+        page.once('dialog',dialog=>dialog.accept());
+        await page.locator('#masterOnboardingConfirm').click();
+        await page.getByText(/Importacion completada:/).waitFor();
+        await page.locator('[data-onboarding-kind="propiedades"]').click();
+        const propertyTemplateHref=await page.getByRole('link',{name:'Descargar plantilla'}).getAttribute('href');
+        const propertyTemplateResponse=await context.request.get(base+propertyTemplateHref);
+        const propertyTemplate=new ExcelJS.Workbook();
+        await propertyTemplate.xlsx.load(await propertyTemplateResponse.body());
+        assert.ok(propertyTemplate.getWorksheet('Propiedades').getRow(1).values.includes('Coeficiente general'));
+        assert.ok(propertyTemplate.getWorksheet('Propiedades').getRow(1).values.includes('Pertenece a grupo (Si/No)'));
+        assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Onboarding horizontal overflow');
+        await page.screenshot({path:path.join(output,`${viewport.width}-master-onboarding.png`),fullPage:true});
         await page.locator('[data-master-section="properties"]').waitFor();
+        await page.locator('[data-master-section="properties"]').click();
         await page.locator('#masterNewProperty').click();
         assert.equal(await page.locator('#masterPropertyForm [name="estado"]').count(),0);
         assert.equal(await page.locator('#masterPropertyForm [name="calidad_dato"]').count(),0);
@@ -186,7 +220,8 @@ try {
         await page.screenshot({path:path.join(output,`${viewport.width}-master-structures.png`),fullPage:true});
 
         await page.locator('[data-master-section="groups"]').click();
-        await page.locator('.masterAddContact summary').filter({hasText:'+ Crear grupo'}).click();
+        await page.getByRole('heading',{name:'¿Como se reparte?'}).waitFor();
+        await page.locator('[data-group-create-mode="porcentaje"]').click();
         const groupCode=`UX-GROUP-${viewport.width}-${Date.now()}`;
         await page.locator('#masterGroupForm [name="codigo"]').fill(groupCode);
         await page.locator('#masterGroupForm [name="nombre"]').fill('Jardines privados UX');
@@ -235,6 +270,12 @@ try {
       if(view==='budgets') {
         await page.locator('#budgetCreateOpen').click();
         if(await page.locator('#budgetNoExercise').count()) {
+          await page.getByText('Esta comunidad todavia no tiene ejercicios disponibles.').waitFor();
+          await page.locator('#budgetExerciseOpen').click();
+          const exerciseYear=2040+Math.floor(viewport.width/100);
+          await page.locator('#budgetExerciseYear').fill(String(exerciseYear));
+          assert.equal(await page.locator('#budgetExerciseStart').inputValue(),`${exerciseYear}-01-01`);
+          assert.equal(await page.locator('#budgetExerciseEnd').inputValue(),`${exerciseYear}-12-31`);
           const [exerciseResponse]=await Promise.all([
             page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),
             page.locator('#budgetExerciseCreate').click(),

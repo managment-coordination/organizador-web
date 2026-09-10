@@ -6,6 +6,7 @@ from .contracts import CommandEnvelope, QueryEnvelope
 from .errors import NotFoundError
 from .service import FoundationService
 from .master_service import MasterDataService
+from .onboarding_service import OnboardingService
 from .budget_service import BudgetService
 from .budget_contracts import contract_catalog as budget_contract_catalog
 
@@ -29,6 +30,16 @@ COMMANDS = {
     "erp1.group.membership.save": "membership_save",
     "erp1.coefficient.save": "coefficient_save",
     "erp1.provenance.record": "provenance_record",
+}
+
+ONBOARDING_COMMANDS = {
+    "erp1.onboarding.preview": "preview",
+    "erp1.onboarding.confirm": "confirm",
+}
+
+ONBOARDING_QUERIES = {
+    "erp1.onboarding.get": "get",
+    "erp1.onboarding.list": "list",
 }
 
 QUERIES = {
@@ -85,6 +96,8 @@ ERP2_QUERIES = {
 
 def execute_command(database_path, session, value):
     envelope = CommandEnvelope.from_value(value)
+    if envelope.command in ONBOARDING_COMMANDS:
+        return getattr(OnboardingService(database_path), ONBOARDING_COMMANDS[envelope.command])(session, envelope)
     if envelope.command in ERP2_COMMANDS:
         return getattr(BudgetService(database_path), ERP2_COMMANDS[envelope.command])(session, envelope)
     if envelope.command in COMMANDS:
@@ -96,6 +109,8 @@ def execute_command(database_path, session, value):
 
 def execute_query(database_path, session, value):
     query = QueryEnvelope.from_value(value)
+    if query.query in ONBOARDING_QUERIES:
+        return getattr(OnboardingService(database_path), ONBOARDING_QUERIES[query.query])(session, query)
     if query.query in ERP2_QUERIES:
         return getattr(BudgetService(database_path), ERP2_QUERIES[query.query])(session, query)
     if query.query in QUERIES:
@@ -108,8 +123,8 @@ def execute_query(database_path, session, value):
 def catalog():
     return {
         "contract_version": "erp_internal_v1",
-        "queries": ["erp0.foundation.get_status", *sorted(QUERIES), *sorted(ERP2_QUERIES)],
-        "commands": sorted(COMMANDS) + sorted(ERP2_COMMANDS) + (["erp0.foundation.set_status"] if os.environ.get("ERP0_REFERENCE_COMMANDS") == "1" else []),
+        "queries": ["erp0.foundation.get_status", *sorted(QUERIES), *sorted(ONBOARDING_QUERIES), *sorted(ERP2_QUERIES)],
+        "commands": sorted(COMMANDS) + sorted(ONBOARDING_COMMANDS) + sorted(ERP2_COMMANDS) + (["erp0.foundation.set_status"] if os.environ.get("ERP0_REFERENCE_COMMANDS") == "1" else []),
         "erp2a": budget_contract_catalog(),
         "arbitrary_sql": False,
     }

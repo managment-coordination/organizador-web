@@ -28,9 +28,11 @@ with tarfile.open(args.archive) as bundle:
         assert '..' not in parts and not Path(entry.name).is_absolute()
         assert not entry.issym() and not entry.islnk()
     bundle.extractall(stage, filter='data')
-(stage/'server/node_modules').symlink_to(APP/'server/node_modules', target_is_directory=True)
+subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
 env = {**os.environ, 'VERIFY_SOURCE_DB':str(APP/'data/organizador_tareas.db'), 'PYTHON_BIN':'python3'}
 subprocess.run(['python3',str(stage/'scripts/verify-erp1-master-data.py'),
+    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+subprocess.run(['python3',str(stage/'scripts/verify-erp-ux-onboarding.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp2a-foundations.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
@@ -62,6 +64,7 @@ try:
     (backup/'SHA256SUMS.json').write_text(json.dumps(hashes,indent=2))
     with tarfile.open(args.archive) as bundle:
         bundle.extractall(APP,filter='data')
+    subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=APP/'server',check=True)
     subprocess.run(['node','--check',str(APP/'server/index.js')],check=True)
 finally:
     subprocess.run(['systemctl','--user','start',SERVICE],check=True)

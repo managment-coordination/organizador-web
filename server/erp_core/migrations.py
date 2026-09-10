@@ -1516,6 +1516,52 @@ MIGRATIONS = (
             BEFORE DELETE ON erp_derramas WHEN OLD.estado='aprobada'
             BEGIN SELECT RAISE(ABORT,'Una derrama aprobada no se puede borrar.'); END""",
     )),
+    Migration(6, "erp1_onboarding_staging", (
+        """CREATE TABLE erp_onboarding_importaciones (
+            id_importacion INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_comunidad INTEGER NOT NULL,
+            tipo TEXT NOT NULL CHECK(tipo IN ('propietarios','propiedades')),
+            hash_archivo TEXT NOT NULL,
+            nombre_archivo TEXT NOT NULL,
+            ruta_privada TEXT,
+            hoja TEXT NOT NULL,
+            cabeceras_json TEXT NOT NULL,
+            mapeo_json TEXT NOT NULL,
+            opciones_json TEXT NOT NULL DEFAULT '{}',
+            estado TEXT NOT NULL CHECK(estado IN ('staging','confirmada','cancelada')),
+            total_filas INTEGER NOT NULL DEFAULT 0,
+            filas_validas INTEGER NOT NULL DEFAULT 0,
+            incidencias INTEGER NOT NULL DEFAULT 0,
+            creada_en TEXT NOT NULL,
+            creada_por INTEGER NOT NULL,
+            confirmada_en TEXT,
+            confirmada_por INTEGER,
+            resumen_json TEXT,
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version>0),
+            UNIQUE(id_comunidad,tipo,hash_archivo),
+            UNIQUE(id_comunidad,id_importacion),
+            FOREIGN KEY(id_comunidad) REFERENCES comunidades(id_comunidad),
+            FOREIGN KEY(creada_por) REFERENCES usuarios(id_usuario),
+            FOREIGN KEY(confirmada_por) REFERENCES usuarios(id_usuario)
+        )""",
+        """CREATE TABLE erp_onboarding_filas (
+            id_fila INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_comunidad INTEGER NOT NULL,
+            id_importacion INTEGER NOT NULL,
+            numero_fila INTEGER NOT NULL,
+            original_json TEXT NOT NULL,
+            datos_json TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK(decision IN ('crear','actualizar','vincular','omitir','pendiente')),
+            incidencias_json TEXT NOT NULL DEFAULT '[]',
+            entidad_destino TEXT,
+            id_destino INTEGER,
+            aplicada_en TEXT,
+            UNIQUE(id_importacion,numero_fila),
+            FOREIGN KEY(id_comunidad,id_importacion) REFERENCES erp_onboarding_importaciones(id_comunidad,id_importacion)
+        )""",
+        "CREATE INDEX idx_erp_onboarding_estado ON erp_onboarding_importaciones(id_comunidad,estado,creada_en)",
+        "CREATE INDEX idx_erp_onboarding_filas ON erp_onboarding_filas(id_importacion,decision,numero_fila)",
+    )),
 )
 
 

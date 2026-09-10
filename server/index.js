@@ -4,7 +4,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
 import mammoth from "mammoth";
+import ExcelJS from "exceljs";
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
 import { DOCUMENT_CATEGORIES, reportOptions, selectReportAttachments, reportSnapshot } from './report-domain.js';
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
@@ -182,6 +184,101 @@ function readRawBody(req, maxBytes = 25 * 1024 * 1024) {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+function excelText(value) {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "object") {
+    if (value.result != null) return excelText(value.result);
+    if (Array.isArray(value.richText)) return value.richText.map(part => part.text || "").join("");
+    if (value.text != null) return String(value.text);
+  }
+  return String(value).trim();
+}
+
+function excelKey(value) {
+  return excelText(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+const onboardingFields = {
+  propietarios: [
+    ["codigo_propietario", "Codigo de propietario"], ["nombre", "Nombre / razon social"],
+    ["tipo_persona", "Tipo de persona"], ["nif", "NIF / identificacion"], ["email", "Email"],
+    ["telefono", "Telefono"], ["telefono_alternativo", "Telefono alternativo"], ["direccion", "Direccion"],
+    ["cp", "Codigo postal"], ["poblacion", "Poblacion"], ["provincia", "Provincia"], ["idioma", "Idioma"]
+  ],
+  propiedades: [
+    ["codigo_propiedad", "Codigo de propiedad"], ["codigo_propietario", "Codigo de propietario"],
+    ["tipo_propiedad", "Tipo de propiedad"], ["porcentaje_titularidad", "Porcentaje de titularidad"],
+    ["fecha_efectiva", "Fecha efectiva"], ["bloque", "Bloque"], ["portal", "Portal"],
+    ["planta", "Planta"], ["puerta", "Puerta"], ["descripcion", "Descripcion / direccion"],
+    ["referencia_registral", "Referencia registral"], ["referencia_catastral", "Referencia catastral"]
+  ]
+};
+
+function suggestOnboardingField(header, kind) {
+  const key = excelKey(header);
+  const aliases = {
+    codigo_propietario:["codigo propietario","codigo de propietario","codigo titular","id propietario","cod propietario","codigo netfincas"],
+    nombre:["nombre","propietario","titular","nombre propietario","nombre razon social","razon social"], tipo_persona:["tipo persona","tipo de persona","persona"],
+    nif:["nif","cif","dni","identificacion"], email:["email","correo","correo electronico"],
+    telefono:["telefono","telefono principal","movil"], telefono_alternativo:["telefono alternativo","telefono 2","movil 2"],
+    direccion:["direccion","domicilio"], cp:["cp","codigo postal"], poblacion:["poblacion","localidad"],
+    provincia:["provincia"], idioma:["idioma","idioma preferido"], codigo_propiedad:["codigo propiedad","codigo de propiedad","propiedad","inmueble","finca"],
+    tipo_propiedad:["tipo propiedad","tipo inmueble","tipo"], porcentaje_titularidad:["porcentaje titularidad","titularidad","porcentaje propiedad"],
+    fecha_efectiva:["fecha efectiva","fecha titularidad","fecha desde"], bloque:["bloque"], portal:["portal"], planta:["planta"],
+    puerta:["puerta"], descripcion:["descripcion","direccion propiedad","ubicacion"], referencia_registral:["referencia registral","finca registral"],
+    referencia_catastral:["referencia catastral","catastro"]
+  };
+  for (const [field] of onboardingFields[kind] || []) {
+    if ((aliases[field] || []).includes(key)) return field;
+  }
+  return "";
+}
+
+async function readOnboardingWorkbook(buffer, filename, requestedSheet = "") {
+  const workbook = new ExcelJS.Workbook();
+  const extension = path.extname(filename).toLowerCase();
+  if (extension === ".csv") await workbook.csv.read(Readable.from(buffer));
+  else if (extension === ".xlsx") await workbook.xlsx.load(buffer);
+  else throw new Error("Formato no compatible. Utiliza .xlsx o .csv.");
+  const sheets = workbook.worksheets.map(sheet => sheet.name);
+  const sheet = workbook.getWorksheet(requestedSheet) || workbook.worksheets[0];
+  if (!sheet) throw new Error("El archivo no contiene hojas con datos.");
+  let headerRow = null;
+  for (let index=1; index<=Math.min(sheet.rowCount, 15); index++) {
+    const row = sheet.getRow(index);
+    const values=[]; for (let col=1; col<=sheet.columnCount; col++) values.push(excelText(row.getCell(col).value));
+    if (values.filter(Boolean).length >= 2) { headerRow={index,values}; break; }
+  }
+  if (!headerRow) throw new Error("No se ha encontrado una fila de cabeceras reconocible.");
+  const headers=headerRow.values.map((value,index)=>value || `Columna ${index+1}`);
+  const rows=[];
+  for (let index=headerRow.index+1; index<=sheet.rowCount; index++) {
+    const source=sheet.getRow(index); const row={}; let hasValue=false;
+    headers.forEach((header,col)=>{const value=excelText(source.getCell(col+1).value);row[header]=value;if(value)hasValue=true;});
+    if (hasValue) rows.push({rowNumber:index,values:row});
+  }
+  return {sheets,sheet:sheet.name,headers,rows};
+}
+
+async function onboardingTemplate(kind) {
+  const fields=onboardingFields[kind];
+  if (!fields) throw new Error("Tipo de plantilla no valido.");
+  const columns=kind==="propiedades"?fields.concat([
+    ["coeficiente_general","Coeficiente general"],
+    ["coeficiente_especial_1","Coeficiente especial 1"],
+    ["coeficiente_especial_2","Coeficiente especial 2"],
+    ["pertenencia_grupo","Pertenece a grupo (Si/No)"],
+  ]):fields;
+  const workbook=new ExcelJS.Workbook(); const sheet=workbook.addWorksheet(kind === "propietarios" ? "Propietarios" : "Propiedades");
+  sheet.columns=columns.map(row=>({header:row[1],key:row[0],width:Math.max(18,row[1].length+3)}));
+  sheet.getRow(1).font={bold:true}; sheet.views=[{state:"frozen",ySplit:1}];
+  const help=workbook.addWorksheet("Instrucciones");
+  help.addRows([["Uso"],["Mantenga una fila por propietario o propiedad. Los codigos deben ser estables y unicos dentro de la comunidad."],["Puede eliminar columnas que no necesite. Antes de guardar, la aplicacion mostrara mapeo, vista previa e incidencias."],["Para copropiedad, repita el codigo de propiedad con distinto codigo de propietario e indique porcentajes que sumen 100."],["En Propiedades, relacione cada columna de coeficiente o pertenencia con el grupo exacto durante el mapeo. No se asocian grupos por parecido de nombre."]]);
+  help.getColumn(1).width=110; help.getRow(1).font={bold:true};
+  return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
 function parseCookies(req) {
@@ -8376,6 +8473,21 @@ function homePage() {
     .budgetExplain { padding:12px; background:#f7f8f7; border-left:3px solid var(--gold); margin-top:10px; }
     .masterStructureFilters { grid-template-columns:2fr repeat(3,minmax(120px,1fr)); }
     .masterInherited { color:#79551d !important; margin-top:3px; }
+    .infoDot { width:24px; min-width:24px; height:24px; min-height:24px; padding:0; border-radius:50%; background:#eef3f1; color:var(--teal); border:1px solid #aabdb7; font-weight:900; }
+    .segmented { display:flex; gap:4px; padding:3px; width:max-content; max-width:100%; background:#eceeec; border-radius:6px; }
+    .segmented button { background:transparent; color:var(--ink); border-color:transparent; }
+    .segmented button.active { background:var(--surface); color:var(--teal); border-color:#cfd6d3; }
+    .onboardingKinds { margin:10px 0; }
+    .onboardingMap { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:10px 0; }
+    .onboardingMap label { display:grid; grid-template-columns:minmax(120px,1fr) minmax(180px,1.2fr); align-items:center; gap:8px; padding:7px; background:#f5f6f5; }
+    .onboardingPreview { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+    .buttonLink { display:inline-flex; min-height:38px; align-items:center; padding:7px 11px; border:1px solid var(--line); border-radius:5px; background:#f5f6f5; color:var(--ink); font-weight:800; text-decoration:none; }
+    .groupMethodGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
+    .groupMethodGrid button { min-height:46px; text-align:left; background:#f5f6f5; color:var(--ink); border-color:#d7dcda; }
+    .compactList { max-height:180px; }
+    .tenantChoice { margin:7px 0; }
+    .masterPane > h3,.budgetPane > h2 { margin-top:0; }
+    .masterSection > p.muted,.budgetPane > p.muted { margin:4px 0 9px; }
 
     @media (max-width:1100px) {
       main { padding:15px; }
@@ -8390,6 +8502,7 @@ function homePage() {
       .aiQueryLayout { grid-template-columns:1fr; }
       .aiHistoryList { max-height:300px; }
       .masterLayout { grid-template-columns:1fr; }
+      .budgetLayout { grid-template-columns:1fr; }
     }
     @media (max-width:700px) {
       html, body { max-width:100%; overflow-x:hidden; }
@@ -8576,7 +8689,15 @@ function homePage() {
       .masterToolbar > label { min-width:0; width:100%; }
       .masterTabs { flex-wrap:nowrap; overflow-x:auto; }
       .masterTabs button { flex:0 0 auto; }
-      .masterFormGrid,.masterOwnershipRow,.masterContactGrid,.masterOwnershipCard,.masterGroupSummary,.masterGroupFilters,.masterMemberRow { grid-template-columns:1fr; }
+      .masterFormGrid,.masterOwnershipRow,.masterContactGrid,.masterOwnershipCard,.masterGroupSummary,.masterGroupFilters,.masterMemberRow,.onboardingMap,.budgetMetrics,.budgetChapterHead,.budgetItemGrid,.budgetAssignment { grid-template-columns:1fr; }
+      .masterPane,.budgetPane { padding:10px; }
+      .masterSection { margin-top:10px; padding-top:9px; }
+      .onboardingMap label { grid-template-columns:1fr; gap:4px; }
+      .groupMethodGrid { grid-template-columns:1fr; }
+      .segmented { width:100%; }
+      .segmented button { flex:1; }
+      .budgetItem { padding:8px; }
+      .budgetToolbar,.masterToolbar { padding:9px; }
       .masterMemberRow { position:relative; padding-left:42px; }
       .masterMemberRow input[type="checkbox"] { position:absolute; left:12px; top:13px; }
       .masterList { max-height:320px; }
@@ -9017,7 +9138,7 @@ function homePage() {
     let assemblyOwnerQuery = "";
     let selectedAssemblyPoint = 0;
     let adminData = { users: [], communities: [], roles: [], loaded: false };
-    let masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, billing:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
+    let masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], imports:[], onboarding:{kind:"propietarios",upload:null,preview:null,message:""}, propertyTotal:0, ownerTotal:0, property:null, owner:null, billing:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
     let budgetData = { loaded:false, section:"budgets", communityId:0, references:null, budgets:[], plans:[], assessments:[], regularizations:[], selected:null, draft:null, simulation:null, comparison:null, explanation:null, message:"", error:"" };
     let selectedAdminUserId = 0;
     let selectedAdminCommunityId = 0;
@@ -9246,7 +9367,7 @@ function homePage() {
       selectedAdminUserId = 0;
       selectedAdminCommunityId = 0;
       lastTemporaryKey = null;
-      masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], propertyTotal:0, ownerTotal:0, property:null, owner:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
+      masterData = { loaded:false, section:"properties", communityId:0, search:"", community:null, properties:[], owners:[], groups:[], imports:[], onboarding:{kind:"propietarios",upload:null,preview:null,message:""}, propertyTotal:0, ownerTotal:0, property:null, owner:null, billing:null, group:null, structure:null, proposal:null, ownershipEditing:false, groupManaging:false, groupDraft:null, groupReview:null, structureManaging:false, structureDraft:null, structureReview:null, error:"" };
       pendingCommunityUser = null;
       communityScopeRequired = false;
       currentView = "home";
@@ -11637,8 +11758,8 @@ function homePage() {
     function budgetNewChapter(){return {key:'CAP-'+Date.now()+'-'+Math.random().toString(16).slice(2,6),code:'',name:'Nuevo capitulo',items:[]};}
     function budgetNewItem(){return {key:'P-'+Date.now()+'-'+Math.random().toString(16).slice(2,6),name:'Nueva partida',amount:'0,00',assignments:[],exclusions:[]};}
     function budgetNewAssignment(){return {key:'R-'+Date.now()+'-'+Math.random().toString(16).slice(2,6),group_id:String(budgetData.references?.groups?.[0]?.id_grupo||''),rule_type:'coeficiente',mode:'porcentaje',value:'100',series_purpose:'general',series_unit:'porcentaje',fixed:'0,00',tariff:'0',quantities:''};}
-    function budgetCreateForm(mode){const exercises=budgetData.references?.exercises||[],box=$('budgetCreateBox');if(!exercises.length){const year=new Date().getFullYear()+1;box.innerHTML='<div class="masterSection" id="budgetNoExercise"><strong>Primero crea el ejercicio de esta comunidad</strong><p class="muted">El ejercicio define el periodo economico del presupuesto. Podras gestionarlo despues desde Datos maestros.</p><label>Ano del ejercicio<input id="budgetExerciseYear" inputmode="numeric" value="'+year+'"></label><button class="green" id="budgetExerciseCreate">Crear ejercicio y continuar</button></div>';box.querySelector('#budgetExerciseCreate').onclick=()=>budgetCreateExercise(mode);return;}if(mode==='import'){box.innerHTML='<div class="masterSection"><label>Pega columnas: Capitulo, concepto e importe<textarea id="budgetImportText" rows="8" placeholder="Mantenimiento&#9;Jardineria&#9;50000,00"></textarea></label><button class="green" id="budgetImportPreview">Revisar importacion</button><div id="budgetImportResult"></div></div>';box.querySelector('#budgetImportPreview').onclick=budgetImportPreview;return;}box.innerHTML='<div class="masterSection"><label>Ejercicio<select id="budgetCreateExercise">'+exercises.map(e=>'<option value="'+e.id_ejercicio+'">'+html(e.codigo)+' · '+html(e.estado)+' · '+html(e.fecha_inicio.slice(0,4))+'</option>').join('')+'</select></label><label>Nombre<input id="budgetCreateName" value="Presupuesto '+html(exercises[0].codigo)+'"></label><label>Periodicidad<select id="budgetCreateFrequency"><option value="mensual">Mensual</option><option value="trimestral">Trimestral</option><option value="semestral">Semestral</option><option value="anual">Anual</option></select></label>'+(mode==='copy'?'<label>Presupuesto origen<select id="budgetCopySource">'+budgetData.budgets.map(b=>'<option value="'+b.id_presupuesto+'">'+html(b.denominacion)+'</option>').join('')+'</select></label>':'')+'<button class="green" id="budgetCreateConfirm">'+(mode==='copy'?'Crear copia':'Crear presupuesto')+'</button></div>';box.querySelector('#budgetCreateConfirm').onclick=()=>budgetCreateConfirm(mode);}
-    async function budgetCreateExercise(mode){try{const year=Number($('budgetExerciseYear').value);if(!Number.isInteger(year)||year<2000||year>2200)throw new Error('Indica un ano valido.');await budgetCommand('erp1.exercise.save',{codigo:String(year),fecha_inicio:year+'-01-01',fecha_fin:year+'-12-31',moneda:budgetData.references?.community?.moneda||'EUR',estado:'preparacion',motivo:'Creado desde Presupuestos y cuotas'});await loadBudgetData();budgetCreateForm(mode);}catch(error){alert(error.message);}}
+    function budgetCreateForm(mode){const exercises=budgetData.references?.exercises||[],box=$('budgetCreateBox');if(!exercises.length){const year=new Date().getFullYear()+1;box.innerHTML='<div class="masterSection" id="budgetNoExercise"><strong>Esta comunidad todavia no tiene ejercicios disponibles.</strong><button class="green" id="budgetExerciseOpen">Crear ejercicio</button><form id="budgetExerciseInline" class="masterForm hidden"><label>Ano<input id="budgetExerciseYear" inputmode="numeric" value="'+year+'"></label><div class="masterFormGrid"><label>Inicio<input id="budgetExerciseStart" type="date" value="'+year+'-01-01"></label><label>Fin<input id="budgetExerciseEnd" type="date" value="'+year+'-12-31"></label></div><button class="green" type="button" id="budgetExerciseCreate">Crear y continuar</button></form></div>';box.querySelector('#budgetExerciseOpen').onclick=()=>box.querySelector('#budgetExerciseInline').classList.remove('hidden');box.querySelector('#budgetExerciseYear').oninput=event=>{const value=event.target.value;if(/^\d{4}$/.test(value)){box.querySelector('#budgetExerciseStart').value=value+'-01-01';box.querySelector('#budgetExerciseEnd').value=value+'-12-31';}};box.querySelector('#budgetExerciseCreate').onclick=()=>budgetCreateExercise(mode);return;}if(mode==='import'){box.innerHTML='<div class="masterSection"><label>Pega columnas: Capitulo, concepto e importe<textarea id="budgetImportText" rows="8" placeholder="Mantenimiento&#9;Jardineria&#9;50000,00"></textarea></label><button class="green" id="budgetImportPreview">Revisar importacion</button><div id="budgetImportResult"></div></div>';box.querySelector('#budgetImportPreview').onclick=budgetImportPreview;return;}box.innerHTML='<div class="masterSection"><label>Ejercicio<select id="budgetCreateExercise">'+exercises.map(e=>'<option value="'+e.id_ejercicio+'">'+html(e.codigo)+' · '+html(e.estado)+' · '+html(e.fecha_inicio.slice(0,4))+'</option>').join('')+'</select></label><label>Nombre<input id="budgetCreateName" value="Presupuesto '+html(exercises[0].codigo)+'"></label><label>Periodicidad<select id="budgetCreateFrequency"><option value="mensual">Mensual</option><option value="trimestral">Trimestral</option><option value="semestral">Semestral</option><option value="anual">Anual</option></select></label>'+(mode==='copy'?'<label>Presupuesto origen<select id="budgetCopySource">'+budgetData.budgets.map(b=>'<option value="'+b.id_presupuesto+'">'+html(b.denominacion)+'</option>').join('')+'</select></label>':'')+'<button class="green" id="budgetCreateConfirm">'+(mode==='copy'?'Crear copia':'Crear presupuesto')+'</button></div>';box.querySelector('#budgetCreateConfirm').onclick=()=>budgetCreateConfirm(mode);}
+    async function budgetCreateExercise(mode){try{const year=Number($('budgetExerciseYear').value),start=$('budgetExerciseStart').value,end=$('budgetExerciseEnd').value;if(!Number.isInteger(year)||year<2000||year>2200)throw new Error('Indica un ano valido.');if(!start||!end)throw new Error('Indica las fechas del ejercicio.');const result=await budgetCommand('erp1.exercise.save',{codigo:String(year),fecha_inicio:start,fecha_fin:end,moneda:budgetData.references?.community?.moneda||'EUR',estado:'preparacion',motivo:'Creado desde Presupuestos y cuotas'});await loadBudgetData();budgetCreateForm(mode);const field=$('budgetCreateExercise');if(field)field.value=String(result.entity.id_ejercicio);}catch(error){alert(error.message);}}
     async function budgetCreateConfirm(mode){try{const payload={id_ejercicio:Number($('budgetCreateExercise').value),denominacion:$('budgetCreateName').value,periodicidad:$('budgetCreateFrequency').value};const result=mode==='copy'?await budgetCommand('erp2.budget.copy',{...payload,source_budget_id:Number($('budgetCopySource').value)}):await budgetCommand('erp2.budget.create',payload);await loadBudgetData(result.entity.id_presupuesto);}catch(error){console.error(error);alert(error.message);}}
     async function budgetImportPreview(){try{const result=await budgetCommand('erp2.budget.import.preview',{text:$('budgetImportText').value,filename:'presupuesto-pegado.tsv'});const target=$('budgetImportResult');target.innerHTML='<p>'+result.entity.rows.length+' filas detectadas.</p>'+result.entity.rows.map(r=>'<div>'+html(r.chapter)+' · '+html(r.concept)+' · '+html(r.amount)+(r.incident?' · <span class="dangerText">'+html(r.incident)+'</span>':'')+'</div>').join('')+(result.entity.can_confirm?'<button class="green" id="budgetImportConfirm">Confirmar importacion</button>':'');if($('budgetImportConfirm'))$('budgetImportConfirm').onclick=async()=>{const e=budgetData.references.exercises[0];const done=await budgetCommand('erp2.budget.import.confirm',{id_importacion:result.entity.id_importacion,id_ejercicio:e.id_ejercicio,denominacion:'Presupuesto '+e.codigo,periodicidad:'mensual'});await loadBudgetData(done.entity.id_presupuesto);};}catch(error){alert(error.message);}}
     async function budgetSave(){try{budgetData.message='Guardando...';const payload=budgetCollectDraft();await budgetCommand('erp2.budget.save',payload,budgetData.selected.version_concurrencia);await loadBudgetData(budgetData.selected.id_presupuesto);}catch(error){alert(error.message);}}
@@ -11678,13 +11799,15 @@ function homePage() {
         const owners = erpQuery("erp1.owner.list", {
           search:section === "owners" ? masterData.search : "", limit:1000
         });
-        const groups = section === "groups" || section === "properties"
+        const groups = section === "groups" || section === "properties" || section === "setup"
           ? erpQuery("erp1.group.list") : Promise.resolve({ items:masterData.groups || [] });
-        const [communityResult, propertyResult, ownerResult, groupResult] = await Promise.all([common,properties,owners,groups]);
+        const imports = section === "setup" ? erpQuery("erp1.onboarding.list") : Promise.resolve({items:masterData.imports||[]});
+        const [communityResult, propertyResult, ownerResult, groupResult, importResult] = await Promise.all([common,properties,owners,groups,imports]);
         masterData.community = communityResult.entity;
         masterData.properties = propertyResult.items || [];
         masterData.owners = ownerResult.items || [];
         masterData.groups = groupResult.items || [];
+        masterData.imports = importResult.items || [];
         if (masterData.structure?.id_agrupacion) masterData.structure=(masterData.community.agrupaciones||[]).find(row=>Number(row.id_agrupacion)===Number(masterData.structure.id_agrupacion))||null;
         masterData.propertyTotal = Number(propertyResult.total || masterData.properties.length);
         masterData.ownerTotal = Number(ownerResult.total || masterData.owners.length);
@@ -11752,8 +11875,29 @@ function homePage() {
 
     function masterHeaderHtml() {
       const communityOptions = masterCommunities().map(row => '<option value="' + html(row.id_comunidad) + '"' + (Number(row.id_comunidad)===Number(masterData.communityId)?' selected':'') + '>' + html(row.nombre) + '</option>').join("");
-      const tabs = [["properties","Propiedades"],["owners","Propietarios"],["structures","Estructura de propiedades"],["groups","Coeficientes y grupos"],["community","Comunidad y ejercicios"]];
+      const tabs = [["setup","Configuracion inicial"],["properties","Propiedades"],["owners","Propietarios"],["structures","Estructura de propiedades"],["groups","Coeficientes y grupos"],["community","Comunidad y ejercicios"]];
       return '<div class="masterToolbar"><label>Comunidad<select id="masterCommunity">' + communityOptions + '</select></label><div class="masterTabs">' + tabs.map(row => '<button type="button" data-master-section="' + row[0] + '" class="' + (masterData.section===row[0]?'active':'') + '">' + row[1] + '</button>').join("") + '</div></div>';
+    }
+
+    function masterInfo(text){return '<button type="button" class="infoDot" title="'+html(text)+'" aria-label="'+html(text)+'">i</button>';}
+
+    function masterOnboardingOptions(kind,selected=''){
+      const base=kind==='propietarios'?[['codigo_propietario','Codigo de propietario'],['nombre','Nombre / razon social'],['tipo_persona','Tipo de persona'],['nif','NIF / identificacion'],['email','Email'],['telefono','Telefono'],['telefono_alternativo','Telefono alternativo'],['direccion','Direccion'],['cp','Codigo postal'],['poblacion','Poblacion'],['provincia','Provincia'],['idioma','Idioma']]:[['codigo_propiedad','Codigo de propiedad'],['codigo_propietario','Codigo de propietario'],['tipo_propiedad','Tipo de propiedad'],['porcentaje_titularidad','Porcentaje de titularidad'],['fecha_efectiva','Fecha efectiva'],['bloque','Bloque'],['portal','Portal'],['planta','Planta'],['puerta','Puerta'],['descripcion','Descripcion / direccion'],['referencia_registral','Referencia registral'],['referencia_catastral','Referencia catastral']];
+      const groups=kind==='propiedades'?(masterData.groups||[]).flatMap(group=>[['coeficiente_grupo:'+group.id_grupo,'Coeficiente / peso · '+group.nombre],['miembro_grupo:'+group.id_grupo,'Solo pertenencia · '+group.nombre]]):[];
+      return '<option value="">No importar</option>'+base.concat(groups).map(row=>'<option value="'+html(row[0])+'"'+(selected===row[0]?' selected':'')+'>'+html(row[1])+'</option>').join('');
+    }
+
+    function masterOnboardingPreviewHtml(){
+      const preview=masterData.onboarding.preview;if(!preview)return '';
+      const rows=(preview.filas||[]).slice(0,100).map(row=>'<tr><td>'+row.numero_fila+'</td><td>'+html(row.datos.codigo_propietario||row.datos.codigo_propiedad||'')+'</td><td>'+html(row.datos.nombre||row.datos.codigo_propietario||'')+'</td><td>'+(row.incidencias?.length?'<span class="dangerText">'+row.incidencias.map(html).join('<br>')+'</span>':html(row.decision))+'</td></tr>').join('');
+      return '<section class="onboardingPreview"><div class="masterGroupSummary"><div class="masterGroupMetric"><span>Filas</span><strong>'+preview.total_filas+'</strong></div><div class="masterGroupMetric"><span>Preparadas</span><strong>'+preview.filas_validas+'</strong></div><div class="masterGroupMetric"><span>Incidencias</span><strong class="'+(preview.incidencias?'masterSumWarning':'masterSumOk')+'">'+preview.incidencias+'</strong></div></div>'+(preview.incidencias?'<div class="masterQualityNotice"><strong>Requiere revision</strong><p>No se guardara nada hasta corregir el archivo o el mapeo y repetir la vista previa.</p></div>':'<div class="masterSumOk"><strong>Vista previa correcta. Ningun dato se ha guardado todavia.</strong></div>')+'<div class="budgetTableWrap"><table class="masterDataTable"><thead><tr><th>Fila</th><th>Codigo</th><th>Nombre / relacion</th><th>Resultado</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(preview.puede_confirmar?'<button class="green" id="masterOnboardingConfirm">Confirmar importacion</button>':'')+'</section>';
+    }
+
+    function masterOnboardingHtml(){
+      const flow=masterData.onboarding,kind=flow.kind||'propietarios',upload=flow.upload;
+      const history=(masterData.imports||[]).map(row=>'<div class="masterRow"><strong>'+html(row.nombre_archivo)+'</strong><span>'+html(row.tipo)+' · '+html(row.estado)+' · '+row.filas_validas+' preparadas'+(row.incidencias?' · '+row.incidencias+' incidencias':'')+'</span></div>').join('');
+      const mapping=upload?upload.headers.map(header=>'<label><span>'+html(header)+'</span><select class="masterOnboardingMap" data-header="'+html(header)+'">'+masterOnboardingOptions(kind,upload.suggestions?.[header]||'')+'</select></label>').join(''):'';
+      return '<div class="masterLayout onboardingLayout"><section class="masterPane"><div class="contentHead"><div><h3>Configuracion inicial</h3><p class="muted">Importa primero propietarios y despues propiedades. Cada paso se revisa antes de guardar.</p></div>'+masterInfo('Los datos se incorporan a los maestros ERP 1 existentes. Las coincidencias dudosas nunca se fusionan automaticamente.')+'</div><div class="segmented onboardingKinds"><button data-onboarding-kind="propietarios" class="'+(kind==='propietarios'?'active':'')+'">1. Propietarios</button><button data-onboarding-kind="propiedades" class="'+(kind==='propiedades'?'active':'')+'">2. Propiedades</button></div><div class="toolbar"><a class="buttonLink" href="/api/erp/onboarding/template?tipo='+kind+'">Descargar plantilla</a></div><label>Selecciona tu Excel<input id="masterOnboardingFile" type="file" accept=".xlsx,.csv"></label><button class="green" id="masterOnboardingUpload">Analizar columnas</button><p class="muted" id="masterOnboardingMessage">'+html(flow.message||'Admite plantillas y archivos propios .xlsx o .csv.')+'</p>'+(upload?'<div class="masterSection"><div class="contentHead"><div><h3>Relacionar columnas</h3><p class="muted">'+html(upload.filename)+' · '+upload.row_count+' filas</p></div>'+masterInfo('Indica a que dato ERP corresponde cada columna. Las columnas innecesarias pueden quedar como No importar.')+'</div>'+(upload.sheets.length>1?'<label>Hoja<select id="masterOnboardingSheet">'+upload.sheets.map(name=>'<option'+(name===upload.sheet?' selected':'')+'>'+html(name)+'</option>').join('')+'</select></label>':'')+'<div class="onboardingMap">'+mapping+'</div>'+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+'<button class="green" id="masterOnboardingPreview">Revisar antes de guardar</button>'+masterOnboardingPreviewHtml()+'</div>':'')+'</section><aside class="masterPane"><h3>Importaciones recientes</h3>'+(history||'<div class="empty">Todavia no hay importaciones de configuracion.</div>')+'</aside></div>';
     }
 
     function masterPropertyForm(row = {}) {
@@ -11803,7 +11947,7 @@ function homePage() {
       return '<div class="masterSection"><h3>Estructura de propiedades</h3>'+rows+'</div>';
     }
 
-    function masterPropertyBillingHtml(row){const data=masterData.billing||{},tenant=data.tenant,billing=data.billing||{};const owners=billing.owners||row.titularidades?.items||[];const choices=owners.map(o=>'<option value="propietario:'+o.id_propietario+'">Propietario · '+html(o.nombre)+'</option>').join('')+(tenant?.id_persona_cobro?'<option value="persona:'+tenant.id_persona_cobro+'">Inquilino · '+html(tenant.nombre)+'</option>':'');return '<div class="masterSection"><h3>Inquilino y configuracion de cobro</h3><p class="muted">La ocupacion no cambia la titularidad. Esta configuracion prepara el destinatario y pagador; no crea recibos ni domiciliaciones.</p><details><summary><strong>'+(tenant?'Gestionar inquilino actual':'Indicar que tiene inquilino')+'</strong></summary><form id="masterTenantForm" class="masterForm masterSection"><label><input type="checkbox" name="has_tenant" '+(tenant?'checked':'')+'> Tiene inquilino</label><div class="masterFormGrid"><label>Nombre<input name="name" value="'+html(tenant?.nombre||'')+'"></label><label>Identificacion<input name="identification" value="'+html(tenant?.identificacion||'')+'"></label><label>Email<input name="email"></label><label>Telefono<input name="telefono"></label><label>Desde<input name="date_start" type="date" value="'+html(tenant?.efectiva_desde||'')+'"></label><label>Hasta<input name="date_end" type="date" value="'+html(tenant?.efectiva_hasta||'')+'"></label></div><button>Guardar ocupacion</button></form></details>'+(choices?'<details><summary><strong>Destinatario y pagador</strong></summary><form id="masterBillingForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Recibo a nombre de<select name="recipient">'+choices+'</select></label><label>Pagador<select name="payer">'+choices+'</select></label><label>Vigente desde<input name="date_start" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label><label>Medio previsto<select name="payment_method"><option value="transferencia">Transferencia</option><option value="domiciliacion_pendiente">Domiciliacion pendiente</option><option value="otro">Otro</option></select></label><label class="masterWide">Referencia de cuenta o preferencia<input name="payment_reference" placeholder="Referencia interna; el mandato SEPA se configurara en ERP 4"></label></div><button class="green">Revisar y confirmar</button></form></details>':'<p class="masterNotice">Registra un propietario actual o inquilino antes de configurar el destinatario.</p>')+'</div>';}
+    function masterPropertyBillingHtml(row){const data=masterData.billing||{},tenant=data.tenant,billing=data.billing||{};const owners=billing.owners||row.titularidades?.items||[];const choices=owners.map(o=>'<option value="propietario:'+o.id_propietario+'">Propietario · '+html(o.nombre)+'</option>').join('')+(tenant?.id_persona_cobro?'<option value="persona:'+tenant.id_persona_cobro+'">Inquilino · '+html(tenant.nombre)+'</option>':'');return '<div class="masterSection"><div class="contentHead"><h3>¿Tiene inquilino?</h3>'+masterInfo('El inquilino no cambia la titularidad. Solo permite conservar ocupacion y configurar quien recibe o paga futuras cuotas.')+'</div><div class="segmented tenantChoice"><button type="button" data-tenant-choice="no" class="'+(!tenant?'active':'')+'">No</button><button type="button" data-tenant-choice="yes" class="'+(tenant?'active':'')+'">Si</button></div><form id="masterTenantForm" class="masterForm masterSection '+(tenant?'':'hidden')+'"><input type="hidden" name="has_tenant" value="true"><div class="masterFormGrid"><label>Nombre<input name="name" required value="'+html(tenant?.nombre||'')+'"></label><label>Identificacion<input name="identification" value="'+html(tenant?.identificacion||'')+'"></label><label>Email<input name="email"></label><label>Telefono<input name="telefono"></label><label>Desde<input name="date_start" type="date" required value="'+html(tenant?.efectiva_desde||new Date().toISOString().slice(0,10))+'"></label><label>Hasta<input name="date_end" type="date" value="'+html(tenant?.efectiva_hasta||'')+'"></label></div><button>Guardar inquilino</button></form>'+(choices?'<details class="masterPropertyControl"><summary>Destinatario y pagador</summary><form id="masterBillingForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Recibo a nombre de<select name="recipient">'+choices+'</select></label><label>Pagador<select name="payer">'+choices+'</select></label><label>Vigente desde<input name="date_start" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label><label>Medio previsto<select name="payment_method"><option value="transferencia">Transferencia</option><option value="domiciliacion_pendiente">Domiciliacion pendiente</option><option value="otro">Otro</option></select></label><label class="masterWide">Referencia de cuenta o preferencia<input name="payment_reference" placeholder="Referencia interna"></label></div><button class="green">Revisar y confirmar</button></form></details>':'<p class="masterNotice">Registra un propietario actual para configurar el destinatario.</p>')+'</div>';}
 
     function masterPropertyDetailHtml() {
       const row = masterData.property;
@@ -11812,10 +11956,10 @@ function homePage() {
       const relations=(row.relaciones||[]).map(item=>'<li>'+html(item.tipo)+' → '+html(item.propiedad_destino)+'</li>').join('') || '<li>Sin relaciones.</li>';
       const coefficients=(row.coeficientes||[]).map(item=>'<tr><td>'+html(item.grupo_nombre||'Sin grupo')+'</td><td>'+html(item.finalidad)+'</td><td>'+html(item.valor_decimal)+'</td><td>'+html(item.version_estado)+'</td></tr>').join('');
       const stateLabels={activa:'Activa',preparacion:'Pendiente de activacion',inactiva:'Inactiva',baja:'Baja'};const qualityLabels={validada:'Datos validados',observada:'Dato observado',pendiente_revision:'Pendiente de revision'};
-      return '<div class="masterPane"><div class="contentHead"><div><h3>' + html(row.codigo_propiedad) + '</h3><p class="muted">ID estable ' + html(row.id_propiedad) + ' · version ' + html(row.version) + '</p><div class="masterPropertyFlags"><span class="pill">'+html(stateLabels[row.estado]||row.estado)+'</span><span class="pill">'+html(qualityLabels[row.calidad_dato]||row.calidad_dato)+'</span></div></div><button id="masterNewProperty" class="ghost">Nueva</button></div>' + masterPropertyQualityHtml(row) +
+      return '<div class="masterPane"><div class="contentHead"><div><h3>' + html(row.codigo_propiedad) + '</h3><div class="masterPropertyFlags"><span class="pill">'+html(stateLabels[row.estado]||row.estado)+'</span><span class="pill">'+html(qualityLabels[row.calidad_dato]||row.calidad_dato)+'</span></div></div><button id="masterNewProperty" class="ghost">Nueva</button></div>' + masterPropertyQualityHtml(row) +
         '<div class="masterSection"><h3>Propietario'+((row.titularidades?.items||[]).length===1?' actual':'s actuales')+'</h3>' + masterOwnershipSummary(row.titularidades) + '<div class="masterOwnershipActions"><button id="masterStartOwnership" class="green">'+((row.titularidades?.items||[]).length?'Gestionar propietarios':'Asignar propietario')+'</button></div>'+(masterData.ownershipEditing?masterOwnershipFormHtml(row):'')+(masterData.proposal?masterProposalHtml():'')+'</div>' + masterOwnershipHistoryHtml(row) + masterPropertyStructureHtml(row) + masterPropertyForm(row) + masterPropertyLifecycleHtml(row) + masterPropertyBillingHtml(row) +
-        '<div class="masterSection"><h3>Aliases de busqueda</h3><div>' + aliases + '</div><form id="masterAliasForm" class="toolbar"><input name="alias" required placeholder="Nuevo alias"><button>Añadir alias</button></form></div>' +
-        '<div class="masterSection"><h3>Relaciones</h3><ul>' + relations + '</ul><form id="masterRelationForm" class="masterFormGrid"><label>ID propiedad relacionada<input name="id_propiedad_destino" type="number" required></label><label>Tipo<select name="tipo"><option value="anexo">Anexo</option><option value="segregacion">Segregacion</option><option value="agrupacion">Agrupacion</option><option value="otra">Otra</option></select></label><button>Guardar relacion</button></form></div>' +
+        '<details class="masterPropertyControl"><summary>Aliases de busqueda</summary><div>' + aliases + '</div><form id="masterAliasForm" class="toolbar"><input name="alias" required placeholder="Nuevo alias"><button>Añadir alias</button></form></details>' +
+        '<details class="masterPropertyControl"><summary>Relaciones y anexos</summary><ul>' + relations + '</ul><form id="masterRelationForm" class="masterFormGrid"><label>Propiedad relacionada<input name="id_propiedad_destino" type="number" required></label><label>Tipo<select name="tipo"><option value="anexo">Anexo</option><option value="segregacion">Segregacion</option><option value="agrupacion">Agrupacion</option><option value="otra">Otra</option></select></label><button>Guardar relacion</button></form></details>' +
         masterPropertyGroupsHtml(row)+'<details class="masterPropertyControl"><summary>Edicion individual avanzada de coeficientes</summary><table class="masterDataTable"><thead><tr><th>Grupo</th><th>Finalidad</th><th>Valor exacto</th><th>Estado</th></tr></thead><tbody>' + (coefficients||'<tr><td colspan="4">Sin coeficientes.</td></tr>') + '</tbody></table>' + masterCoefficientForm(row) + '</details></div>';
     }
 
@@ -11936,8 +12080,10 @@ function homePage() {
 
     function masterGroupsHtml() {
       const list=(masterData.groups||[]).map(g=>'<button class="masterRow'+(Number(masterData.group?.id_grupo)===Number(g.id_grupo)?' selected':'')+'" data-master-group="'+g.id_grupo+'"><strong>'+html(g.nombre)+'</strong><span>'+html(masterBaseLabel(g.base))+' · '+html(g.propiedades_participantes||0)+' propiedades</span></button>').join('');
-      return '<div class="masterLayout"><div class="masterPane"><h3>Grupos configurados</h3><div class="masterList">'+(list||'<div class="empty">Sin grupos.</div>')+'</div><details class="masterAddContact"><summary>+ Crear grupo</summary><form id="masterGroupForm" class="masterForm masterSection"><div class="masterFormGrid"><label>Codigo<input name="codigo" required></label><label>Nombre<input name="nombre" required></label><label class="masterWide">Descripcion / finalidad<input name="finalidad"></label><label>Tipo de participacion<select name="base"><option value="porcentaje">Porcentaje (%)</option><option value="peso">Peso relativo</option><option value="sin_coeficiente">Sin coeficiente</option></select></label><label class="masterExpectedSum">Total esperado (%)<input name="suma_esperada_decimal" value="100" inputmode="decimal"></label><label>Vigente desde<input name="efectiva_desde" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label></div><p class="muted">Indica como se expresan las participaciones de las propiedades dentro del grupo. La regla economica para repartir una partida se definira posteriormente en el presupuesto.</p><button class="green">Crear grupo</button></form></details></div><div class="masterPane">'+(masterData.group?masterGroupDetailHtml():'<h3>Propiedades y coeficientes</h3><p class="muted">Selecciona un grupo para consultar o gestionar sus participantes.</p>')+'</div></div>';
+      return '<div class="masterLayout"><div class="masterPane"><h3>Grupos configurados</h3><div class="masterList">'+(list||'<div class="empty">Sin grupos.</div>')+'</div><div class="masterSection groupWizard"><div class="contentHead"><h3>¿Como se reparte?</h3>'+masterInfo('Aqui defines quienes participan y como se expresa su participacion. La partida presupuestaria elegira despues la regla economica.')+'</div><div class="groupMethodGrid"><button type="button" data-group-create-mode="porcentaje">Por coeficiente</button><button type="button" data-group-create-mode="sin_coeficiente">A partes iguales</button><button type="button" data-group-create-mode="peso">Por peso relativo</button><button type="button" data-group-create-mode="avanzada">Configuracion avanzada</button></div>'+masterGroupCreateFormHtml()+'</div></div><div class="masterPane">'+(masterData.group?masterGroupDetailHtml():'<h3>Propiedades y coeficientes</h3><p class="muted">Selecciona un grupo o elige como quieres repartir para iniciar el asistente.</p>')+'</div></div>';
     }
+
+    function masterGroupCreateFormHtml(){const mode=masterData.groupCreateMode;if(!mode)return '';if(mode==='avanzada')return '<details open class="masterPropertyControl"><summary>Opciones avanzadas</summary><p class="muted">Utiliza uno de los tres metodos habituales siempre que sea posible. Otros comportamientos economicos se configuran al repartir una partida.</p></details>';const existing=mode==='porcentaje'?(masterData.groups||[]).filter(group=>group.base==='porcentaje').map(group=>'<button type="button" class="masterRow" data-group-use-existing="'+group.id_grupo+'"><strong>'+html(group.nombre)+'</strong><span>Usar coeficiente existente</span></button>').join(''):'';return (existing?'<div class="masterSection"><strong>Coeficientes existentes</strong><div class="masterList compactList">'+existing+'</div><p class="muted">Selecciona uno para gestionar sus propiedades o crea uno especial nuevo.</p></div>':'')+'<form id="masterGroupForm" class="masterForm masterSection"><input type="hidden" name="base" value="'+html(mode)+'"><div class="masterFormGrid"><label>Codigo<input name="codigo" required></label><label>Nombre<input name="nombre" required></label><label class="masterWide">Finalidad<input name="finalidad"></label>'+(mode==='porcentaje'?'<label>Total esperado (%)<input name="suma_esperada_decimal" value="100" inputmode="decimal"></label>':'')+'<label>Vigente desde<input name="efectiva_desde" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label></div><button class="green">'+(mode==='porcentaje'?'Crear coeficiente especial':'Crear grupo')+'</button></form>';}
 
     function masterGroupFiltersHtml() {
       const unique=(key)=>[...new Set((masterData.properties||[]).map(row=>safe(row[key]).trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es')).map(value=>'<option value="'+html(value)+'">'+html(value)+'</option>').join('');
@@ -11967,7 +12113,7 @@ function homePage() {
     function masterDataPanelHtml() {
       if(!masterData.loaded)return '<div class="empty">Cargando datos maestros...</div>';
       if(masterData.error)return '<div class="empty dangerText">'+html(masterData.error)+'</div>';
-      let content=masterData.section==='properties'?masterPropertiesHtml():masterData.section==='owners'?masterOwnersHtml():masterData.section==='structures'?masterStructuresHtml():masterData.section==='groups'?masterGroupsHtml():masterCommunityHtml();
+      let content=masterData.section==='setup'?masterOnboardingHtml():masterData.section==='properties'?masterPropertiesHtml():masterData.section==='owners'?masterOwnersHtml():masterData.section==='structures'?masterStructuresHtml():masterData.section==='groups'?masterGroupsHtml():masterCommunityHtml();
       return '<div class="masterShell">'+masterHeaderHtml()+content+'</div>';
     }
 
@@ -12027,10 +12173,34 @@ function homePage() {
       target.querySelector('#masterApplyPaste')?.addEventListener('click',()=>{valid.forEach(item=>{const row=root.querySelector('.masterMemberRow[data-property-id="'+item.id_propiedad+'"]');if(!row)return;row.querySelector('.masterMemberCheck').checked=true;const input=row.querySelector('.masterMemberValue');if(input)input.value=item.valor_decimal;});masterGroupLiveSummary(root);});
     }
 
+    async function masterUploadOnboarding(sheet=''){
+      const input=$('cards').querySelector('#masterOnboardingFile');const file=input?.files?.[0]||masterData.onboarding.file;
+      if(!file){masterData.onboarding.message='Selecciona un archivo .xlsx o .csv.';render();return;}
+      masterData.onboarding.file=file;masterData.onboarding.message='Analizando columnas...';render();
+      try{const params=new URLSearchParams({id_comunidad:String(masterData.communityId),tipo:masterData.onboarding.kind});if(sheet)params.set('hoja',sheet);const response=await fetch('/api/erp/onboarding/upload?'+params.toString(),{method:'POST',body:file,credentials:'same-origin',headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type||'application/octet-stream'}});const body=await response.json();if(!response.ok)throw new Error(body.error||'No se pudo leer el Excel.');masterData.onboarding.upload=body;masterData.onboarding.preview=null;masterData.onboarding.message='Columnas detectadas. Revisa su correspondencia.';}catch(error){masterData.onboarding.message=error.message;}render();
+    }
+
+    async function masterPreviewOnboarding(){
+      const root=$('cards'),upload=masterData.onboarding.upload;if(!upload)return;const mapeo={};root.querySelectorAll('.masterOnboardingMap').forEach(field=>{mapeo[field.dataset.header]=field.value;});
+      masterData.onboarding.message='Preparando vista previa...';const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=true;
+      try{const body=await api('/api/erp/onboarding/preview',{method:'POST',body:JSON.stringify({id_comunidad:masterData.communityId,tipo:masterData.onboarding.kind,token:upload.token,filename:upload.filename,sheet:root.querySelector('#masterOnboardingSheet')?.value||upload.sheet,mapeo,opciones:{fecha_efectiva:root.querySelector('#masterOnboardingDate')?.value||new Date().toISOString().slice(0,10)}})});masterData.onboarding.preview=body.entity;masterData.onboarding.message=body.entity.incidencias?'Hay incidencias que deben corregirse.':'Vista previa preparada para confirmar.';}catch(error){masterData.onboarding.message=error.message;}render();
+    }
+
+    async function masterConfirmOnboarding(){
+      const preview=masterData.onboarding.preview;if(!preview||!preview.puede_confirmar)return;if(!confirm('Confirmar la importacion revisada?'))return;
+      try{const result=await erpCommand('erp1.onboarding.confirm',{id_importacion:preview.id_importacion},preview.version,{type:'onboarding_importacion',id:String(preview.id_importacion)});const label=result.entity?.tipo==='propietarios'?result.entity.creados+' creados y '+result.entity.actualizados+' actualizados':result.entity.creadas+' creadas y '+result.entity.actualizadas+' actualizadas';masterData.onboarding={kind:masterData.onboarding.kind,upload:null,preview:null,message:'Importacion completada: '+label+'.'};await loadMasterData();}catch(error){masterData.onboarding.message=error.message;render();}
+    }
+
     function bindMasterDataPanel() {
       const root=$('cards');
       root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
       root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
+      root.querySelectorAll('[data-onboarding-kind]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding={kind:button.dataset.onboardingKind,upload:null,preview:null,message:''};render();}));
+      root.querySelector('#masterOnboardingUpload')?.addEventListener('click',()=>masterUploadOnboarding());
+      root.querySelector('#masterOnboardingSheet')?.addEventListener('change',event=>masterUploadOnboarding(event.target.value));
+      root.querySelector('#masterOnboardingPreview')?.addEventListener('click',masterPreviewOnboarding);
+      root.querySelector('#masterOnboardingConfirm')?.addEventListener('click',masterConfirmOnboarding);
+      root.querySelectorAll('[data-tenant-choice]').forEach(button=>button.addEventListener('click',async()=>{const form=root.querySelector('#masterTenantForm');if(button.dataset.tenantChoice==='yes'){form?.classList.remove('hidden');root.querySelectorAll('[data-tenant-choice]').forEach(item=>item.classList.toggle('active',item===button));return;}if(masterData.billing?.tenant){if(!confirm('Finalizar el inquilino actual desde hoy?'))return;try{await erpCommand('erp2.occupancy.save',{id_propiedad:masterData.property.id_propiedad,has_tenant:false,date_start:new Date().toISOString().slice(0,10)});await selectMasterProperty(masterData.property.id_propiedad);}catch(error){alert(error.message);}}else form?.classList.add('hidden');}));
       root.querySelectorAll('[data-master-property]').forEach(button=>button.addEventListener('click',()=>{masterData.ownershipEditing=false;masterData.proposal=null;selectMasterProperty(button.dataset.masterProperty).catch(error=>alert(error.message));}));
       root.querySelectorAll('[data-master-owner]').forEach(button=>button.addEventListener('click',()=>selectMasterOwner(button.dataset.masterOwner).catch(error=>alert(error.message))));
       root.querySelectorAll('[data-master-owner-link]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.section='owners';masterData.search='';await loadMasterData();await selectMasterOwner(button.dataset.masterOwnerLink);}catch(error){alert(error.message);}}));
@@ -12038,6 +12208,8 @@ function homePage() {
       root.querySelectorAll('[data-master-structure]').forEach(button=>button.addEventListener('click',()=>{masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(button.dataset.masterStructure))||null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;render();}));
       root.querySelectorAll('[data-master-structure-link]').forEach(button=>button.addEventListener('click',async()=>{masterData.section='structures';masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(button.dataset.masterStructureLink))||null;await loadMasterData();render();}));
       root.querySelectorAll('[data-master-group]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.group=(await erpQuery('erp1.group.get',{id_grupo:Number(button.dataset.masterGroup)})).entity;render();}catch(error){alert(error.message);}}));
+      root.querySelectorAll('[data-group-create-mode]').forEach(button=>button.addEventListener('click',()=>{masterData.groupCreateMode=button.dataset.groupCreateMode;render();}));
+      root.querySelectorAll('[data-group-use-existing]').forEach(button=>button.addEventListener('click',async()=>{try{masterData.group=(await erpQuery('erp1.group.get',{id_grupo:Number(button.dataset.groupUseExisting)})).entity;masterData.groupCreateMode=null;render();}catch(error){alert(error.message);}}));
       root.querySelector('#masterSearchForm')?.addEventListener('submit',event=>{event.preventDefault();masterData.search=new FormData(event.target).get('search')||'';loadMasterData();});
       root.querySelectorAll('#masterNewProperty').forEach(button=>button.addEventListener('click',()=>{masterData.property={};render();}));
       root.querySelectorAll('#masterNewOwner').forEach(button=>button.addEventListener('click',()=>{masterData.owner={};render();}));
@@ -12052,14 +12224,14 @@ function homePage() {
       bindSubmit('#masterAliasForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;await erpCommand('erp1.property.alias.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterRelationForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad_origen=masterData.property.id_propiedad;data.id_propiedad_destino=Number(data.id_propiedad_destino);await erpCommand('erp1.property.relation.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterCoefficientForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;if(data.id_grupo)data.id_grupo=Number(data.id_grupo);await erpCommand('erp1.coefficient.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
-      bindSubmit('#masterTenantForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;data.has_tenant=form.has_tenant.checked;await erpCommand('erp2.occupancy.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
+      bindSubmit('#masterTenantForm',async form=>{const data=compactPayload(formObject(form));data.id_propiedad=masterData.property.id_propiedad;data.has_tenant=true;await erpCommand('erp2.occupancy.save',data);await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterBillingForm',async form=>{const data=compactPayload(formObject(form));const [recipient_type,recipient_id]=data.recipient.split(':');const [payer_type,payer_id]=data.payer.split(':');const proposed=await erpCommand('erp2.billing.propose',{id_propiedad:masterData.property.id_propiedad,recipient_type,recipient_id:Number(recipient_id),payer_type,payer_id:Number(payer_id),date_start:data.date_start,payment_method:data.payment_method,payment_reference:data.payment_reference});if(!confirm('Confirmar esta configuracion de destinatario y pagador?'))return;await erpCommand('erp2.billing.confirm',{id_config_recibo:proposed.entity.id_config_recibo});await selectMasterProperty(masterData.property.id_propiedad);});
       bindSubmit('#masterExerciseForm',async form=>{await erpCommand('erp1.exercise.save',compactPayload(formObject(form)));await loadMasterData();});
       const saveStructure=async form=>{const data=compactPayload(formObject(form));const id=Number(data.id_agrupacion||0),version=Number(data.version||0);delete data.version;if(!id)delete data.id_agrupacion;if(data.id_padre)data.id_padre=Number(data.id_padre);else delete data.id_padre;data.estado=id?(masterData.structure?.estado||'activa'):'activa';const result=await erpCommand('erp1.aggregation.save',data,id?version:null);await loadMasterData();masterData.structure=(masterData.community?.agrupaciones||[]).find(item=>Number(item.id_agrupacion)===Number(result.entity.id_agrupacion))||null;render();};
       bindSubmit('#masterStructureCreateForm',saveStructure);
       bindSubmit('#masterStructureEditForm',saveStructure);
       bindSubmit('#masterCommunityForm',async form=>{if(state.usuario?.rol!=='Superusuario')return;const data=formObject(form);const version=Number(data.version);delete data.version;await erpCommand('erp1.community.update',data,version);await loadMasterData();});
-      bindSubmit('#masterGroupForm',async form=>{const data=compactPayload(formObject(form));data.estado='activo';if(data.base!=='porcentaje')delete data.suma_esperada_decimal;const result=await erpCommand('erp1.group.save',data);await loadMasterData();masterData.group=(await erpQuery('erp1.group.get',{id_grupo:result.entity.id_grupo})).entity;render();});
+      bindSubmit('#masterGroupForm',async form=>{const data=compactPayload(formObject(form));data.estado='activo';if(data.base!=='porcentaje')delete data.suma_esperada_decimal;const result=await erpCommand('erp1.group.save',data);masterData.groupCreateMode=null;await loadMasterData();masterData.group=(await erpQuery('erp1.group.get',{id_grupo:result.entity.id_grupo})).entity;render();});
       const groupBase=root.querySelector('#masterGroupForm [name="base"]');groupBase?.addEventListener('change',()=>{const expected=root.querySelector('.masterExpectedSum');if(expected)expected.hidden=groupBase.value!=='porcentaje';});if(groupBase)groupBase.dispatchEvent(new Event('change'));
       root.querySelector('#masterStartOwnership')?.addEventListener('click',()=>{masterData.ownershipEditing=true;masterData.proposal=null;render();});
       root.querySelector('#masterCancelOwnership')?.addEventListener('click',()=>{masterData.ownershipEditing=false;render();});
@@ -15053,6 +15225,50 @@ finally:
     const session = readSession(req);
     if (!session) return sendJson(res, 401, { ok: false, error: "No autenticado." });
     return sendJson(res, 200, await runAdminCommand(session, "list", {}, String(req.socket.remoteAddress || "web")));
+  }
+  if (req.method === "GET" && url.pathname === "/api/erp/onboarding/template") {
+    const session = readSession(req);
+    if (!session) return sendJson(res, 401, { ok:false, error:"No autenticado." });
+    const kind=String(url.searchParams.get("tipo")||"");
+    const buffer=await onboardingTemplate(kind);
+    const filename=kind==="propietarios"?"plantilla-propietarios.xlsx":"plantilla-propiedades.xlsx";
+    res.writeHead(200,{"Content-Type":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","Content-Length":buffer.length,"Content-Disposition":`attachment; filename="${filename}"`,"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"});
+    res.end(buffer); return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/erp/onboarding/upload") {
+    const session=readSession(req);
+    if (!session) return sendJson(res,401,{ok:false,error:"No autenticado."});
+    const communityId=Number(url.searchParams.get("id_comunidad")||0),kind=String(url.searchParams.get("tipo")||"");
+    if (!communityId||!["propietarios","propiedades"].includes(kind)) return sendJson(res,400,{ok:false,error:"Selecciona comunidad y tipo de importacion."});
+    requireCommunityPermission(session,communityId,"puede_actualizar");
+    await runErpContract(sessionForPermission(session,"puede_actualizar"),"query",{query:"erp1.community.get",id_comunidad:communityId,filters:{}});
+    const filename=decodeURIComponent(String(req.headers["x-file-name"]||"datos.xlsx")).replace(/[\\/\r\n]/g,"_");
+    const extension=path.extname(filename).toLowerCase();
+    if (!new Set([".xlsx",".csv"]).has(extension)) return sendJson(res,400,{ok:false,error:"Utiliza un archivo .xlsx o .csv."});
+    const buffer=await readRawBody(req,20*1024*1024); const digest=crypto.createHash("sha256").update(buffer).digest("hex");
+    const token=digest+extension; const folder=path.join(uploadsDir,"onboarding",String(communityId));fs.mkdirSync(folder,{recursive:true});
+    const stored=path.join(folder,token); if(!fs.existsSync(stored))fs.writeFileSync(stored,buffer,{mode:0o600});
+    const parsed=await readOnboardingWorkbook(buffer,filename,String(url.searchParams.get("hoja")||""));
+    return sendJson(res,200,{ok:true,token,file_hash:digest,filename,sheets:parsed.sheets,sheet:parsed.sheet,headers:parsed.headers,
+      suggestions:Object.fromEntries(parsed.headers.map(header=>[header,suggestOnboardingField(header,kind)])),sample:parsed.rows.slice(0,5).map(row=>row.values),row_count:parsed.rows.length});
+  }
+  if (req.method === "POST" && url.pathname === "/api/erp/onboarding/preview") {
+    const session=readSession(req);
+    if (!session) return sendJson(res,401,{ok:false,error:"No autenticado."});
+    const body=await readBody(req,2*1024*1024); const communityId=Number(body.id_comunidad||0),kind=String(body.tipo||"");
+    const token=String(body.token||"");
+    if(!communityId||!["propietarios","propiedades"].includes(kind)||!/^[a-f0-9]{64}\.(xlsx|csv)$/.test(token))return sendJson(res,400,{ok:false,error:"La importacion no es valida."});
+    const stored=path.join(uploadsDir,"onboarding",String(communityId),token);
+    if(!fs.existsSync(stored))return sendJson(res,404,{ok:false,error:"El archivo temporal ya no esta disponible. Vuelve a seleccionarlo."});
+    const buffer=fs.readFileSync(stored);const parsed=await readOnboardingWorkbook(buffer,body.filename||token,body.sheet||"");
+    const mapping=body.mapeo&&typeof body.mapeo==="object"?body.mapeo:{};const destinations=new Set();
+    for(const destination of Object.values(mapping)){if(!destination)continue;if(destinations.has(destination))return sendJson(res,400,{ok:false,error:"Dos columnas no pueden alimentar el mismo campo."});destinations.add(destination);}
+    const required=kind==="propietarios"?["codigo_propietario","nombre"]:["codigo_propiedad","codigo_propietario"];
+    const missing=required.filter(field=>!destinations.has(field));
+    if(missing.length)return sendJson(res,400,{ok:false,error:"Relaciona las columnas obligatorias antes de continuar: "+missing.map(field=>onboardingFields[kind].find(row=>row[0]===field)?.[1]||field).join(", ")+"."});
+    const rows=parsed.rows.map(source=>{const target={};for(const [header,destination] of Object.entries(mapping)){const value=source.values[header];if(!destination||value==="")continue;if(destination.startsWith("miembro_grupo:")){const normalizedValue=excelKey(value);if(["no","0","false","falso"].includes(normalizedValue))continue;}target[destination]=value;}return target;}).filter(row=>Object.keys(row).length);
+    const result=await runErpContract(session,"command",{command:"erp1.onboarding.preview",id_comunidad:communityId,payload:{tipo:kind,hash_archivo:token.slice(0,64),nombre_archivo:body.filename||token,ruta_privada:path.relative(dataDir,stored),hoja:parsed.sheet,cabeceras:parsed.headers,mapeo:mapping,opciones:body.opciones||{},filas:rows},idempotency_key:crypto.randomUUID(),expected_version:null,reason:"Configuracion inicial revisada desde Excel",origin:"importer",evidence:{type:"onboarding_file",id:token.slice(0,64)}});
+    return sendJson(res,200,result);
   }
   if (req.method === "GET" && url.pathname === "/api/erp/query") {
     const session = readSession(req);

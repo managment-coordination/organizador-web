@@ -88,6 +88,11 @@ try {
   const read=await user('Verification Read','Consulta',[communityA]);
   const reviewer=await user('Verification Reviewer','Usuario',[communityA],{gestionar_seguridad:true,community_permissions:[{id_comunidad:communityA,rol_en_comunidad:'Usuario',puede_gestionar_seguridad:1}]});
   results.push('First access with temporary key and real named roles');
+  const deniedUpload=await fetch(`${base}/api/erp/onboarding/upload?id_comunidad=${communityA}&tipo=propietarios`,{
+    method:'POST',headers:{Cookie:read.cookie,'x-file-name':'propietarios.csv','content-type':'text/csv'},body:'Codigo,Nombre\n1,Prueba',signal:AbortSignal.timeout(10000),
+  });
+  assert.equal(deniedUpload.status,403,await deniedUpload.text());
+  results.push('Onboarding upload is rejected before storage for read-only community access');
   const erpCommand={command:'erp0.foundation.set_status',id_comunidad:communityA,payload:{status:'prepared'},idempotency_key:'release-erp0-foundation',expected_version:0,reason:'Release reference path',origin:'test'};
   const erpFirst=(await request('/api/erp/command',worker.cookie,erpCommand)).value;
   assert.equal(erpFirst.entity.version,1);
