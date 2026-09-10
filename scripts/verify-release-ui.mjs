@@ -297,6 +297,8 @@ try {
         assert.match(await page.locator('.budgetMetric').first().innerText(),/0,00/);
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Budgets horizontal overflow');
         await page.screenshot({path:path.join(output,`${viewport.width}-budget-created.png`),fullPage:true});
+        await page.locator('#budgetImportOpen').click();
+        assert.ok(await page.locator('#budgetImportExercise option').count()>0);
       }
       if(view==='ai') {
         await page.locator('#aiUnifiedText').fill('quien es el propietario MARCHITO PRUEBA');

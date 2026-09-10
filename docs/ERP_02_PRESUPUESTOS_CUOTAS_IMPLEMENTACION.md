@@ -172,7 +172,7 @@ ERP 2A acredita el hito 1; ERP 2B, el hito 2; ERP 2C-2D acreditan servicios y re
 
 ## Revision UX previa a ERP 3 - 11/09/2026
 
-La interfaz aplica [ERP UX](ERP_UX_PRINCIPIOS.md) sin cambiar servicios ni resultados. Si una comunidad no tiene ejercicios, `Nuevo presupuesto` explica el bloqueo y ofrece `Crear ejercicio` dentro del mismo flujo. Un ano natural propone automaticamente 1 de enero y 31 de diciembre, permite editar ambas fechas y regresa al alta con el ejercicio nuevo seleccionado. La operacion reutiliza `erp1.exercise.save` y sus permisos, auditoria y validaciones.
+La interfaz aplica [ERP UX](ERP_UX_PRINCIPIOS.md) sin cambiar servicios ni resultados. Si una comunidad no tiene ejercicios, `Nuevo presupuesto` explica el bloqueo y ofrece `Crear ejercicio` dentro del mismo flujo. Un ano natural propone automaticamente 1 de enero y 31 de diciembre, permite editar ambas fechas y regresa al alta con el ejercicio nuevo seleccionado. La importacion muestra tambien el ejercicio de destino de forma explicita y conserva la seleccion recien creada. La operacion reutiliza `erp1.exercise.save` y sus permisos, auditoria y validaciones.
 
 En escritorio y movil se compactaron cabeceras, formularios, metricas y paneles; la informacion avanzada permanece plegada y las incidencias economicas siguen visibles. La regresion compara hashes de simulaciones, resultados, lineas de calculo y planes de cuota antes y despues del onboarding: no existe variacion economica. El flujo de presupuesto, simulacion, explicacion, comparacion y aprobacion certificado en ERP 2 permanece intacto.
 
