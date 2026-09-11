@@ -64,4 +64,13 @@ Checkpoint previo previsto `navigation-structure-pre-20260911` en `42aa98f`. Cam
 
 Pruebas locales superadas: `verify-navigation-structure.mjs` comprueba los 17 IDs conservados, 15 destinos visibles del perfil completo con clics reales en 360/390/1440 px, apertura desde Inicio a Trabajo Hoy y de mapa a ficha, restricciones de Presidente/Consulta/Seguridad, rama activa, ausencia de desbordamiento y errores JavaScript. `verify-release-ui.mjs` supera sus siete vistas y recorridos ERP en escritorio/movil con apertura de ramas. Condiciones de rutas HTTP comparadas con `42aa98f`: identicas. No se prueba una pantalla inexistente de Contabilidad/Proveedores como si estuviera implementada; sus consultas siguen en la regresion operativa habitual.
 
-La rama de la vista activa se abre y las otras se pliegan al cambiar de pantalla. No se requiere mantener todas las ramas desplegadas para localizar el destino actual. Publicacion y restauracion se registran tras completar la puerta habitual.
+La rama de la vista activa se abre y las otras se pliegan al cambiar de pantalla. No se requiere mantener todas las ramas desplegadas para localizar el destino actual.
+
+### Cierre
+
+- Reorganizacion completada y publicada: 100% de este trabajo transversal, sin variar certificaciones ERP. Implementacion `c7e9e10`; checkpoint final `navigation-structure-certified-20260911`. Codigo y documentacion de navegacion en GitHub.
+- Capturas finales revisadas: `navigation-structure-B9Rb8q` (360/390/1440); regresion UI `organizador-ui-release-pd8Fkj` (siete vistas y recorridos en escritorio/movil). Comprobacion geometrica tras terminar la animacion del menu, no solo ancho del documento.
+- Puerta Ubuntu superada: ERP 0/1/2, onboarding y regresion HTTP operativa (tareas/proyectos, documentos/informes, presidencia, seguridad, asambleas, IA y consultas contables). Pruebas sobre copias, sin operaciones economicas reales.
+- Backup consistente `backups/before-operational-publish-20260911-094207`; checksums correctos, restauracion aislada `backups/restore-navigation-_psa6zcp/restored.db`, integridad y FKs correctas.
+- Servicio publicado en 8771; HTTP 200 y estructura nueva comprobados por LAN y Tailscale. Sin migracion ni cambios de dominio/API. No se toca UNO Marbella.
+- Incidencias bloqueantes: ninguna. Limitacion de inventario: Contabilidad/Proveedores no tienen vista web independiente que reubicar en este repositorio; sus datos/consumidores permanecen, y su ubicacion futura esta definida. ERP 3 sigue pendiente de decisiones funcionales de su contrato, no de esta reorganizacion.
