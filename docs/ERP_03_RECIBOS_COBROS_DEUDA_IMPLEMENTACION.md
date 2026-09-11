@@ -72,7 +72,7 @@ Las evidencias de esta seccion inicial corresponden al checkpoint de servicios; 
 
 ## Continuacion web y correcciones (estado vigente)
 
-Reanudacion desde `cf61ef7`, sin revertir `67c12a3`. Checkpoint previo `erp3-resume-web-20260911`. Checkpoint de avance previsto `erp3-progress-web-20260911`; NO es cierre/publicacion.
+Reanudacion desde `cf61ef7`, sin revertir `67c12a3`. Checkpoint previo `erp3-resume-web-20260911`. Codigo de avance `be1ce8bdbdc37aebd70186ce8fd06cd603518b6f`, tag `erp3-progress-web-20260911`; NO es cierre/publicacion.
 
 ### Bloques incorporados
 
@@ -95,6 +95,7 @@ Reanudacion desde `cf61ef7`, sin revertir `67c12a3`. Checkpoint previo `erp3-res
 - Web ERP 3: `%TEMP%/organizador-erp3-web-6wVyBi`. Playwright real 1440/390/360: navegacion, registrar/revisar/confirmar cobro, imputacion parcial, devolucion y rectificacion sin reimputacion, Excel con vista previa/confirmacion/reimportacion, incidencias visibles; cero errores JS/desbordamiento global. Capturas inspeccionadas de recibos escritorio/movil en ejecucion previa `%TEMP%/organizador-erp3-web-4IXWER`.
 - Navegacion general: `%TEMP%/navigation-structure-YkPIQ5`, 390/360/1920, 16 vistas accesibles al perfil de prueba, restricciones de presidente/lector/seguridad y cero errores JS/desbordamientos. No implica aceptacion de todas las operaciones financieras en cada perfil.
 - `verify-erp3-checkpoint.py` prepara un backup consistente de un commit y fixture sintetico, verifica restauracion aislada, hashes de originales y proyecciones. No sustituye backup de produccion.
+- Backup de este checkpoint: `C:/Users/EQUIPO/Documents/Codex/ERP3-synthetic-checkpoints/erp0-backup-20260911-151817`. **SINTETICO: NO RESTAURAR EN PRODUCCION.** Restauracion aislada `%TEMP%/organizador-erp0-restore-rizhyoz4`: SHA-256, 164 tablas, integridad/FK, hashes de originales y proyecciones economicas identicos. Prueba HTTP adicional del codigo restaurado con dependencias locales enlazadas: `/health` correcto en puerto aislado 49625; proceso detenido al terminar. La prueba automatica de archivo indica `runtime_accessible:false` porque no enlaza dependencias; esta comprobacion HTTP posterior es independiente y positiva. Produccion no modificada.
 
 ### Pendientes efectivos para el cierre (no repetir lo anterior)
 
