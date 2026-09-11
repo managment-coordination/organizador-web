@@ -11,10 +11,29 @@ from .contracts import Actor
 from .database import connect, write_transaction
 from .errors import ContractError, ConflictError, NotFoundError
 from .migrations import utc_now
-from .receivables_contracts import day, identity, require_fields
+from .receivables_contracts import day, identity, require_fields, text
 
 
 class BankingFiles:
+    def reveal_account(self,session,community,account_id,reason):
+        self._recent_auth(session)
+        reason=text(reason,'Motivo de consulta bancaria',maximum=1000)
+        conn=connect(self.database_path)
+        try:
+            with write_transaction(conn):
+                actor,_=self._session(conn,session,community,'reveal')
+                account=self._entity(conn,'erp_cuentas_pagador',community,account_id)
+                now=utc_now()
+                context=self.vault.put(conn,community,'banking-reveal-context',{'reason':reason},now)
+                from .audit import write_event
+                write_event(conn,community_id=community,actor=actor,action='erp4.account.reveal',
+                    entity_type='erp_cuentas_pagador',entity_id=account['id'],before=None,after=self._account_public(account),
+                    reason='Consulta bancaria autorizada',origin='web',request_id=uuid.uuid4().hex,
+                    entity_version=account['version'],metadata={'protected_context_id':context})
+                return {'ok':True,'id':account['id'],'iban':self.vault.get(conn,community,account['secret_id'],'payer-account')['iban']}
+        finally:
+            conn.close()
+
     @staticmethod
     def _recent_auth(session):
         try:

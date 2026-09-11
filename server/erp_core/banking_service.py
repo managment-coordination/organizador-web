@@ -13,6 +13,7 @@ from .banking_remittances import RemittanceOperations
 from .banking_files import BankingFiles
 from .banking_results import BankingResults
 from .banking_queries import BankingQueries
+from .banking_imports import BankingImports
 from .contracts import Actor, canonical_json
 from .database import connect, write_transaction
 from .errors import ConflictError, ContractError, NotFoundError
@@ -27,14 +28,14 @@ CAPABILITIES = frozenset(('read_masked', 'manage_accounts', 'manage_mandates', '
 
 COMMAND_NAMES = frozenset('erp4.' + name for name in (
     'permissions.save', 'account.create', 'account.link', 'account.state', 'creditor.create',
-    'mandate.create', 'mandate.amend', 'mandate.transition', 'direct_debit.confirm',
+    'mandate.create', 'mandate.amend', 'mandate.transition', 'direct_debit.confirm', 'direct_debit.state',
     'notification.record', 'remittance.preview', 'remittance.prepare', 'remittance.cancel_local',
     'profile.configure', 'remittance.build', 'remittance.export', 'presentation.record',
     'results.import', 'results.preview', 'results.confirm', 'results.resolve', 'retry.preview', 'retry.confirm',
-    'cancellation.request', 'cancellation.not_presented'))
+    'cancellation.request', 'cancellation.not_presented', 'import.preview', 'import.confirm'))
 
 
-class BankingService(MandateOperations, RemittanceOperations, BankingFiles, BankingResults, BankingQueries):
+class BankingService(MandateOperations, RemittanceOperations, BankingFiles, BankingResults, BankingQueries, BankingImports):
     def __init__(self, database_path, *, vault=None):
         self.database_path = str(database_path)
         self.vault = vault

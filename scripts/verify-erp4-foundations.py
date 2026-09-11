@@ -888,6 +888,60 @@ class BankingTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.service.download_bytes(session,self.community,exported['download_token'])
 
+    def test_61_end_one_domiciliation_does_not_revoke_shared_mandate(self):
+        p,m=self.remittance_setup()
+        direct=self.conn.execute('SELECT * FROM erp_domiciliaciones ORDER BY id LIMIT 1').fetchone()
+        self.service.direct_debit_state(self.session,self.envelope('direct_debit.state',
+            {'id':direct['id'],'state':'finalizada','effective_from':date.today().isoformat()},version=1))
+        self.assertEqual(self.conn.execute('SELECT state FROM erp_mandatos WHERE id=?',(m['id'],)).fetchone()[0],'activo')
+        with self.assertRaises(ContractError):
+            self.service.remittance_preview(self.session,self.envelope('remittance.preview',p))
+        other_ids=[r[0] for r in self.conn.execute('SELECT id FROM erp_recibos WHERE number LIKE ? AND id_propiedad!=?',('BANK-TEST-%',direct['property_id']))]
+        preview=self.service.remittance_preview(self.session,self.envelope('remittance.preview',{**p,'receipt_ids':other_ids}))['entity']
+        self.assertEqual(len(preview['lines']),2)
+
+    def test_62_bank_import_observed_no_mandate_activation_or_duplicates(self):
+        self.grant('manage_accounts')
+        p={'source':'SYNTHETIC-LEGACY','cutoff':'2026-09-01','rows':[{
+            'iban':IBAN,'observed_mandate_reference':'OLD-REFERENCE-UNVERIFIED','observed_property_reference':'UNKNOWN'}]}
+        preview=self.service.import_preview(self.session,self.envelope('import.preview',p))['entity']
+        repeated=self.service.import_preview(self.session,self.envelope('import.preview',p))['entity']
+        self.assertEqual(preview['id'],repeated['id'])
+        self.assertNotIn(IBAN,json.dumps(preview))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cuentas_pagador').fetchone()[0],0)
+        env=self.envelope('import.confirm',{'id':preview['id'],'rows':[1],'acknowledge_observed_mandates':True},version=1)
+        self.service.import_confirm(self.session,env)
+        self.assertTrue(self.service.import_confirm(self.session,env)['idempotent_replay'])
+        detail=self.service.import_get(self.session,self.query('import.get',{'id':preview['id']}))['entity']
+        self.assertEqual(detail['items'][0]['cutoff'],'2026-09-01')
+        self.assertTrue(detail['items'][0]['observed_mandate_pending'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_mandatos').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cuentas_pagador').fetchone()[0],1)
+
+    def test_63_bank_import_invalid_row_rolls_back_whole_confirmation(self):
+        self.grant('manage_accounts')
+        p={'source':'SYNTHETIC','cutoff':'2026-09-01','rows':[{'iban':IBAN},{'iban':'invalid'},{'iban':IBAN}]}
+        preview=self.service.import_preview(self.session,self.envelope('import.preview',p))['entity']
+        self.assertTrue(preview['items'][1]['issues'])
+        self.assertTrue(preview['items'][2]['issues'])
+        with self.assertRaises(ConflictError):
+            self.service.import_confirm(self.session,self.envelope('import.confirm',
+                {'id':preview['id'],'rows':[1,2],'acknowledge_observed_mandates':True},version=1))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cuentas_pagador').fetchone()[0],0)
+
+    def test_64_reveal_is_explicit_recent_and_never_in_general_audit(self):
+        account=self.account()
+        self.grant('read_masked')
+        with self.assertRaises(PermissionError):
+            self.service.reveal_account(self.session,self.community,account['id'],'Verificacion bancaria')
+        self.grant('reveal')
+        result=self.service.reveal_account(self.session,self.community,account['id'],'Verificacion: '+IBAN)
+        self.assertEqual(result['iban'],IBAN)
+        with self.assertRaises(PermissionError):
+            self.service.reveal_account({**self.session,'banking_reauthenticated_at':None},self.community,account['id'],'Verificacion')
+        for table in ('erp_command_log','erp_audit_events','erp_outbox','auditoria'):
+            self.assertNotIn(IBAN,repr([tuple(r) for r in self.conn.execute('SELECT * FROM '+table)]))
+
 
 if __name__ == '__main__':
     print('Isolated ERP4 workspace:', WORK, flush=True)

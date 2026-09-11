@@ -31,7 +31,7 @@ let result=await request('command',{command:'erp4.account.create'},req=>{delete 
 assert.equal(result.status,403);assert.equal(readCount,0);assert.equal(calls.length,0);
 result=await request('command',{command:'erp4.account.create',id_comunidad:2});
 assert.equal(result.status,403);assert.equal(calls.length,0);
-result=await request('reauthenticate',{password:'wrong'});assert.equal(result.status,401);
+result=await request('reauthenticate',{password:'wrong'});assert.equal(result.status,403);
 result=await request('reauthenticate',{password:'synthetic-password'});assert.equal(result.status,200);
 await request('command',{command:'erp4.remittance.export',origin:'agent',banking_reauthenticated_at:'forged'});
 assert.equal(calls.at(-1).session.banking_reauthenticated_at,new Date(now).toISOString());
@@ -44,7 +44,7 @@ assert.equal(calls.at(-1).session.banking_reauthenticated_at,null);
 result=await request('download',{token:'synthetic'});
 assert.equal(result.bytes.toString(),'<xml/>');assert.match(result.headers['Cache-Control'],/no-store/);
 assert.equal(result.body,undefined);assert.equal(result.headers['Content-Type'],'application/xml; charset=utf-8');
-for(let i=0;i<5;i++) assert.equal((await request('reauthenticate',{password:'wrong'})).status,401);
+for(let i=0;i<5;i++) assert.equal((await request('reauthenticate',{password:'wrong'})).status,403);
 assert.equal((await request('reauthenticate',{password:'synthetic-password'})).status,429);
 assert.equal((await request('query',{query:'erp3.receipt.list'})).status,400);
 console.log('ERP4 HTTP checks passed (HTTPS, proxy, origin, tenant, reauthentication, expiry, session binding, rate limit, private download).');

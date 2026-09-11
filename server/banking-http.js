@@ -65,7 +65,7 @@ export function createBankingHttp(config, services) {
         }
         limiter.count++; attempts.set(limiterKey,limiter);
         if (typeof body.password!=='string' || body.password.length>1024 || !await verifyPassword(session,body.password)) {
-          sendJson(res,401,{ok:false,error:'No se ha podido verificar tu acceso.'}); return true;
+          sendJson(res,403,{ok:false,error:'No se ha podido verificar tu acceso.'}); return true;
         }
         attempts.delete(limiterKey);
         confirmations.set(key,{until:now+300000,at:new Date(now).toISOString()});
@@ -73,11 +73,12 @@ export function createBankingHttp(config, services) {
       }
       const trustedSession={...session,banking_reauthenticated_at:confirmations.get(key)?.at || null};
       const action=url.pathname.split('/').at(-1);
-      if (!['query','command','download'].includes(action)) {
+      if (!['query','command','download','reveal'].includes(action)) {
         sendJson(res,404,{ok:false,error:'Operacion bancaria no encontrada.'}); return true;
       }
       let envelope;
       if (action==='download') envelope={id_comunidad:community,token:body.token};
+      else if (action==='reveal') envelope={id_comunidad:community,account_id:body.account_id,reason:body.reason};
       else {
         envelope={...body,id_comunidad:community};
         if (action==='command') envelope.origin='web';

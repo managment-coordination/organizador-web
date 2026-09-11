@@ -301,3 +301,32 @@ class MandateOperations:
                 raise ContractError('Hay sustituciones que no corresponden a la seleccion.')
             return {'id': mandate['id'], 'direct_debit_ids': result, 'count': len(result), 'version': mandate['version']}
         return self._write(session, env, 'manage_mandates', op)
+
+    def direct_debit_state(self, session, env):
+        def op(conn, actor, e, now):
+            p=require_fields(e.payload,('id','state','effective_from'))
+            current=self._entity(conn,'erp_domiciliaciones',e.community_id,p['id'])
+            self._version(current,e.expected_version)
+            previous=conn.execute('''SELECT * FROM erp_domiciliacion_versiones WHERE id_comunidad=? AND direct_debit_id=?
+                ORDER BY version DESC LIMIT 1''',(e.community_id,current['id'])).fetchone()
+            start=day(p['effective_from'])
+            if start<previous['effective_from']:
+                raise ConflictError('Revisa la revision futura antes de modificar una fecha anterior.')
+            allowed={'activa':{'suspendida','finalizada'},'suspendida':{'finalizada'}}
+            if p['state'] not in allowed.get(previous['state'],set()):
+                raise ContractError('Para volver a domiciliar revisa de nuevo el pagador y el mandato.')
+            secret=self.vault.put(conn,e.community_id,'direct-debit-evidence',self._evidence_value(e),now)
+            conn.execute('''INSERT INTO erp_domiciliacion_versiones
+                (id_comunidad,direct_debit_id,billing_config_id,mandate_id,effective_from,effective_until,state,version,
+                supersedes_id,evidence_secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,NULL,?,?,?,?,?,?)''',
+                (e.community_id,current['id'],previous['billing_config_id'],previous['mandate_id'],start,p['state'],
+                 previous['version']+1,previous['id'],secret,now,actor.user_id))
+            conn.execute('UPDATE erp_domiciliaciones SET version=version+1 WHERE id_comunidad=? AND id=?',(e.community_id,current['id']))
+            # Scope the review to the affected property, not other properties sharing the mandate.
+            conn.execute('''UPDATE erp_remesas SET needs_review=1,version=version+1 WHERE id_comunidad=? AND id IN
+                (SELECT v.remittance_id FROM erp_remesa_revisiones v JOIN erp_remesa_lineas l ON l.revision_id=v.id
+                 JOIN erp_remesa_reservas res ON res.line_id=l.id JOIN erp_recibos r ON r.id=l.receipt_id
+                 WHERE v.id_comunidad=? AND r.id_propiedad=? AND res.state='activa')''',
+                (e.community_id,e.community_id,current['property_id']))
+            return {'id':current['id'],'version':current['version']+1,'state':p['state'],'effective_from':start}
+        return self._write(session,env,'manage_mandates',op)

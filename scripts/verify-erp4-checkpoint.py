@@ -50,6 +50,13 @@ if adapter_test.exists():
     if validation.returncode:
         raise SystemExit('Fallo de validacion del adaptador restaurado: ' + validation.stderr)
     adapter_verified = True
+http_test = Path(restored['restore']) / 'scripts' / 'verify-erp4-http.mjs'
+http_verified = False
+if http_test.exists():
+    validation = subprocess.run(['node', str(http_test)], capture_output=True, text=True)
+    if validation.returncode:
+        raise SystemExit('Fallo de validacion del transporte bancario restaurado.')
+    http_verified = True
 sys.path.insert(0, str(Path(restored['restore']) / 'server'))
 from erp_core.banking_crypto import BankVault
 from erp_core.database import connect
@@ -81,6 +88,7 @@ assert before[1], 'El fixture debe contener datos bancarios sinteticos cifrados.
 with tarfile.open(Path(created['backup']) / 'application-and-documents.tar.gz') as bundle:
     assert not any('custody.key' in m.name or 'test-custody.key' in m.name for m in bundle.getmembers())
 proof = {'ok': True, 'synthetic_only': True, 'production_bank_activation': False, 'commit': commit,
+         'restored_http_tests_passed': http_verified,
          'backup': created['backup'], 'restore': restored['restore'], 'separate_custody': str(custody),
          'tables': len(before[0]), 'all_table_hashes_identical': True, 'decrypted_values_identical': True,
          'keys_excluded_from_application_archive': True, 'restored_adapter_tests_passed': adapter_verified}

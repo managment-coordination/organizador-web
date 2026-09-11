@@ -10,7 +10,7 @@ from erp_core.errors import ContractError, ConflictError, NotFoundError
 
 QUERIES = {
     'workspace.get','creditor.list','account.list','mandate.list','mandate.detail',
-    'direct_debit.list','remittance.list','remittance.get','results.list','results.get',
+    'direct_debit.list','remittance.list','remittance.get','results.list','results.get','import.get',
 }
 
 
@@ -32,6 +32,8 @@ def main():
     if action=='download':
         data=service.download_bytes(session,value.get('id_comunidad'),value.get('token'))
         return {'ok':True,'content_base64':base64.b64encode(data).decode('ascii')}
+    if action=='reveal':
+        return service.reveal_account(session,value.get('id_comunidad'),value.get('account_id'),value.get('reason'))
     raise NotFoundError('Operacion bancaria no disponible.')
 
 
