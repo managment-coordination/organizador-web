@@ -225,3 +225,5 @@ tbody tr:hover { background:#f7fafc; }
   .finWorkspace .budgetTabs { gap:4px; flex-wrap:wrap; overflow:visible; }
   .finWorkspace .budgetTabs button { white-space:normal; min-height:40px; }
 }
+.finSelection { max-height: 240px; overflow: auto; padding: 8px 0; }
+.finSelection label[hidden] { display: none; }

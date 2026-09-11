@@ -9,17 +9,27 @@ function createReceivablesUI(ctx) {
   const can=key=>Boolean(s.refs?.capabilities?.[key]);
   const select=(name,label,options,value='',required=false)=>`<label>${h(label)}<select name="${name}" ${required?'required':''}>${options.map(([id,text])=>`<option value="${h(id)}" ${String(id)===String(value)?'selected':''}>${h(text)}</option>`).join('')}</select></label>`;
   const input=(name,label,type='text',value='',required=true)=>`<label>${h(label)}<input name="${name}" type="${type}" value="${h(value)}" ${required?'required':''} ${type==='text'&&name.includes('amount')?'inputmode="decimal"':''}></label>`;
-  const button=(action,label,extra='',cls='')=>`<button type="button" data-fin-action="${action}" ${extra} class="${cls}">${h(label)}</button>`;
+  const buttonHtml=(action,label,extra='',cls='')=>`<button type="button" data-fin-action="${action}" ${extra} class="${cls}">${h(label)}</button>`;
   const entityOptions=(kind,empty='Selecciona')=>[['',empty],...(kind==='property'?(s.workspace?.properties||[]).map(p=>[p.id_propiedad,p.codigo_propiedad]):[
     ...(s.workspace?.owners||[]).map(o=>['owner:'+o.id_propietario,o.nombre]),...(s.workspace?.persons||[]).map(p=>['person:'+p.id_persona_cobro,p.nombre+' (persona de cobro)'])])];
   const subject=value=>{const [type,id]=String(value).split(':');return {type,id:Number(id)};};
-  const scoped=()=>({...s.filters,effective_at:s.cut,offset:s.offset,limit:50});
+  const pageSize=window.matchMedia('(max-width: 600px)').matches?10:50;
+  const scoped=()=>({...s.filters,effective_at:s.cut,offset:s.offset,limit:pageSize});
   const q=async(name,filters={})=>{
-    const community=s.community;
+    const community=s.community,token=generation;
     const result=await api('/api/erp/query?'+new URLSearchParams({query:name,id_comunidad:String(community),filters:JSON.stringify(filters)}));
-    if(community!==s.community)throw new Error('La comunidad seleccionada ha cambiado.');
+    if(community!==s.community||token!==generation)throw new Error('El contexto seleccionado ha cambiado.');
     return result;
   };
+  async function allPages(name,key='items',count='total_count') {
+    const rows=[];let known;
+    for(let offset=0;;offset+=200) {
+      const data=(await q(name,{effective_at:s.cut,...(known?{known_at:known}:{}),offset,limit:200})).entity;
+      known=data.known_at||known;rows.push(...data[key]);
+      if(rows.length>=data[count])return rows;
+      if(rows.length>=20000)throw new Error('Mas de 20.000 registros. Acota la operacion antes de continuar.');
+    }
+  }
   async function command(name,payload,version,reason,evidence) {
     const token=generation,community=s.community;
     const signature=JSON.stringify([s.community,name,payload,version,reason,evidence]);
@@ -39,8 +49,10 @@ function createReceivablesUI(ctx) {
       const receipts=(await q('erp3.receipt.list',scoped())).entity;
       const summary=(await q('erp3.debt.summary',scoped())).entity;
       const workspace=refs.capabilities.sensitive_read?(await q('erp3.workspace.get',scoped())).entity:null;
+      const documents=refs.capabilities.sensitive_read?(await q('erp3.evidence.list')).entity.items:[];
+      const statement=refs.capabilities.sensitive_read?(await q('erp3.account.statement',scoped())).entity:null;
       if(token!==generation)return;
-      Object.assign(s,{refs,receipts,summary,workspace,loaded:true});
+      Object.assign(s,{refs,receipts,summary,workspace,documents,statement,loaded:true});
     } catch(error) {if(token===generation)s.error=error.message;}
     finally {if(token===generation){s.loading=false;render();}}
   }
@@ -49,9 +61,9 @@ function createReceivablesUI(ctx) {
   }
   function header() {
     const tabs=[['receipts','Recibos'],['collections','Cobros y saldos'],['debt','Deuda e historico'],['adjustments','Ajustes y gastos'],['imports','Importacion historica'],['settings','Configuracion']];
-    return `<div class="budgetToolbar">${select('community','Comunidad',communities().map(c=>[c.id_comunidad,c.nombre]),s.community,true)}${input('cut','A fecha de','date',s.cut)}${button('reload','Actualizar')}</div>
-      <div class="budgetTabs finTabs">${tabs.filter(([key])=>key!=='imports'||can('import_history')).filter(([key])=>key!=='settings'||can('configure')||can('resolve_responsibility')).map(([key,label])=>button('section',label,`data-section="${key}"`,s.section===key?'active':'')).join('')}</div>
-      ${s.filters.property_id||s.filters.owner_id?`<div class="finScope">${h(s.scopeLabel||'Ficha seleccionada')} ${button('clear-scope','Ver toda la comunidad')}</div>`:''}`;
+    return `<div class="budgetToolbar">${select('community','Comunidad',communities().map(c=>[c.id_comunidad,c.nombre]),s.community,true)}${input('cut','A fecha de','date',s.cut)}${buttonHtml('reload','Actualizar')}${can('sensitive_read')?`<details><summary>Exportar</summary>${buttonHtml('export-csv','CSV')}${buttonHtml('export-xlsx','Excel')}</details>`:''}</div>
+      <div class="budgetTabs finTabs">${tabs.filter(([key])=>key!=='imports'||can('import_history')).filter(([key])=>key!=='settings'||can('configure')||can('resolve_responsibility')).map(([key,label])=>buttonHtml('section',label,`data-section="${key}"`,s.section===key?'active':'')).join('')}</div>
+      ${s.filters.property_id||s.filters.owner_id?`<div class="finScope">${h(s.scopeLabel||'Ficha seleccionada')} ${buttonHtml('clear-scope','Ver toda la comunidad')}</div>`:''}`;
   }
   function metrics() {
     const d=s.summary;if(!d)return '';
@@ -65,30 +77,31 @@ function createReceivablesUI(ctx) {
   }
   function receipts() {
     const list=s.receipts||{items:[],total_count:0};
-    return `<div class="toolbar">${can('prepare_emission')?button('emit','Preparar emision','','green'):''}${can('record_collection')?button('collect','Registrar cobro'):''}</div>
+    return `<div class="toolbar">${can('prepare_emission')?buttonHtml('emit','Preparar emision','','green'):''}${can('record_collection')?buttonHtml('collect','Registrar cobro'):''}</div>
       <details class="finFilters" ${s.filters.search||s.filters.state?'open':''}><summary>Buscar y filtrar recibos</summary><form data-fin-form="filter" class="toolbar">${input('search','Buscar recibo, propiedad o destinatario','search',s.filters.search||'',false)}${select('state','Estado',[['','Todos'],['pendiente','Pendiente'],['parcial','Parcial'],['liquidado','Liquidado'],['anulado','Anulado'],['incobrable','Incobrable']],s.filters.state||'')}<button>Buscar</button></form></details>
       ${table(['Recibo / propiedad','Concepto / periodo','Destinatario','Importe','Pendiente','Estado',''],list.items.map(r=>[
         `<strong>${h(r.number)}</strong><br>${h(r.property_code)}`,`${h(r.description)}<br>${h(r.period_from)} a ${h(r.period_until)}`,
         h(r.subjects.find(x=>x.role==='recipient')?.name||'Sin acreditar'),money(r.amount_cents),money(r.balance.pending_cents),
-        `<span class="pill">${h(r.balance.state)}</span>${r.balance.overdue?' <span class="finWarning">Vencido</span>':''}`,button('receipt','Abrir',`data-id="${r.id}"`)]))}${paging(list.total_count)}`;
+        `<span class="pill">${h(r.balance.state)}</span>${r.balance.overdue?' <span class="finWarning">Vencido</span>':''}`,can('sensitive_read')?buttonHtml('receipt','Abrir',`data-id="${r.id}"`):'']))}${paging(list.total_count)}`;
   }
-  function paging(count) {return `<div class="toolbar">${button('prev','Anterior',s.offset?'':'disabled')}<span>${count?`${s.offset+1}-${Math.min(s.offset+50,count)} de ${count}`:'0 registros'}</span>${button('next','Siguiente',s.offset+50<count?'':'disabled')}</div>`;}
+  function paging(count) {return `<div class="toolbar">${buttonHtml('prev','Anterior',s.offset?'':'disabled')}<span>${count?`${s.offset+1}-${Math.min(s.offset+pageSize,count)} de ${count}`:'0 registros'}</span>${buttonHtml('next','Siguiente',s.offset+pageSize<count?'':'disabled')}</div>`;}
   function collections() {
     const rows=s.workspace?.collections||[];
-    return `<div class="toolbar">${can('record_collection')?button('collect','Registrar cobro','','green'):''}</div>${!can('sensitive_read')?'<p>No tienes permiso para consultar los datos de pagadores.</p>':table(['Fecha','Referencia','Cobrado','Aplicado','Disponible',''],rows.map(c=>[h(c.effective_on),h(c.external_key),money(c.amount_cents),money(c.balance.applied_cents),money(c.balance.available_cents),button('collection','Abrir',`data-id="${c.id}"`)]))+paging(s.workspace.collection_count)}
-      <h3>Creditos a favor</h3>${table(['Fecha','Beneficiario','Disponible',''],(s.workspace?.credits||[]).filter(c=>BigInt(c.balance.available_cents)>0n).map(c=>[h(c.effective_on),h(s.workspace.owners.find(o=>o.id_propietario===c.owner_id)?.nombre||s.workspace.persons.find(p=>p.id_persona_cobro===c.person_id)?.nombre||'Sin identificar'),money(c.balance.available_cents),can('allocate')?button('apply-credit','Aplicar con revision',`data-id="${c.id}"`):'']))}`;
+    return `<div class="toolbar">${can('record_collection')?buttonHtml('collect','Registrar cobro','','green'):''}${can('allocate')&&can('sensitive_read')?buttonHtml('allocate-batch','Imputar varios cobros'):''}</div>${!can('sensitive_read')?'<p>No tienes permiso para consultar los datos de pagadores.</p>':table(['Fecha','Referencia','Cobrado','Aplicado','Disponible',''],rows.map(c=>[h(c.effective_on),h(c.external_key),money(c.amount_cents),money(c.balance.applied_cents),money(c.balance.available_cents),buttonHtml('collection','Abrir',`data-id="${c.id}"`)]))+paging(s.workspace.collection_count)}
+      <h3>Creditos a favor</h3>${table(['Fecha','Beneficiario','Disponible',''],(s.workspace?.credits||[]).filter(c=>BigInt(c.balance.available_cents)>0n).map(c=>[h(c.effective_on),h(s.workspace.owners.find(o=>o.id_propietario===c.owner_id)?.nombre||s.workspace.persons.find(p=>p.id_persona_cobro===c.person_id)?.nombre||'Sin identificar'),money(c.balance.available_cents),can('allocate')?buttonHtml('apply-credit','Aplicar con revision',`data-id="${c.id}"`):'']))}`;
   }
   function adjustments() {
-    return `<h3>Regularizaciones aprobadas</h3>${table(['Motivo','Corte','Situacion',''],(s.workspace?.regularizations||[]).map(r=>[h(r.motivo),h(r.fecha_corte),r.lines.every(l=>l.materialized_id)?'Materializada':'Pendiente de emitir',can('adjust')&&!r.lines.some(l=>l.materialized_id)?button('regularization','Preparar cargos / abonos',`data-id="${r.id_regularizacion}"`):'']))}
-      <h3>Devoluciones registradas</h3>${table(['Fecha','Referencia','Importe',''],(s.workspace?.returns||[]).map(r=>[h(r.effective_on),h(r.external_key),money(r.amount_cents),r.reversal_id?'Revertida':(can('adjust')?button('return-fee','Revisar gasto',`data-id="${r.id}"`):'')+(can('return_collection')?button('return-reverse','Rectificar devolucion',`data-id="${r.id}"`):'')]))}`;
+    return `<h3>Regularizaciones aprobadas de la comunidad</h3><p class="finWarning">Cada regularizacion conserva su lote completo de propiedades. Revisa todas las lineas antes de confirmar.</p>${table(['Motivo','Corte','Situacion',''],(s.workspace?.regularizations||[]).map(r=>[h(r.motivo),h(r.fecha_corte),r.lines.every(l=>l.materialized_id)?'Materializada':'Pendiente de emitir',can('adjust')&&!r.lines.some(l=>l.materialized_id)?buttonHtml('regularization','Preparar cargos / abonos',`data-id="${r.id_regularizacion}"`):'']))}
+      <h3>Devoluciones registradas</h3>${table(['Fecha','Referencia','Importe',''],(s.workspace?.returns||[]).map(r=>[h(r.effective_on),h(r.external_key),money(r.amount_cents),r.reversal_id?'Revertida':(can('adjust')?buttonHtml('return-fee','Revisar gasto',`data-id="${r.id}"`):'')+(can('return_collection')?buttonHtml('return-reverse','Rectificar devolucion',`data-id="${r.id}"`):'')]))}`;
   }
   function debt() {
     const d=s.summary;
     return `${metrics()}<h3>Fuentes del pendiente</h3>${table(['Origen','Importe','Condicion'],[
       ['Recibos ERP',money(d.native_pending_cents),'Movimientos trazados'],['Aperturas importadas',money(d.observed_opening_debt_cents),'Observado al corte'],
       ['Recibos historicos sin migrar',money(d.observed_legacy_debt_cents),'Observado; no se infiere obligado']])}
+      ${s.statement?`<h3>Antiguedad del pendiente</h3>${table(['Vencimiento','Importe'],Object.entries(s.statement.aging_cents).map(([key,value])=>[h({not_due:'No vencido','1_30':'1 a 30 dias','31_60':'31 a 60 dias','61_90':'61 a 90 dias',over_90:'Mas de 90 dias',unknown:'Sin vencimiento acreditado'}[key]),money(value)]))}<h3>Detalle de deuda</h3>${table(['Referencia / propiedad','Obligados','Pendiente','Origen / corte',''],s.statement.items.map(r=>[h(r.reference)+' · '+h(r.property),h(r.obligated)+(r.attribution==='shared'?' (compartida, sin division)':''),money(r.pending_cents),h(r.source==='erp3'?'ERP':r.source==='opening'?'Saldo importado':'Historico observado')+' · '+h(r.cutoff_date),r.receipt_id?buttonHtml('receipt','Abrir',`data-id="${r.receipt_id}"`):r.opening_id?buttonHtml('opening','Abrir',`data-id="${r.opening_id}"`):'']))}${paging(s.statement.total_count)}`:''}
       <h3>Saldos historicos importados</h3>${table(['Propiedad','Corte','Saldo','Procedencia / limitaciones',''],d.openings.map(o=>[
-        h(s.workspace?.properties.find(p=>p.id_propiedad===o.property_id)?.codigo_propiedad||'Sin propiedad acreditada'),h(o.cutoff_date),money(o.amount_cents),h(o.source.system)+'<br>'+h(o.limitations),can('sensitive_read')?button('opening','Ver movimientos',`data-id="${o.id}"`):'']))}`;
+        h(s.workspace?.properties.find(p=>p.id_propiedad===o.property_id)?.codigo_propiedad||'Sin propiedad acreditada'),h(o.cutoff_date),money(o.amount_cents),h(o.source.system)+'<br>'+h(o.limitations),can('sensitive_read')?buttonHtml('opening','Ver movimientos',`data-id="${o.id}"`):'']))}`;
   }
   const importFields=[['','No importar'],['reference','Referencia del saldo/recibo'],['property_code','Codigo de propiedad'],['owner_code','Codigo de propietario acreditado'],['amount','Saldo pendiente (EUR)'],['cutoff_date','Fecha de corte'],['coverage_from','Cobertura desde'],['coverage_until','Cobertura hasta'],['limitations','Limitaciones'],['legacy_receipt_ids','IDs de recibos historicos cubiertos']];
   function imports() {
@@ -99,19 +112,19 @@ function createReceivablesUI(ctx) {
       <div class="onboardingMap">${upload.headers.map((header,index)=>`<div>${select('map_'+index,header,importFields,flow.mapping?.[header]||'')}<small>${h(upload.sample[0]?.values[header]||'')}</small></div>`).join('')}</div>
       <label class="finCheck"><input type="checkbox" name="attribution" ${flow.attribution?'checked':''}> He comprobado documentalmente la atribucion de los saldos a los propietarios indicados.</label><button>Revisar importacion</button></form>`:''}
       ${preview?`<section class="finReview"><h3>Revision: ${preview.rows.length} filas</h3>${table(['Fila','Referencia','Importe','Resultado'],preview.rows.map(r=>[h(r.row_number),h(r.normalized?.reference||''),r.normalized?money(r.normalized.amount_cents):'Sin validar',r.issues.length?`<span class="finWarning">${h(r.issues.join(' '))}</span>`:h(r.decision==='skip'?'Ya importado':'Preparado')]))}
-      ${preview.state==='confirmed'?'<p>Importacion ya confirmada.</p>':preview.blocking_issues?'<p role="alert">Corrige el mapeo o los datos originales antes de confirmar.</p>':`<label class="finCheck"><input type="checkbox" id="finImportAck"> He revisado el origen, los importes, la cobertura y la atribucion.</label>${can('approve_opening')?button('confirm-import','Confirmar importacion','','green'):'<p>Se requiere permiso de aprobacion de saldos de apertura.</p>'}`}</section>`:''}
-      <details><summary>Importaciones anteriores</summary>${table(['Origen','Fecha','Estado',''],(s.workspace?.imports||[]).map(i=>[h(i.source),h(i.registered_at.slice(0,10)),h(i.state),button('import-open','Revisar',`data-id="${i.id}"`)]))}</details>`;
+      ${preview.state==='confirmed'?'<p>Importacion ya confirmada.</p>':preview.blocking_issues?'<p role="alert">Corrige el mapeo o los datos originales antes de confirmar.</p>':`<label class="finCheck"><input type="checkbox" id="finImportAck"> He revisado el origen, los importes, la cobertura y la atribucion.</label>${can('approve_opening')?buttonHtml('confirm-import','Confirmar importacion','','green'):'<p>Se requiere permiso de aprobacion de saldos de apertura.</p>'}`}</section>`:''}
+      <details><summary>Importaciones anteriores</summary>${table(['Origen','Fecha','Estado',''],(s.workspace?.imports||[]).map(i=>[h(i.source),h(i.registered_at.slice(0,10)),h(i.state),buttonHtml('import-open','Revisar',`data-id="${i.id}"`)]))}</details>`;
   }
   function settings() {
     const users=s.workspace?.permission_users||[];
     const labels={read:'Consultar recibos',sensitive_read:'Consultar datos personales',prepare_emission:'Preparar emisiones',confirm_emission:'Confirmar emisiones',record_collection:'Registrar cobros',allocate:'Imputar cobros',reverse_allocation:'Desimputar',return_collection:'Registrar devoluciones',credit:'Abonar',void:'Anular',adjust:'Gastos y ajustes',refund:'Reintegrar saldos',claim:'Gestionar reclamaciones',import_history:'Importar historico',approve_opening:'Confirmar aperturas',resolve_responsibility:'Configurar obligados',classify_uncollectible:'Clasificar incobrables',transfer_responsibility:'Reasignar deuda',configure:'Configurar politicas'};
-    return `${can('resolve_responsibility')?`<section><h3>Obligados economicos</h3>${button('responsibility','Configurar desde una propiedad')}</section>`:''}
-      ${can('configure')?`<details><summary>Fuente de emision y corte de puesta en marcha</summary>${table(['Concepto','Desde','Hasta','Fuente'],(s.refs.coverages||[]).map(c=>[h(c.concept_key),h(c.effective_from),h(c.effective_until),h(c.authority)]))}${button('coverage','Registrar cobertura')}</details><details><summary>Gastos de devolucion</summary>${button('policy','Configurar politica')}</details>`:''}
+    return `${can('resolve_responsibility')?`<section><h3>Obligados economicos</h3>${buttonHtml('responsibility','Configurar desde una propiedad')}</section>`:''}
+      ${can('configure')?`<details><summary>Fuente de emision y corte de puesta en marcha</summary>${table(['Concepto','Desde','Hasta','Fuente',''],(s.refs.coverages||[]).map(c=>[h(c.concept_key),h(c.effective_from),h(c.effective_until),c.activation_id?'Historico revisado':c.authority==='erp3'?'Emision ERP':'Historico por revisar',c.authority==='legacy_observed'&&!c.activation_id?buttonHtml('activate-coverage','Revisar correspondencias',`data-id="${c.id}"`):'']))}${buttonHtml('coverage','Registrar cobertura')}</details><details><summary>Gastos de devolucion</summary>${buttonHtml('policy','Configurar politica')}</details>`:''}
       ${users.length?`<details><summary>Permisos de recibos por usuario</summary><form data-fin-form="permissions">${select('user','Usuario',users.map(u=>[u.id_usuario,u.nombre]),s.permissionUser||users[0].id_usuario)}<div class="finPermissions">${Object.keys(labels).map(key=>`<label class="finCheck"><input type="checkbox" name="${key}" ${(users.find(u=>u.id_usuario===Number(s.permissionUser))||users[0]).capabilities[key]?'checked':''}>${labels[key]}</label>`).join('')}</div><button>Guardar permisos</button></form></details>`:''}`;
   }
   function review() {
     const r=s.review;if(!r)return '';
-    return `<section class="finReview" role="region" aria-label="Revision antes de confirmar"><h3>${h(r.title)}</h3>${r.content}<p>No se ha confirmado ningun movimiento.</p><label class="finCheck"><input id="finAck" type="checkbox"> He revisado los datos y el efecto economico.</label><div class="toolbar">${button('confirm','Confirmar','','green')}${button('cancel','Volver a editar')}</div></section>`;
+    return `<section class="finReview" role="region" aria-label="Revision antes de confirmar"><h3>${h(r.title)}</h3>${r.content}<p>No se ha confirmado ningun movimiento.</p><label class="finCheck"><input id="finAck" type="checkbox"> He revisado los datos y el efecto economico.</label><div class="toolbar">${buttonHtml('confirm','Confirmar','','green')}${buttonHtml('cancel','Volver a editar')}</div></section>`;
   }
   function render() {
     if (!active()) return;
@@ -120,28 +133,29 @@ function createReceivablesUI(ctx) {
     bind();
   }
   function formHtml() {
-    return `<section class="finEditor"><h3>${h(s.form.title)}</h3><form data-fin-form="operation"><div class="masterFormGrid">${s.form.fields}</div>${input('reason','Motivo / descripcion','text',s.form.reason||'')}${input('evidence','Referencia de documento o justificante','text','',s.form.evidenceRequired||false)}<div class="toolbar"><button>Revisar</button>${button('close','Cancelar')}</div></form></section>`;
+    return `<section class="finEditor"><h3>${h(s.form.title)}</h3><form data-fin-form="operation"><div class="masterFormGrid">${s.form.fields}</div>${input('reason','Motivo / descripcion','text',s.form.reason||'')}${select('document','Documento vinculado',[['','Referencia externa'],...(s.documents||[]).map(d=>[d.type+':'+d.id,d.name])],s.form.document||'')}${input('evidence','Referencia de documento o justificante','text',s.form.evidence||'',Boolean(s.form.evidenceRequired&&!s.form.document))}<div class="toolbar"><button>Revisar</button>${buttonHtml('close','Cancelar')}</div></form></section>`;
   }
   function detailHtml() {
     const d=s.detail;
     if(d.type==='opening') {
       const o=d.data.opening,b=d.data.balance;
-      return `${button('close','Volver al historico')}<h3>Saldo historico al ${h(o.effective_on)}</h3>${table(['Original al corte','Pendiente actual','Calidad'],[[money(o.amount_cents),money(b.remaining_cents),'Observado']])}<p>${h(o.limitations)}</p>
-        <div class="toolbar">${BigInt(b.remaining_cents)>0n&&can('allocate')?button('opening-allocate','Imputar cobro'):''}${BigInt(b.remaining_cents)<0n&&can('allocate')?button('opening-credit','Aplicar saldo a favor'):''}${BigInt(b.remaining_cents)<0n&&can('refund')?button('opening-refund','Reintegrar saldo'):''}${BigInt(b.remaining_cents)>0n&&can('credit')?button('opening-abono','Preparar abono'):''}</div>
-        ${table(['Fecha','Movimiento','Importe','Motivo',''],d.data.movements.map(m=>[h(m.effective_on),h({allocation:'Imputacion',reverse_allocation:'Desimputacion',credit_apply:'Aplicacion de saldo',reverse_credit_apply:'Reversion de saldo',refund:'Reintegro',credit:'Abono',reverse_credit:'Reversion de abono'}[m.kind]),money(m.amount_cents),h(m.reason),!m.reverses_id&&['allocation','credit_apply','credit'].includes(m.kind)&&can(m.kind==='credit'?'credit':'reverse_allocation')?button('opening-reverse','Rectificar',`data-id="${m.id}"`):'']))}`;
+      return `${buttonHtml('close','Volver al historico')}<h3>Saldo historico al ${h(o.effective_on)}</h3>${table(['Original al corte','Pendiente actual','Calidad'],[[money(o.amount_cents),money(b.remaining_cents),'Observado']])}<p>${h(o.limitations)}</p>
+        <div class="toolbar">${BigInt(b.remaining_cents)>0n&&can('allocate')?buttonHtml('opening-allocate','Imputar cobro'):''}${BigInt(b.remaining_cents)<0n&&can('allocate')?buttonHtml('opening-credit','Aplicar saldo a favor'):''}${BigInt(b.remaining_cents)<0n&&can('refund')?buttonHtml('opening-refund','Reintegrar saldo'):''}${BigInt(b.remaining_cents)>0n&&can('credit')?buttonHtml('opening-abono','Preparar abono'):''}</div>
+        ${table(['Fecha','Movimiento','Importe','Motivo',''],d.data.movements.map(m=>[h(m.effective_on),h({allocation:'Imputacion',reverse_allocation:'Desimputacion',credit_apply:'Aplicacion de saldo',reverse_credit_apply:'Reversion de saldo',refund:'Reintegro',credit:'Abono',reverse_credit:'Reversion de abono'}[m.kind]),money(m.amount_cents),h(m.reason),!m.reverses_id&&['allocation','credit_apply','credit'].includes(m.kind)&&can(m.kind==='credit'?'credit':'reverse_allocation')?buttonHtml('opening-reverse','Rectificar',`data-id="${m.id}"`):'']))}`;
     }
     if(d.type==='receipt') {
       const r=d.data.receipt,b=d.data.balance;
-      return `${button('close','Volver a recibos')}<h3>${h(r.number)} · ${h(r.description)}</h3>${table(['Emitido','Vence','Original','Aplicado','Abonado','Pendiente'],[[h(r.issued_on),h(r.due_on||''),money(b.original_cents),money(b.paid_cents),money(b.reduced_cents),money(b.pending_cents)]])}
+      return `${buttonHtml('close','Volver a recibos')}<h3>${h(r.number)} · ${h(r.description)}</h3>${table(['Emitido','Vence','Original','Aplicado','Abonado','Pendiente'],[[h(r.issued_on),h(r.due_on||''),money(b.original_cents),money(b.paid_cents),money(b.reduced_cents),money(b.pending_cents)]])}
         ${table(['Relacion','Nombre'],d.data.subjects.map(x=>[h({obligated:'Obligado economico',recipient:'Destinatario',payer:'Pagador',owner_reference:'Titular'}[x.role]||x.role),h(JSON.parse(x.snapshot_json).name)]))}
-        <div class="toolbar">${can('credit')?button('credit','Preparar abono'):''}${can('void')?button('void','Anular'):''}${can('classify_uncollectible')?button('uncollectible','Clasificar incobrable'):''}${can('claim')?button('claim','Registrar gestion'):''}${can('transfer_responsibility')?button('transfer','Reasignacion excepcional'):''}</div>
+        <div class="toolbar">${can('credit')?buttonHtml('credit','Preparar abono'):''}${can('void')?buttonHtml('void','Anular'):''}${b.state==='anulado'&&r.source_type==='plan'&&can('prepare_emission')?buttonHtml('replace-receipt','Emitir sustitucion'):''}${can('classify_uncollectible')?buttonHtml('uncollectible','Clasificar incobrable'):''}${can('claim')?buttonHtml('claim','Registrar gestion'):''}${can('transfer_responsibility')?buttonHtml('transfer','Reasignacion excepcional'):''}</div>
         <h4>Desglose del recibo</h4>${table(['Concepto','Importe'],d.data.details.map(x=>{const c=JSON.parse(x.snapshot_json);return [h(c.calculation?.item_name||c.calculation?.item?.name||r.description),money(x.amount_cents)];}))}
-        <h4>Historico</h4>${table(['Fecha efectiva','Operacion','Motivo'],d.timeline.events.map(e=>[h(e.effective_on),h(eventLabel(e.event_type)),h(e.reason)]))}`;
+        <h4>Abonos y aplicaciones de saldo</h4>${table(['Fecha','Operacion','Importe','Reversible',''],(d.data.reversible_movements||[]).map(m=>[h(m.effective_on),m.kind==='credit'?'Abono':'Aplicacion de saldo a favor',money(m.amount_cents),money(m.remaining_cents),BigInt(m.remaining_cents)>0n&&can(m.kind==='credit'?'credit':'reverse_allocation')?buttonHtml('native-reverse','Rectificar',`data-id="${m.id}" data-kind="${m.kind}"`):'']))}
+        <h4>Historico</h4>${table(['Fecha efectiva','Operacion','Motivo / evidencia'],d.timeline.events.map(e=>{const ref=JSON.parse(e.evidence_json||'null'),doc=ref&&(s.documents||[]).find(x=>x.type===ref.type&&String(x.id)===String(ref.id));return [h(e.effective_on),h(eventLabel(e.event_type)),h(e.reason)+(doc?`<br><a href="${h(doc.url)}" target="_blank" rel="noopener">${h(doc.name)}</a>`:ref?'<br>'+h(ref.type==='external_reference'?ref.id:'Documento vinculado; acceso desde su expediente'):'')];}))}`;
     }
     const c=d.data.collection,b=d.data.balance;
-    return `${button('close','Volver a cobros')}<h3>Cobro · ${h(c.external_key)}</h3>${table(['Fecha','Original','Aplicado','Devuelto','Reintegrado','Disponible'],[[h(c.effective_on),money(b.original_cents),money(b.applied_cents),money(b.returned_cents),money(b.refunded_cents),money(b.available_cents)]])}<div class="toolbar">${can('allocate')?button('allocate','Imputar a recibos'):''}${can('return_collection')?button('return','Registrar devolucion'):''}${can('reverse_allocation')?button('reverse','Desimputar'):''}${can('refund')?button('refund','Reintegrar saldo'):''}${can('record_collection')&&!c.payer_owner_id&&!c.payer_person_id?button('payer','Identificar pagador'):''}</div>${table(['Recibo','Fecha','Imputado','No revertido'],d.data.allocations.map(a=>[h(a.number),h(a.effective_on),money(a.amount_cents),money(a.remaining_cents)]))}`;
+    return `${buttonHtml('close','Volver a cobros')}<h3>Cobro · ${h(c.external_key)}</h3>${table(['Fecha','Original','Aplicado','Devuelto','Reintegrado','Disponible'],[[h(c.effective_on),money(b.original_cents),money(b.applied_cents),money(b.returned_cents),money(b.refunded_cents),money(b.available_cents)]])}<div class="toolbar">${can('allocate')?buttonHtml('allocate','Imputar a recibos'):''}${can('return_collection')?buttonHtml('return','Registrar devolucion'):''}${can('reverse_allocation')?buttonHtml('reverse','Desimputar'):''}${can('refund')?buttonHtml('refund','Reintegrar saldo'):''}${can('record_collection')&&!c.payer_owner_id&&!c.payer_person_id?buttonHtml('payer','Identificar pagador'):''}</div>${table(['Recibo','Fecha','Imputado','No revertido'],d.data.allocations.map(a=>[h(a.number),h(a.effective_on),money(a.amount_cents),money(a.remaining_cents)]))}`;
   }
-  const eventLabel=key=>({'erp3.allocation.confirmed':'Imputacion de cobro','erp3.collection.returned':'Devolucion','erp3.receipt.credited':'Abono','erp3.allocation.reversed':'Desimputacion','erp3.receipt.management_recorded':'Gestion de reclamacion','erp3.responsibility.transferred':'Reasignacion de responsabilidad'}[key]||'Actuacion economica registrada');
+  const eventLabel=key=>({'erp3.collection.allocated':'Imputacion de cobro','erp3.collection.returned':'Devolucion','erp3.credit.issued':'Abono','erp3.allocation.reversed':'Desimputacion','erp3.receipt.management_recorded':'Gestion de reclamacion','erp3.responsibility.transferred':'Reasignacion de responsabilidad'}[key]||'Actuacion economica registrada');
   function setForm(title,fields,build,options={}) {s.form={title,fields,build,...options};s.error='';render();}
   function operation(action) {
     const dateField=input('effective_on','Fecha efectiva','date',s.cut);
@@ -168,14 +182,17 @@ function createReceivablesUI(ctx) {
     if(action==='refund') setForm('Reintegrar saldo disponible',dateField+input('amount','Importe a reintegrar')+select('beneficiary','Beneficiario acreditado',entityOptions('subject'),'',true),d=>({name:'refund.preview',payload:{collection_id:detail.data.collection.id,effective_on:d.effective_on,amount_cents:parseMoney(d.amount),beneficiary:subject(d.beneficiary)}}),{evidenceRequired:true});
     if(action==='payer') setForm('Identificar pagador del cobro',dateField+select('payer','Pagador acreditado',entityOptions('subject'),'',true),d=>({name:'collection.payer.preview',payload:{collection_id:detail.data.collection.id,effective_on:d.effective_on,payer:subject(d.payer)}}),{evidenceRequired:true});
     if(action==='policy') setForm('Gastos de devolucion',input('effective_from','Vigente desde','date',s.cut)+select('mode','Repercusion',[['none','No repercutir'],['actual','Coste bancario real'],['fixed','Importe fijo']])+input('amount','Importe fijo (solo si procede)','text','0,00'),d=>({name:'policy.save',version:Math.max(0,...(s.refs.policies||[]).map(p=>p.version)),payload:{effective_from:d.effective_from,return_fee_mode:d.mode,fixed_cents:d.mode==='fixed'?parseMoney(d.amount):'0'}}));
-    if(action==='coverage') setForm('Registrar fuente de emision',input('concept','Concepto','text','ordinario')+input('effective_from','Desde','date','')+input('effective_until','Hasta','date',''),d=>({name:'coverage.confirm',payload:{concept_key:d.concept,effective_from:d.effective_from,effective_until:d.effective_until,authority:'erp3'}}),{evidenceRequired:true});
+    if(action==='coverage') setForm('Registrar fuente de emision',input('concept','Concepto','text','ordinario')+input('effective_from','Desde','date','')+input('effective_until','Hasta','date','')+select('authority','Contenido del intervalo',[['erp3','Nuevas emisiones ERP'],['legacy_observed','Recibos del programa anterior por revisar']]),d=>({name:'coverage.confirm',payload:{concept_key:d.concept,effective_from:d.effective_from,effective_until:d.effective_until,authority:d.authority}}),{evidenceRequired:true});
   }
   function describe(object) {
+    if(object.collections)return table(['Cobro','Recibo','Importe','Pendiente anterior'],object.collections.flatMap(c=>c.allocations.map(r=>[h(c.reference),h(r.number),money(r.amount_cents),money(r.before_cents)])));
+    if(object.historical_receipts_reissued===false)return `<div class="finWarning">No se crean cobros ni se vuelven a emitir recibos. La calidad de las fuentes historicas se conserva.</div>${table(['Referencia','Propiedad','Concepto','Periodo','Emitido original'],object.lines.map(r=>[h(r.reference),h(s.workspace?.properties.find(p=>p.id_propiedad===r.property_id)?.codigo_propiedad||'Sin propiedad'),h(r.concept_key),h(r.period_from)+' a '+h(r.period_until),money(r.net_emitted_cents)]))}`;
     const rows=[];
     const labels={amount_cents:'Importe',total_cents:'Total',before_cents:'Saldo anterior',after_cents:'Saldo posterior',available_before_cents:'Disponible anterior',available_after_cents:'Disponible posterior',effective_on:'Fecha efectiva',issued_on:'Fecha de emision',free_cents:'Fondos libres devueltos',external_key:'Referencia',released_cents:'Importe liberado',classification:'Clasificacion',effective_from:'Vigente desde',effective_until:'Vigente hasta',concept_key:'Concepto',authority:'Fuente',return_fee_mode:'Politica de gastos',fixed_cents:'Importe fijo',method:'Medio de cobro'};
     for(const [key,label] of Object.entries(labels)) if(object[key]!=null)rows.push([label,key.endsWith('_cents')?money(object[key]):h(object[key])]);
     if(object.property_id)rows.push(['Propiedad',h(s.workspace?.properties.find(p=>p.id_propiedad===object.property_id)?.codigo_propiedad||'Propiedad seleccionada')]);
     const subjectName=x=>x.name||s.workspace?.owners.find(o=>x.type==='owner'&&o.id_propietario===x.id)?.nombre||s.workspace?.persons.find(p=>x.type==='person'&&p.id_persona_cobro===x.id)?.nombre||'Sujeto no localizado';
+    if(object.plan_version_id&&object.lines)return table(['Total','Fecha de emision','Propiedades'],[[money(object.total_cents),h(object.issued_on),h(object.lines.length)]])+table(['Propiedad / periodo','Importe','Destinatario','Pagador','Obligados'],object.lines.map(item=>[h(s.workspace?.properties.find(p=>p.id_propiedad===item.property_id)?.codigo_propiedad||'Propiedad')+' · '+h(item.period_key),money(item.amount_cents),h(subjectName(item.recipient)),h(subjectName(item.payer)),h((item.obligated||[]).map(subjectName).join(', '))]))+(object.lines.some(l=>l.amount_cents==='0')?'<p>Las cuotas cero quedan procesadas sin crear recibo ni cargo.</p>':'');
     for(const [key,label] of [['payer','Pagador'],['recipient','Destinatario'],['beneficiary','Beneficiario']])if(object[key])rows.push([label,h(subjectName(object[key]))]);
     for(const item of object.subjects||object.obligated||[])rows.push(['Obligado economico',h(subjectName(item))]);
     for(const key of ['lines','allocations','details','reversals']) for(const item of object[key]||[]){
@@ -185,6 +202,7 @@ function createReceivablesUI(ctx) {
         if(item[field])rows.push([label,h(item[field].map(subjectName).join(', ')||'Sin atribucion acreditada')]);
     }
     if(object.automatic_reallocation===false)rows.push(['Aplicaciones a recibos','Los fondos quedan libres. No se imputan automaticamente.']);
+    if(object.lines?.some(l=>l.amount_cents==='0'))rows.push(['Cuotas de importe cero','Quedan registradas como procesadas, sin crear recibo ni cargo.']);
     return table(['Dato','Valor revisado'],rows);
   }
   async function submit(form) {
@@ -220,8 +238,9 @@ function createReceivablesUI(ctx) {
         else el.setAttribute('value',original.value);
       });
       s.form.fields=fields.innerHTML;
-      const request=await s.form.build(d);s.form.reason=d.reason;
-      const evidence=d.evidence?{type:'external_reference',id:d.evidence}:null;
+      const request=await s.form.build(d);s.form.reason=d.reason;s.form.document=d.document;s.form.evidence=d.evidence;
+      const selected=(s.documents||[]).find(x=>x.type+':'+x.id===d.document);
+      const evidence=selected?{type:selected.type,id:String(selected.id)}:d.evidence?{type:'external_reference',id:d.evidence}:null;
       if(request.name.endsWith('.preview')) {
         const proposal=await command(request.name,request.payload,request.version,d.reason,evidence);
         s.review={title:s.form.title,content:describe(proposal.preview),name:request.name.replace(/\.preview$/,'.confirm'),payload:{proposal_id:proposal.id},version:proposal.version,reason:d.reason,evidence};
@@ -231,11 +250,60 @@ function createReceivablesUI(ctx) {
   }
   async function action(button) {
     const name=button.dataset.finAction;
+    if(name==='select-visible') {
+      const area=root().querySelector(button.dataset.target);
+      area.querySelectorAll('label').forEach(label=>{const input=label.querySelector('input[type=checkbox]');if(input&&!label.hidden)input.checked=button.dataset.checked==='1';});return;
+    }
+    if(name==='replace-receipt') {
+      const r=s.detail.data.receipt,snapshot=JSON.parse(r.snapshot_json);
+      if(!snapshot.plan_version_id)throw new Error('El documento no tiene un plan de emision acreditado.');
+      setForm('Sustituir '+r.number,input('issued_on','Fecha efectiva de emision','date',s.cut)+input('due_on','Vencimiento (opcional)','date','',false),d=>({name:'emission.preview',payload:{plan_version_id:snapshot.plan_version_id,period_keys:[r.period_key],property_ids:[r.id_propiedad],issued_on:d.issued_on,...(d.due_on?{due_on:d.due_on}:{}),replaces_receipt_ids:[r.id]}}),{evidenceRequired:true});return;
+    }
+    if(name==='native-reverse') {
+      const m=s.detail.data.reversible_movements.find(m=>m.id===Number(button.dataset.id)&&m.kind===button.dataset.kind);
+      setForm(m.kind==='credit'?'Rectificar abono':'Rectificar aplicacion de saldo',input('effective_on','Fecha efectiva','date',s.cut)+input('amount','Importe a revertir','text',moneyInput(m.remaining_cents)),d=>({name:m.kind==='credit'?'credit.reverse.preview':'credit.apply.reverse.preview',payload:{movement_id:m.id,effective_on:d.effective_on,amount_cents:parseMoney(d.amount)}}),{evidenceRequired:true});return;
+    }
+    if(name==='allocation-add') {
+      const count=root().querySelectorAll('[data-allocation-row]').length;
+      if(count>=500)throw new Error('Revisa hasta 500 aplicaciones por lote.');
+      root().querySelector('#finAllocationRows').insertAdjacentHTML('beforeend',s.form.allocationRow(s.form.nextRow++));bind();return;
+    }
+    if(name==='allocation-remove') {button.closest('[data-allocation-row]').remove();return;}
+    if(name==='allocate'||name==='allocate-batch') {
+      const receipts=(await allPages('erp3.receipt.list')).filter(r=>BigInt(r.balance.pending_cents)>0n);
+      const collections=name==='allocate'?[s.detail.data.collection]:(await allPages('erp3.workspace.get','collections','collection_count')).filter(c=>BigInt(c.balance.available_cents)>0n);
+      if(!receipts.length||!collections.length)throw new Error('No hay recibos pendientes o cobros disponibles.');
+      const collectionOptions=collections.map(c=>[c.id,c.external_key+' · '+c.effective_on]);
+      const row=i=>`<div data-allocation-row="${i}" class="masterFormGrid finWide">${select('collection_'+i,'Cobro',collectionOptions,collections[0].id,true)}<label>Recibo<input name="receipt_${i}" list="finReceiptChoices" required autocomplete="off"></label>${input('amount_'+i,'Importe a imputar','text','0,00')}<div data-responsibility="${i}"></div>${buttonHtml('allocation-remove','Quitar fila')}</div>`;
+      setForm('Imputacion revisada de cobros',input('effective_on','Fecha efectiva','date',s.cut)+`<datalist id="finReceiptChoices">${receipts.map(r=>`<option value="${h(r.number)}">${h(r.property_code)} · ${h(money(r.balance.pending_cents))}</option>`).join('')}</datalist><div id="finAllocationRows" class="finWide">${row(0)}</div>${buttonHtml('allocation-add','Anadir recibo')}`,d=>{
+        const groups=new Map();
+        for(const el of root().querySelectorAll('[data-allocation-row]')) {
+          const i=el.dataset.allocationRow,r=receipts.find(r=>r.number===d['receipt_'+i]);
+          if(!r)throw new Error('Selecciona un numero exacto de recibo de esta comunidad.');
+          const cid=Number(d['collection_'+i]),line={receipt_id:r.id,amount_cents:parseMoney(d['amount_'+i])};
+          if(d['responsibility_'+i]!==undefined)line.responsibility_subjects=r.responsibilities[Number(d['responsibility_'+i])].subjects;
+          if(!groups.has(cid))groups.set(cid,[]);groups.get(cid).push(line);
+        }
+        return {name:'allocation.batch.preview',payload:{effective_on:d.effective_on,collections:[...groups].map(([collection_id,allocations])=>({collection_id,allocations}))}};
+      });
+      s.form.allocationRow=row;s.form.nextRow=1;s.form.allocationReceipts=receipts;bind();return;
+    }
+    if(name==='export-csv'||name==='export-xlsx') {
+      const result=await command('export.prepare',{kind:s.section==='debt'?'statement':'receipts',format:name==='export-csv'?'csv':'xlsx',filters:{...s.filters,effective_at:s.cut}},null,'Exportacion solicitada por el usuario');
+      const bytes=Uint8Array.from(atob(result.content_base64),c=>c.charCodeAt(0));
+      const url=URL.createObjectURL(new Blob([bytes],{type:result.mime}));const link=document.createElement('a');link.href=url;link.download=result.file_name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      s.message=`Exportadas ${result.row_count} filas con fecha de corte y alcance. Todas las paginas de la seleccion.`;render();return;
+    }
+    if(name==='activate-coverage') {
+      const data=(await q('erp3.coverage.candidates',{coverage_id:Number(button.dataset.id)})).entity;
+      const fields=`<div class="finWide">${data.items.some(r=>!r.openings.length)?'<div class="finWarning">Hay recibos sin correspondencia. Importa y revisa sus saldos antes de activar.</div>':''}${table(['Recibo / propiedad','Saldo importado','Concepto','Periodo acreditado'],data.items.map((r,i)=>[h(r.reference)+' · '+h(s.workspace.properties.find(p=>p.id_propiedad===r.property_id)?.codigo_propiedad||'Sin propiedad'),select('opening_'+i,'Saldo',r.openings.map(o=>[o.id,o.reference]),r.openings.length===1?r.openings[0].id:'',true),input('concept_'+i,'Concepto','text',data.coverage.concept_key),input('from_'+i,'Desde','date','')+input('until_'+i,'Hasta','date','')]))}</div>`;
+      setForm('Activar historico revisado',fields,d=>({name:'coverage.activation.preview',payload:{coverage_id:data.coverage.id,mappings:data.items.map((r,i)=>({legacy_receipt_id:r.legacy_receipt_id,opening_id:Number(d['opening_'+i]),concept_key:d['concept_'+i],period_from:d['from_'+i],period_until:d['until_'+i]}))}}),{evidenceRequired:true});return;
+    }
     if(name==='section'){s.section=button.dataset.section;s.detail=null;s.form=null;s.review=null;s.offset=0;render();return;}
     if(name==='reload')return load();
     if(name==='close'){s.detail=null;s.form=null;s.review=null;render();return;}
     if(name==='cancel'){s.review=null;render();return;}
-    if(name==='prev'||name==='next'){s.offset=Math.max(0,s.offset+(name==='prev'?-50:50));return load();}
+    if(name==='prev'||name==='next'){s.offset=Math.max(0,s.offset+(name==='prev'?-pageSize:pageSize));return load();}
     if(name==='clear-scope'){s.filters={};s.offset=0;return load();}
     if(name==='confirm') {
       if(!root().querySelector('#finAck')?.checked)throw new Error('Revisa y marca la confirmacion antes de continuar.');
@@ -258,12 +326,13 @@ function createReceivablesUI(ctx) {
     }
     if(name==='opening-allocate'||name==='opening-credit') {
       const opening=s.detail.data.opening;
-      const options=name==='opening-allocate'?(s.workspace.collections||[]).filter(c=>BigInt(c.balance.available_cents)>0n).map(c=>[c.id,c.external_key+' · '+money(c.balance.available_cents)]):(s.receipts.items||[]).filter(r=>BigInt(r.balance.pending_cents)>0n).map(r=>[r.id,r.number+' · '+r.property_code]);
+      const options=name==='opening-allocate'?(await allPages('erp3.workspace.get','collections','collection_count')).filter(c=>BigInt(c.balance.available_cents)>0n).map(c=>[c.id,c.external_key+' · '+money(c.balance.available_cents)]):(await allPages('erp3.receipt.list')).filter(r=>BigInt(r.balance.pending_cents)>0n).map(r=>[r.id,r.number+' · '+r.property_code]);
       setForm(name==='opening-allocate'?'Aplicar cobro al saldo historico':'Aplicar saldo a favor',input('effective_on','Fecha efectiva','date',s.cut)+select('target',name==='opening-allocate'?'Cobro disponible':'Recibo',options,'',true)+input('amount','Importe'),d=>({name:'opening.move.preview',payload:{opening_id:opening.id,kind:name==='opening-allocate'?'allocation':'credit_apply',effective_on:d.effective_on,amount_cents:parseMoney(d.amount),[name==='opening-allocate'?'collection_id':'receipt_id']:Number(d.target)}}),{evidenceRequired:true});return;
     }
     if(name==='apply-credit') {
       const credit=s.workspace.credits.find(c=>c.id===Number(button.dataset.id));
-      setForm('Aplicar credito a recibo',input('effective_on','Fecha efectiva','date',s.cut)+select('receipt','Recibo pendiente',(s.receipts.items||[]).filter(r=>BigInt(r.balance.pending_cents)>0n).map(r=>[r.id,r.number+' · '+r.property_code]),'',true)+input('amount','Importe'),d=>({name:'credit.apply.preview',payload:{credit_id:credit.id,receipt_id:Number(d.receipt),amount_cents:parseMoney(d.amount),effective_on:d.effective_on}}));return;
+      const targets=await allPages('erp3.receipt.list');
+      setForm('Aplicar credito a recibo',input('effective_on','Fecha efectiva','date',s.cut)+select('receipt','Recibo pendiente',targets.filter(r=>BigInt(r.balance.pending_cents)>0n).map(r=>[r.id,r.number+' · '+r.property_code]),'',true)+input('amount','Importe'),d=>({name:'credit.apply.preview',payload:{credit_id:credit.id,receipt_id:Number(d.receipt),amount_cents:parseMoney(d.amount),effective_on:d.effective_on}}));return;
     }
     if(name==='regularization') {
       const reg=s.workspace.regularizations.find(r=>r.id_regularizacion===Number(button.dataset.id));
@@ -289,18 +358,23 @@ function createReceivablesUI(ctx) {
     if(name==='emit') {
       const plans=(await q('erp2.plan.list')).items||[];
       if(!plans.length)throw new Error('No hay planes aprobados. Aprueba un presupuesto o una derrama primero.');
-      setForm('Preparar emision',select('plan','Presupuesto / derrama',plans.map(p=>[p.id_plan_version,(p.denominacion||p.tipo)+' · '+p.fecha_inicio+' a '+p.fecha_fin]),'',true),d=>({name:'emission.preview',payload:{plan_version_id:Number(d.plan),period_keys:[],issued_on:s.cut}}));
+      const choices=`<fieldset class="finWide"><legend>Propiedades que se revisaran</legend><input type="search" data-fin-filter="#finEmissionProperties" placeholder="Buscar propiedad" aria-label="Buscar propiedad para emision"><div class="toolbar">${buttonHtml('select-visible','Seleccionar visibles','data-target="#finEmissionProperties" data-checked="1"')}${buttonHtml('select-visible','Desmarcar visibles','data-target="#finEmissionProperties" data-checked="0"')}</div><div id="finEmissionProperties" class="finSelection">${(s.workspace?.properties||[]).map(p=>`<label class="finCheck"><input type="checkbox" name="emission-property" value="${p.id_propiedad}" ${!s.filters.property_id||s.filters.property_id===p.id_propiedad?'checked':''}>${h(p.codigo_propiedad)}</label>`).join('')}</div></fieldset>`;
+      setForm('Preparar emision',select('plan','Presupuesto / derrama',plans.map(p=>[p.id_plan_version,(p.denominacion||p.tipo)+' · '+p.fecha_inicio+' a '+p.fecha_fin]),'',true)+input('issued_on','Fecha efectiva de emision','date',s.cut)+input('due_on','Vencimiento (opcional)','date','',false)+choices,d=>({name:'emission.preview',payload:{plan_version_id:Number(d.plan),period_keys:[],issued_on:d.issued_on}}));
       s.form.plans=plans;
       const planField=root().querySelector('[name=plan]');
       async function periods(){const p=plans.find(p=>p.id_plan_version===Number(planField.value));const result=(await q('erp2.plan.export.preview',{id_plan:p.id_plan})).entity;
         const area=document.createElement('div');area.className='masterFormGrid';area.id='finPeriods';area.innerHTML=result.periods.map(period=>`<label class="finCheck"><input type="checkbox" name="period" value="${h(period.clave_periodo)}">${h(period.fecha_inicio)} a ${h(period.fecha_fin)}</label>`).join('');root().querySelector('#finPeriods')?.remove();planField.closest('label').after(area);
-        s.form.build=d=>({name:'emission.preview',payload:{plan_version_id:Number(d.plan),period_keys:[...root().querySelectorAll('[name=period]:checked')].map(x=>x.value),issued_on:s.cut}});
+        s.form.build=d=>{
+          const ids=[...root().querySelectorAll('[name=emission-property]:checked')].map(x=>Number(x.value));
+          if(!ids.length)throw new Error('Selecciona alguna propiedad.');
+          return {name:'emission.preview',payload:{plan_version_id:Number(d.plan),period_keys:[...root().querySelectorAll('[name=period]:checked')].map(x=>x.value),property_ids:ids,issued_on:d.issued_on,...(d.due_on?{due_on:d.due_on}:{})}};
+        };
       }
       planField.addEventListener('change',()=>run(periods));await periods();return;
     }
     if(name==='responsibility') {
       const owners=entityOptions('subject').filter(([id])=>id);
-      setForm('Confirmar obligados economicos',select('property','Propiedad',entityOptions('property'),s.filters.property_id||'',true)+input('effective_from','Efectivo desde','date',s.cut)+input('effective_until','Hasta (opcional)','date','',false)+`<fieldset><legend>Obligados acreditados</legend>${owners.map(([id,label])=>`<label class="finCheck"><input type="checkbox" name="obligated" value="${h(id)}">${h(label)}</label>`).join('')}</fieldset>`,async d=>{
+      setForm('Confirmar obligados economicos',select('property','Propiedad',entityOptions('property'),s.filters.property_id||'',true)+input('effective_from','Efectivo desde','date',s.cut)+input('effective_until','Hasta (opcional)','date','',false)+`<fieldset class="finWide"><legend>Obligados acreditados</legend><input type="search" data-fin-filter="#finObligated" aria-label="Buscar obligado" placeholder="Buscar persona"><div id="finObligated" class="finSelection">${owners.map(([id,label])=>`<label class="finCheck"><input type="checkbox" name="obligated" value="${h(id)}">${h(label)}</label>`).join('')}</div></fieldset>`,async d=>{
         const subjects=[...root().querySelectorAll('[name=obligated]:checked')].map(x=>subject(x.value));
         if(!subjects.length)throw new Error('Selecciona al menos un obligado acreditado.');
         const current=(await q('erp3.responsibility.get',{property_id:Number(d.property)})).entity;
@@ -315,6 +389,16 @@ function createReceivablesUI(ctx) {
     finally{s.busy=false;root().inert=false;if(element?.isConnected)element.disabled=false;}
   }
   function bind() {
+    root().querySelectorAll('[data-fin-filter]').forEach(el=>el.oninput=()=>{
+      root().querySelector(el.dataset.finFilter)?.querySelectorAll('label').forEach(label=>label.hidden=!label.textContent.toLocaleLowerCase().includes(el.value.toLocaleLowerCase()));
+    });
+    root().querySelector('[data-fin-form=operation] [name=document]')?.addEventListener('change',e=>{
+      root().querySelector('[data-fin-form=operation] [name=evidence]').required=Boolean(s.form.evidenceRequired&&!e.target.value);
+    });
+    root().querySelectorAll('[name^=receipt_]').forEach(el=>el.onchange=()=>{
+      const i=el.name.slice(8),r=s.form?.allocationReceipts?.find(r=>r.number===el.value),area=root().querySelector(`[data-responsibility="${i}"]`);
+      if(area)area.innerHTML=r&&r.responsibilities.length>1?select('responsibility_'+i,'Obligados afectados',[['','Selecciona los obligados'],...r.responsibilities.map((b,index)=>[index,b.subjects.map(x=>s.workspace.owners.find(o=>x.type==='owner'&&o.id_propietario===x.id)?.nombre||s.workspace.persons.find(p=>x.type==='person'&&p.id_persona_cobro===x.id)?.nombre||'Sin atribuir').join(', ')+' · '+money(b.pending_cents)])],'',true):'';
+    });
     root().querySelectorAll('[data-fin-action]').forEach(b=>b.onclick=()=>run(()=>action(b),b));
     root().querySelectorAll('[data-fin-form]').forEach(f=>f.onsubmit=e=>{e.preventDefault();run(()=>submit(f),f.querySelector('button:not([type=button])'));});
     root().querySelector('[name=community]')?.addEventListener('change',e=>{const community=Number(e.target.value);reset();s.community=community;load();});

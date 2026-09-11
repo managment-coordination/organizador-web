@@ -313,8 +313,9 @@ function makeSessionCookie(user) {
       nombre: user.nombre,
       rol: user.rol,
       auth_version: user.auth_version || 1,
-      comunidades: user.comunidades,
-      comunidades_asignadas: user.comunidades_asignadas || user.comunidades || [],
+      // Permissions and names are refreshed server-side; the cookie holds only the chosen scope.
+      comunidades: user.alcance_comunidades === "seleccion"
+        ? (user.comunidades || []).map(row => ({ id_comunidad: row.id_comunidad })) : [],
       alcance_comunidades: user.alcance_comunidades || "todas",
       exp: Math.floor(Date.now() / 1000) + sessionMaxAgeSeconds
     })
@@ -356,8 +357,9 @@ function runAccessCommand(request) {
 
 function runErpContract(session, action, envelope = {}) {
   return new Promise((resolve, reject) => {
+    const exporting = action === "command" && envelope.command === "erp3.export.prepare";
     const child = execFile(pythonBin, [erpBridgePath, databasePath], {
-      timeout: 30000, maxBuffer: 2 * 1024 * 1024,
+      timeout: exporting ? 60000 : 30000, maxBuffer: (exporting ? 20 : 2) * 1024 * 1024,
       env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
     }, (error, stdout, stderr) => {
       let result;

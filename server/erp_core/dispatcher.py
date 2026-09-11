@@ -95,6 +95,11 @@ ERP2_QUERIES = {
 }
 
 ERP3_COMMANDS = {
+    'erp3.allocation.batch.preview':'allocation_batch_preview',
+    'erp3.allocation.batch.confirm':'allocation_batch_confirm',
+    'erp3.export.prepare':'export_prepare',
+    'erp3.coverage.activation.preview':'coverage_activation_preview',
+    'erp3.coverage.activation.confirm':'coverage_activation_confirm',
     'erp3.return.reverse.preview':'return_reverse_preview',
     'erp3.return.reverse.confirm':'return_reverse_confirm',
     'erp3.collection.payer.preview':'collection_payer_preview',
@@ -119,6 +124,8 @@ ERP3_COMMANDS = {
 }
 
 ERP3_QUERIES = {
+    'erp3.evidence.list':'evidence_list',
+    'erp3.coverage.candidates':'coverage_candidates',
     'erp3.period.summary':'period_summary',
     'erp3.opening.get':'opening_get',
     'erp3.account.statement':'account_statement',

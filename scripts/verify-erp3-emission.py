@@ -114,9 +114,9 @@ try:
         assert int(b['net_emitted_cents'])+int(b['approved_adjustments_cents'])==int(b['total_net_emitted_cents'])+int(b['reserved_adjustments_cents'])
     assert not conn.execute('SELECT 1 FROM erp_credito_aplicaciones WHERE id_comunidad=?',(community,)).fetchone(), 'No automatic application of credits'
     from erp_core.dispatcher import execute_command
-    def budget_command(name,payload):
+    def budget_command(name,payload,version=None):
         return execute_command(db,session,{'command':'erp2.'+name,'id_comunidad':community,'payload':payload,
-            'idempotency_key':str(uuid.uuid4()),'origin':'test','reason':'Verificacion del emitido neto rector'})['entity']
+            'idempotency_key':str(uuid.uuid4()),'expected_version':version,'origin':'test','reason':'Verificacion del emitido neto rector'})['entity']
     recalculation={'id_plan':plan['id_plan'],'cutoff_date':'2027-12-31','coverage_start':'2027-01-01','coverage_end':'2027-01-31',
                    'reason':'Regularizacion contra emitido, incluido impagado','emitted_source':'erp3'}
     next_reg=budget_command('regularization.preview',recalculation)
@@ -146,6 +146,50 @@ try:
         budget_command('regularization.approve',{'id_regularizacion':staged['id_regularizacion'],'confirm_pending_recipients':True})
         raise AssertionError('Stale emitted coverage accepted')
     except ConflictError:pass
+    # A real approved one-cent assessment creates zero quota identities, not invoices.
+    general=conn.execute("SELECT id_grupo FROM erp_grupos_reparto WHERE id_comunidad=? AND codigo='GENERAL'",(community,)).fetchone()[0]
+    tiny=budget_command('assessment.save',{'code':'ERP3-ZERO','concept':'Prueba sintetica de cuota cero','amount_cents':'1',
+        'assignments':[{'group_id':general,'rule_type':'partes_iguales','mode':'porcentaje','value':'100'}],
+        'schedules':[{'key':'ZERO-PERIOD','date_start':'2027-06-01','date_end':'2027-06-30','issue_date':'2027-06-03','weight':'1'}]})
+    budget_command('assessment.simulate',{'id_derrama':tiny['id_derrama']})
+    tiny_plan=budget_command('assessment.approve',{'id_derrama':tiny['id_derrama']})
+    command('coverage.confirm',{'concept_key':'derrama:'+str(tiny['id_derrama']),'effective_from':'2027-06-01','effective_until':'2027-06-30','authority':'erp3'})
+    tiny_period=conn.execute('SELECT clave_periodo FROM erp_plan_periodos WHERE id_plan_version=?',(tiny_plan['id_plan_version'],)).fetchone()[0]
+    tiny_request={'plan_version_id':tiny_plan['id_plan_version'],'period_keys':[tiny_period],'issued_on':'2027-06-03'}
+    tiny_preview=command('emission.preview',tiny_request)
+    tiny_emitted=command('emission.confirm',{'proposal_id':tiny_preview['id']},1,key='zero-quota-once')
+    assert len(tiny_emitted['zero_obligation_ids'])==39 and len(tiny_emitted['receipt_ids'])==1
+    assert command('emission.confirm',{'proposal_id':tiny_preview['id']},1,key='zero-quota-once')==tiny_emitted
+    zero_pid=next(l['property_id'] for l in tiny_preview['preview']['lines'] if l['amount_cents']=='0')
+    try:
+        command('emission.preview',{**tiny_request,'property_ids':[zero_pid]})
+        raise AssertionError('A zero quota identity was processed twice')
+    except ConflictError:pass
+    # A formal successor plan may issue credits; earlier plans must see them once.
+    source_budget=conn.execute('SELECT origen_id FROM erp_planes_cuota WHERE id_plan=?',(plan['id_plan'],)).fetchone()[0]
+    exercise=conn.execute('SELECT id_ejercicio FROM erp_presupuestos WHERE id_presupuesto=?',(source_budget,)).fetchone()[0]
+    before_other_plan=coverage()
+    budget_command('budget.close',{'id_presupuesto':int(source_budget)})
+    successor=budget_command('budget.create',{'id_ejercicio':exercise,'codigo':'ERP3-SUCCESSOR','denominacion':'Sucesor sintetico','periodicidad':'mensual'})
+    bid=successor['id_presupuesto']
+    saved=budget_command('budget.save',{'id_presupuesto':bid,'chapters':[{'key':'ONE','name':'Mantenimiento','items':[
+        {'key':'ONE','name':'Coste revisado','amount_cents':'1','assignments':[{'key':'ONE','group_id':general,'rule_type':'partes_iguales','mode':'porcentaje','value':'100'}]}]}]},1)
+    budget_command('budget.simulate',{'id_presupuesto':bid})
+    proposed=budget_command('budget.propose',{'id_presupuesto':bid},saved['version_concurrencia'])
+    approved=budget_command('budget.approve',{'id_presupuesto':bid,'date':'2027-02-05','reason':'Sucesion formal sintetica'},proposed['version_concurrencia'])
+    other_reg=budget_command('regularization.preview',{**recalculation,'id_plan':approved['id_plan']})
+    budget_command('regularization.approve',{'id_regularizacion':other_reg['id_regularizacion'],'confirm_pending_recipients':True})
+    other_decisions=[{'line_id':r['id_linea'],'subjects':[{'type':'owner','id':owner}],
+        **({'credit_beneficiary':{'type':'owner','id':owner}} if r['diferencia_centimos']<0 else {})}
+        for r in conn.execute('SELECT * FROM erp_regularizacion_lineas WHERE id_regularizacion=?',(other_reg['id_regularizacion'],))]
+    preview=command('regularization.emission.preview',{'regularization_id':other_reg['id_regularizacion'],'effective_on':'2027-02-06','decisions':other_decisions})
+    confirmed=command('regularization.emission.confirm',{'proposal_id':preview['id']},1)
+    assert confirmed['credit_ids']
+    after_other_plan=coverage()
+    for before,after in zip(before_other_plan['emitted'],after_other_plan['emitted']):
+        other_delta=sum(int(r['amount_cents']) for r in preview['preview']['lines'] if r['property_id']==before['property_id'])
+        assert int(after['net_emitted_cents'])==int(before['net_emitted_cents'])+other_delta
+        assert after['approved_adjustments_cents']==before['approved_adjustments_cents']
     assert conn.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
     assert not conn.execute('PRAGMA foreign_key_check').fetchall()
     print(json.dumps({'ok':True,'properties':40,'special_group_members':16,'total_cents':str(expected),'snapshot_emission':True,'idempotency':True,'workspace':str(work)}))

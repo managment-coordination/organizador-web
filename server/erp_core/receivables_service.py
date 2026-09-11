@@ -21,9 +21,11 @@ from .receivables_history import HistoryOperations
 from .receivables_queries import ReceivablesQueries
 from .receivables_openings import OpeningOperations
 from .receivables_reversals import ReversalOperations
+from .receivables_activation import ActivationOperations
+from .receivables_exports import ExportOperations
 
 
-class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries, OpeningOperations, ReversalOperations):
+class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries, OpeningOperations, ReversalOperations, ActivationOperations, ExportOperations):
     def __init__(self, database_path):
         self.database_path = database_path
 
@@ -59,7 +61,11 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             return {'ok':True,'query':query.query,'entity':self._wire(op(conn,query))}
         finally:conn.close()
 
-    def _write(self,session,env,op,capability):
+    def _sensitive(self,conn,session,community):
+        try:self._session(conn,session,community,'sensitive_read');return True
+        except PermissionError:return False
+
+    def _write(self,session,env,op,capability,audit_projection=None):
         if not env.idempotency_key:raise ContractError('La operacion requiere idempotencia.')
         conn=connect(self.database_path)
         try:
@@ -72,7 +78,7 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                 result=self._wire(op(conn,actor,env))
                 audit=write_event(conn,community_id=env.community_id,actor=actor,action=env.command,
                     entity_type='erp3_operation',entity_id=result.get('id'),before=result.get('before'),
-                    after=result,reason=env.reason,origin=env.origin,request_id=env.idempotency_key,
+                    after=audit_projection(result) if audit_projection else result,reason=env.reason,origin=env.origin,request_id=env.idempotency_key,
                     entity_version=result.get('version'),evidence=env.evidence,metadata={'contract':CONTRACT_VERSION})
                 outbox=enqueue(conn,community_id=env.community_id,event_type=env.command,
                     aggregate_type='erp3_operation',aggregate_id=result.get('id'),
@@ -235,6 +241,9 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                     raise ConflictError('La ultima configuracion de obligados ha finalizado. Acredita su sucesion; no se reactiva una configuracion anterior.')
                 obligations=[self._subject(conn,community_id,{'type':s['type'],'id':s['id']}) for s in json.loads(config['subjects_json'])]
                 semantic=f"{pid}:{concept}:{period['fecha_inicio']}:{period['fecha_fin']}"
+                if conn.execute('''SELECT 1 FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=?
+                    AND concept_key=? AND period_from<=? AND period_until>=?''',(community_id,pid,concept,period['fecha_fin'],period['fecha_inicio'])).fetchone():
+                    raise ConflictError('La obligacion ya consta emitida en el historico activado. Utiliza regularizacion, no otra emision.')
                 source=f"{plan['id_plan_version']}:{period['id_periodo_plan']}:{pid}"
                 previous=list(conn.execute('SELECT id FROM erp_recibos WHERE id_comunidad=? AND obligation_key=? ORDER BY id',(community_id,semantic)))
                 replaced=None
@@ -377,6 +386,46 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             return {'id':lot,'version':1,'preview':preview}
         return self._write(session,env,op,'allocate')
 
+    def _batch_allocation_preview(self,conn,community,p):
+        require_fields(p,('effective_on','collections'))
+        if not isinstance(p['collections'],list) or not 1<=len(p['collections'])<=100:
+            raise ContractError('Selecciona entre 1 y 100 cobros por lote.')
+        groups=[];seen=set();reserved={};count=0
+        for item in p['collections']:
+            require_fields(item,('collection_id','allocations'))
+            group=self._allocation_preview(conn,community,{**item,'effective_on':p['effective_on']})
+            if group['collection_id'] in seen:raise ContractError('Agrupa las aplicaciones de cada cobro en una sola fila de lote.')
+            seen.add(group['collection_id']);count+=len(group['allocations'])
+            if count>500:raise ContractError('Revisa hasta 500 aplicaciones por lote.')
+            for line in group['allocations']:
+                key=(line['receipt_id'],canonical_json(line['responsibility_subjects']))
+                reserved[key]=cents(reserved.get(key,0)+int(line['amount_cents']))
+                self._choose_responsibility(conn,community,line['receipt_id'],p['effective_on'],reserved[key],line['responsibility_subjects'])
+            group['reference']=self._entity(conn,'erp_cobros',community,group['collection_id'])['external_key']
+            groups.append(group)
+        return {'effective_on':p['effective_on'],'collections':groups,'allocation_count':count,
+                'total_cents':str(cents(sum(reserved.values())))}
+
+    def _insert_allocation(self,conn,actor,e,preview,suffix='0'):
+        event,now=self._event(conn,actor,e,'erp3.collection.allocated',preview['effective_on'],preview,suffix)
+        for line in preview['allocations']:
+            conn.execute('''INSERT INTO erp_imputaciones
+                (id_comunidad,collection_id,receipt_id,event_id,amount_cents,effective_on,registered_at,responsibility_json)
+                VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],line['receipt_id'],event,int(line['amount_cents']),preview['effective_on'],now,canonical_json(line['responsibility_subjects'])))
+            conn.execute('UPDATE erp_recibos SET version=version+1 WHERE id=? AND id_comunidad=?',(line['receipt_id'],e.community_id))
+        conn.execute('UPDATE erp_cobros SET version=version+1 WHERE id=? AND id_comunidad=?',(preview['collection_id'],e.community_id))
+        validate_timeline(conn,e.community_id,[l['receipt_id'] for l in preview['allocations']],[preview['collection_id']])
+        return event,now
+
+    def _batch_allocation_apply(self,conn,actor,e,p):
+        return {'event_ids':[self._insert_allocation(conn,actor,e,group,str(i))[0] for i,group in enumerate(p['collections'])]}
+
+    def allocation_batch_preview(self,s,e):
+        return self._review_operation(s,e,'allocation_batch','allocate',self._batch_allocation_preview)
+
+    def allocation_batch_confirm(self,s,e):
+        return self._review_operation(s,e,'allocation_batch','allocate',self._batch_allocation_preview,self._batch_allocation_apply)
+
     def allocation_confirm(self,session,env):
         def op(conn,actor,e):
             require_fields(e.payload,('proposal_id',))
@@ -386,14 +435,7 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             preview=self._allocation_preview(conn,e.community_id,json.loads(lot['payload_json']))
             if fingerprint(preview)!=lot['preview_hash']:raise ConflictError('Los saldos cambiaron; genera una nueva propuesta.')
             if not e.reason:raise ContractError('Confirma el motivo de la imputacion, especialmente si el pagador es distinto del obligado.')
-            event,now=self._event(conn,actor,e,'erp3.collection.allocated',preview['effective_on'],preview)
-            for line in preview['allocations']:
-                conn.execute('''INSERT INTO erp_imputaciones
-                    (id_comunidad,collection_id,receipt_id,event_id,amount_cents,effective_on,registered_at,responsibility_json)
-                    VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],line['receipt_id'],event,int(line['amount_cents']),preview['effective_on'],now,canonical_json(line['responsibility_subjects'])))
-                conn.execute('UPDATE erp_recibos SET version=version+1 WHERE id=? AND id_comunidad=?',(line['receipt_id'],e.community_id))
-            conn.execute('UPDATE erp_cobros SET version=version+1 WHERE id=? AND id_comunidad=?',(preview['collection_id'],e.community_id))
-            validate_timeline(conn,e.community_id,[l['receipt_id'] for l in preview['allocations']],[preview['collection_id']])
+            event,now=self._insert_allocation(conn,actor,e,preview)
             result={'id':lot['id'],'version':lot['version']+1,'event_ids':[event],'preview':preview}
             conn.execute("UPDATE erp_emisiones_lotes SET state='confirmed',version=version+1,confirmed_at=?,result_json=? WHERE id=?",(now,canonical_json(result),lot['id']))
             return result
@@ -408,9 +450,16 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             for allocation in conn.execute('SELECT * FROM erp_imputaciones WHERE id_comunidad=? AND receipt_id=? AND reverses_id IS NULL AND effective_on<=? AND registered_at<=?',(q.community_id,row['id'],balance['effective_at'],balance['known_at'])):
                 reversed_total=sum(r[0] for r in conn.execute('SELECT amount_cents FROM erp_imputaciones WHERE id_comunidad=? AND reverses_id=? AND effective_on<=? AND registered_at<=?',(q.community_id,allocation['id'],balance['effective_at'],balance['known_at'])))
                 allocations.append({**dict(allocation),'remaining_cents':str(allocation['amount_cents']-reversed_total)})
-            return {'receipt':row,'balance':balance,'allocations':allocations,'subjects':[dict(r) for r in conn.execute('SELECT role,snapshot_json FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))],
+            reversible=[]
+            for table,kind in (('erp_rectificaciones','credit'),('erp_credito_aplicaciones','application')):
+                for movement in conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? AND receipt_id=? AND reverses_id IS NULL AND effective_on<=? AND registered_at<=?',(q.community_id,row['id'],balance['effective_at'],balance['known_at'])):
+                    if kind=='credit' and movement['kind']!='credit':continue
+                    reversed_total=sum(r[0] for r in conn.execute(f'SELECT amount_cents FROM {table} WHERE id_comunidad=? AND reverses_id=? AND effective_on<=? AND registered_at<=?',(q.community_id,movement['id'],balance['effective_at'],balance['known_at'])))
+                    reversible.append({'id':movement['id'],'kind':kind,'effective_on':movement['effective_on'],
+                        'amount_cents':str(movement['amount_cents']),'remaining_cents':str(movement['amount_cents']-reversed_total)})
+            return {'receipt':row,'balance':balance,'allocations':allocations,'reversible_movements':reversible,'subjects':[dict(r) for r in conn.execute('SELECT role,snapshot_json FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))],
                     'details':[dict(r) for r in conn.execute('SELECT line_key,amount_cents,snapshot_json FROM erp_recibo_detalles WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))]}
-        return self._read(session,query,op)
+        return self._read(session,query,op,'sensitive_read')
 
     def _correction_preview(self,conn,community_id,operation,p):
         if operation=='return':
@@ -545,4 +594,4 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                 reversed_total=sum(r[0] for r in conn.execute('SELECT amount_cents FROM erp_imputaciones WHERE id_comunidad=? AND reverses_id=? AND effective_on<=? AND registered_at<=?',(q.community_id,item['id'],effective,known)))
                 allocations.append({**dict(item),'remaining_cents':str(item['amount_cents']-reversed_total)})
             return {'collection':{**row,**collection_payer(conn,q.community_id,row['id'],effective,known)},'allocations':allocations,'balance':collection_balance(conn,q.community_id,row['id'],effective,known)}
-        return self._read(session,query,op)
+        return self._read(session,query,op,'sensitive_read')

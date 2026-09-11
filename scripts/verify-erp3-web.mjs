@@ -9,24 +9,52 @@ import {setTimeout as delay} from 'node:timers/promises';
 
 const root=path.resolve(import.meta.dirname,'..');
 const source=process.env.UI_FIXTURE_DB;
-assert.ok(source&&path.basename(path.dirname(source)).startsWith('organizador-release-'),'Use an isolated release fixture.');
+assert.ok(source&&['organizador-release-','organizador-erp2-complete-'].some(prefix=>path.basename(path.dirname(source)).startsWith(prefix)),'Use an isolated release/ERP2 fixture with its synthetic login.');
 const output=fs.mkdtempSync(path.join(os.tmpdir(),'organizador-erp3-web-'));
 const db=path.join(output,'test.db');
 const python=process.env.PYTHON_BIN||'python3';
 const seed=spawnSync(python,['-',source,db],{encoding:'utf8',env:{...process.env,PYTHONPATH:path.join(root,'server')},input:`
-import sqlite3,sys,json
+import sqlite3,sys,json,hashlib
 from access_control import migrate,profile
 from erp_core.database import connect
+from erp_core.dispatcher import execute_command
 src=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);dst=sqlite3.connect(sys.argv[2]);src.backup(dst);src.close();dst.close()
 c=connect(sys.argv[2]);migrate(c)
 user=c.execute("SELECT id_usuario,nombre FROM usuarios WHERE rol='Superusuario' AND activo=1 ORDER BY id_usuario LIMIT 1").fetchone()
+salt='erp3-web-fixture';digest=hashlib.pbkdf2_hmac('sha256',b'Only-local-fixture-629',salt.encode(),260000).hex()
+c.execute("UPDATE usuarios SET password_hash=?,password_configurada=1,requiere_cambio_password=0,bloqueado=0 WHERE id_usuario=?",('pbkdf2_sha256$260000$'+salt+'$'+digest,user[0]))
 pid,community,code=c.execute('SELECT id_propiedad,id_comunidad,codigo_propiedad FROM cf_propiedades ORDER BY id_propiedad LIMIT 1').fetchone()
 owner=c.execute('SELECT id_propietario,nombre FROM cf_propietarios WHERE id_comunidad=? LIMIT 1',(community,)).fetchone()
 exercise=c.execute("INSERT INTO erp_ejercicios(id_comunidad,codigo,fecha_inicio,fecha_fin,estado,creado_en,creado_por,origen) VALUES (?,'WEB-ERP3','2026-01-01','2026-12-31','abierto','2026-01-01',?,'test')",(community,user[0])).lastrowid
 rid=c.execute("""INSERT INTO erp_recibos(id_comunidad,id_propiedad,id_ejercicio,number,concept_key,description,period_key,period_from,period_until,source_type,source_key,obligation_key,amount_cents,currency,issued_on,due_on,snapshot_json,snapshot_hash,registered_at,actor_id) VALUES (?,?,?,'WEB-ERP3-001','test','Cuota sintetica de prueba','P01','2026-01-01','2026-01-31','plan','WEB-ERP3','WEB-ERP3',10000,'EUR','2026-01-01','2026-01-10','{}','test','2026-01-01T00:00:00.000000Z',?)""",(community,pid,exercise,user[0])).lastrowid
 for role in ['obligated','recipient','payer']:
  c.execute('INSERT INTO erp_recibo_sujetos(id_comunidad,receipt_id,role,owner_id,snapshot_json) VALUES (?,?,?,?,?)',(community,rid,role,owner[0],json.dumps({'type':'owner','id':owner[0],'name':owner[1]})))
-print(json.dumps({'community':community,'property':pid,'code':code,'owner':owner[0],'user':user[1],'receipt':rid}))
+for i in range(60):
+ c.execute("""INSERT INTO erp_recibos(id_comunidad,id_propiedad,id_ejercicio,number,concept_key,description,period_key,period_from,period_until,source_type,source_key,obligation_key,amount_cents,currency,issued_on,due_on,snapshot_json,snapshot_hash,registered_at,actor_id) VALUES (?,?,?,?,'test','Recibo sintetico paginado','P01','2026-01-01','2026-01-31','plan',?,?,10000,'EUR','2026-01-01','2026-01-10','{}','test','2026-01-01T00:00:00.000000Z',?)""",(community,pid,exercise,'PAGED-'+str(i),'PAGED-'+str(i),'PAGED-'+str(i),user[0]))
+activations={};n=0
+def command(name,payload,version=None):
+ global n
+ n+=1
+ return execute_command(sys.argv[2],profile(c,user[0]),{'command':'erp3.'+name,'id_comunidad':community,'payload':payload,'expected_version':version,'idempotency_key':'web-seed-'+str(n),'origin':'test','reason':'Preparacion sintetica','evidence':{'type':'external_reference','id':'SYNTHETIC'}})['entity']
+for width,month in [(1440,'01'),(390,'03'),(360,'05')]:
+ start='2030-'+month+'-01';end='2030-'+month+'-31'
+ old=c.execute("INSERT INTO cf_recibos(referencia,fecha_emision,id_propiedad,id_comunidad,importe,cobrado,deuda) VALUES (?,?,?,?,100,25,75)",('HIST-'+str(width),start,pid,community)).lastrowid
+ draft=command('history.import.preview',{'source':'web-activation','file_hash':str(width).zfill(64),'file_name':'synthetic.csv','rows':[{'reference':'ACT-'+str(width),'amount_cents':'7500','cutoff_date':end,'coverage_from':start,'coverage_until':end,'scope':'receipt','property_id':pid,'legacy_receipt_ids':[old],'limitations':'Saldo observado sintetico'}]})
+ command('history.import.confirm',{'import_id':draft['id']},draft['version'])
+ coverage=command('coverage.confirm',{'concept_key':'ordinario','effective_from':start,'effective_until':end,'authority':'legacy_observed'})
+ activations[str(width)]={'coverage':coverage['id'],'start':start,'end':end}
+integral=None
+if c.execute("SELECT 1 FROM comunidades WHERE nombre='ERP2 Integral'").fetchone():
+ original_community=community
+ community=c.execute("SELECT id_comunidad FROM comunidades WHERE nombre='ERP2 Integral'").fetchone()[0]
+ integral_owner=c.execute("SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? AND nombre='Titular ERP2'",(community,)).fetchone()[0]
+ command('coverage.confirm',{'concept_key':'ordinario','effective_from':'2027-01-01','effective_until':'2027-12-31','authority':'erp3'})
+ for item in c.execute('SELECT id_propiedad FROM cf_propiedades WHERE id_comunidad=?',(community,)).fetchall():
+  command('responsibility.confirm',{'property_id':item[0],'effective_from':'2027-01-01','subjects':[{'type':'owner','id':integral_owner}]},0)
+ plan=c.execute("SELECT v.id_plan_version FROM erp_plan_versiones v JOIN erp_planes_cuota p ON p.id_plan=v.id_plan AND p.id_comunidad=v.id_comunidad WHERE p.id_comunidad=? AND p.tipo='ordinario' AND p.estado='aprobado' LIMIT 1",(community,)).fetchone()[0]
+ integral={'community':community,'plan':plan}
+ community=original_community
+print(json.dumps({'community':community,'property':pid,'code':code,'owner':owner[0],'user':user[1],'receipt':rid,'activations':activations,'integral':integral}))
 c.close()
 `});
 assert.equal(seed.status,0,seed.stderr);const fixture=JSON.parse(seed.stdout.trim());
@@ -45,7 +73,10 @@ try {
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(base);await page.locator('#loginUser option').first().waitFor({state:'attached'});
     await page.locator('#loginUser').selectOption({label:fixture.user});await page.locator('#loginPassword').fill('Only-local-fixture-629');await page.locator('#loginButton').click();
+    await page.locator('#appView:visible, #communityScopeModal:visible').first().waitFor().catch(async error=>{await page.screenshot({path:path.join(output,'login-failure.png'),fullPage:true});throw new Error(error.message+'; Login: '+await page.locator('#loginMessage').innerText()+'; JS: '+JSON.stringify(errors)+'; server: '+log);});
+    if(await page.locator('#communityScopeModal').isVisible())await page.locator('#confirmCommunityScope').click();
     await page.locator('#appView').waitFor({state:'visible'});
+    assert.ok((await context.cookies()).every(cookie=>cookie.value.length<3800),'Session cookie must fit browser limits');
     await page.locator('[data-workspace-area=management]').click();
     if(width<700){await page.locator('#mobileMenuToggle').click();await page.locator('[data-mobile-view=receivables]').click();}
     else await page.locator('#receivablesTab').click();
@@ -64,7 +95,9 @@ try {
     await page.getByRole('button',{name:'Cobros y saldos',exact:true}).click();
     await page.getByRole('row').filter({hasText:'WEB-COLLECTION-'+width}).getByRole('button',{name:'Abrir'}).click();
     await page.getByRole('button',{name:'Imputar a recibos'}).click();
-    await page.locator('[name=receipt]').selectOption(String(fixture.receipt));await page.locator('[name=amount]').fill('10,00');
+    await page.locator('[name=receipt_0]').fill('WEB-ERP3-001');await page.locator('[name=amount_0]').fill('10,00');
+    await page.getByRole('button',{name:'Anadir recibo',exact:true}).click();
+    await page.locator('[name=receipt_1]').fill('PAGED-59');await page.locator('[name=amount_1]').fill('1,00');
     await page.locator('[name=reason]').fill('Aplicacion parcial revisada');await page.locator('[data-fin-form=operation]').getByRole('button',{name:'Revisar',exact:true}).click();
     await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
     await page.getByRole('button',{name:'Registrar cobro',exact:true}).waitFor();
@@ -84,9 +117,25 @@ try {
     await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
     await page.getByRole('row').filter({hasText:'WEB-RETURN-'+width}).getByText('Revertida',{exact:true}).waitFor();
     await page.getByRole('button',{name:'Deuda e historico',exact:true}).click();
+    await page.locator('.finWorkspace summary').filter({hasText:'Exportar'}).click();
+    const downloading=page.waitForEvent('download');await page.getByRole('button',{name:'Excel',exact:true}).click();
+    const download=await downloading;assert.ok(download.suggestedFilename().endsWith('.xlsx'));await download.saveAs(path.join(output,`${width}-statement.xlsx`));
     await page.screenshot({path:path.join(output,`${width}-debt.png`),fullPage:true});
     for(const section of ['Importacion historica','Configuracion']) {
       await page.getByRole('button',{name:section,exact:true}).click();
+      if(section==='Configuracion') {
+        const a=fixture.activations[String(width)];
+        await page.getByText('Fuente de emision y corte de puesta en marcha',{exact:true}).click();
+        await page.locator(`[data-fin-action=activate-coverage][data-id="${a.coverage}"]`).click();
+        await page.locator('[name=from_0]').fill(a.start);await page.locator('[name=until_0]').fill(a.end);
+        await page.locator('[name=reason]').fill('Revision expresa de correspondencia de recibo y saldo');
+        await page.locator('[name=evidence]').fill('SYNTHETIC-COVERAGE-'+width);
+        await page.getByRole('button',{name:'Revisar',exact:true}).click();
+        await page.getByText('No se crean cobros ni se vuelven a emitir recibos. La calidad de las fuentes historicas se conserva.',{exact:true}).waitFor();
+        await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
+        await page.getByText('Fuente de emision y corte de puesta en marcha',{exact:true}).click();
+        await page.getByRole('row').filter({hasText:a.start}).getByText('Historico revisado',{exact:true}).waitFor();
+      }
       if(section==='Importacion historica') {
         const ExcelJS=(await import(pathToFileURL(path.join(root,'server/node_modules/exceljs/excel.js')).href)).default;
         const workbook=new ExcelJS.Workbook();const sheet=workbook.addWorksheet('Saldos');
@@ -113,7 +162,35 @@ try {
     }
     assert.deepEqual(errors,[]);await context.close();
   }
-  console.log(JSON.stringify({ok:true,output,checks:['1440/390/360 navigation','collection review and confirmation','partial allocation','return and explicit reversal without automatic reallocation','Excel upload/mapping/preview/confirmation/reimport','debt coverage warnings','no JS errors or global overflow']},null,2));
+  if(fixture.integral) {
+    const context=await browser.newContext({viewport:{width:1440,height:900}}),page=await context.newPage();
+    await page.goto(base);await page.locator('#loginUser option').first().waitFor({state:'attached'});
+    await page.locator('#loginUser').selectOption({label:fixture.user});await page.locator('#loginPassword').fill('Only-local-fixture-629');await page.locator('#loginButton').click();
+    await page.locator('#appView:visible, #communityScopeModal:visible').first().waitFor();
+    if(await page.locator('#communityScopeModal').isVisible())await page.locator('#confirmCommunityScope').click();
+    await page.locator('#appView').waitFor({state:'visible'});await page.locator('[data-workspace-area=management]').click();await page.locator('#receivablesTab').click();
+    await page.locator('.finWorkspace [name=community]').selectOption(String(fixture.integral.community));
+    await page.getByRole('button',{name:'Preparar emision',exact:true}).waitFor();
+    await page.locator('.finWorkspace [name=cut]').fill('2027-01-31');await page.locator('.finWorkspace [name=cut]').blur();
+    await page.getByRole('button',{name:'Preparar emision',exact:true}).click();
+    await page.locator('[name=plan]').selectOption(String(fixture.integral.plan));await page.locator('[name=period]').first().check();
+    assert.equal(await page.locator('[name=emission-property]:checked').count(),40);
+    await page.locator('[name=issued_on]').fill('2027-01-03');await page.locator('[name=reason]').fill('Emision integral sintetica desde cuotas aprobadas');
+    await page.getByRole('button',{name:'Revisar',exact:true}).click();await page.locator('#finAck').waitFor();
+    await page.screenshot({path:path.join(output,'1440-emission-review.png'),fullPage:true});
+    await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
+    await page.locator('[data-fin-action=receipt]').first().waitFor();assert.equal(await page.locator('[data-fin-action=receipt]').count(),40);
+    await page.locator('[data-fin-action=receipt]').first().click();await page.getByRole('heading',{name:'Desglose del recibo'}).waitFor();
+    await page.getByRole('button',{name:'Anular',exact:true}).click();await page.locator('[name=reason]').fill('Prueba de sustitucion explicita');
+    await page.getByRole('button',{name:'Revisar',exact:true}).click();await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
+    await page.locator('[data-fin-action=receipt]').first().click();await page.getByRole('button',{name:'Emitir sustitucion',exact:true}).click();
+    await page.locator('[name=reason]').fill('Sustitucion documentada conservando el original');await page.locator('[name=evidence]').fill('SYNTHETIC-SUBSTITUTION');
+    await page.getByRole('button',{name:'Revisar',exact:true}).click();await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();
+    await page.locator('[data-fin-action=receipt]').first().waitFor();assert.equal(await page.locator('[data-fin-action=receipt]').count(),41);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);
+    await context.close();
+  }
+  console.log(JSON.stringify({ok:true,output,integral_emission:Boolean(fixture.integral),checks:['1440/390/360 navigation','collection review and confirmation','multi-receipt allocation beyond first page','return and explicit reversal without automatic reallocation','Excel upload/mapping/preview/confirmation/reimport','historical coverage activation','audited Excel export','debt coverage warnings','no JS errors or global overflow']},null,2));
 } finally {
   if(browser)await browser.close();server.kill();await new Promise(resolve=>server.exitCode!==null?resolve():server.once('exit',resolve));
   fs.writeFileSync(path.join(output,'server.log'),log);

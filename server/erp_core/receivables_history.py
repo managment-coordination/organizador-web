@@ -50,6 +50,11 @@ class HistoryOperations:
             original=json.loads(existing['source_json'])['normalized']
             if original!=normalized:raise ConflictError('La misma referencia contiene valores distintos. Requiere rectificacion, no reimportacion.')
             return {'decision':'skip','opening_id':existing['id'],'coverage_key':key,'normalized':normalized}
+        if conn.execute('''SELECT 1 FROM erp_recibos_coberturas c
+            LEFT JOIN erp_cobertura_activaciones a ON a.id_comunidad=c.id_comunidad AND a.coverage_id=c.id
+            WHERE c.id_comunidad=? AND c.effective_from<=? AND c.effective_until>=?
+                AND (c.authority='erp3' OR a.id IS NOT NULL)''',(community,end,start)).fetchone():
+            raise ConflictError('El intervalo ya esta activado. No se anade otra fuente de saldo mediante importacion.')
         for other in conn.execute('SELECT * FROM erp_saldos_apertura WHERE id_comunidad=?',(community,)):
             data=json.loads(other['source_json']).get('normalized',{})
             if set(data.get('legacy_receipt_ids',[]))&set(legacy):raise ConflictError('Un recibo historico ya esta cubierto por otra apertura.')

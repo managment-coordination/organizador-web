@@ -15,9 +15,18 @@ class RegularizationOperations:
     def _require_coverage(conn,community,concept,start,end):
         rows=list(conn.execute('''SELECT * FROM erp_recibos_coberturas WHERE id_comunidad=? AND concept_key=?
             AND effective_from<=? AND effective_until>=?''',(community,concept,start,end)))
-        if len(rows)!=1 or rows[0]['authority']!='erp3':
+        activation=conn.execute('SELECT * FROM erp_cobertura_activaciones WHERE id_comunidad=? AND coverage_id=?',(community,rows[0]['id'])).fetchone() if len(rows)==1 else None
+        if len(rows)!=1 or (rows[0]['authority']!='erp3' and not activation):
             raise ConflictError('Falta confirmar ERP 3 como fuente rectora para este concepto y periodo. No se presupone cobertura cero.')
-        return dict(rows[0])
+        legacy=list(conn.execute('SELECT * FROM cf_recibos WHERE id_comunidad=? AND fecha_emision BETWEEN ? AND ?',
+                                (community,rows[0]['effective_from'],rows[0]['effective_until'])))
+        if activation:
+            frozen=json.loads(activation['snapshot_json'])['lines']
+            if {r['id_recibo']:fingerprint(dict(r)) for r in legacy}!={r['legacy_receipt_id']:r['source_hash'] for r in frozen}:
+                raise ConflictError('La fuente historica ha cambiado despues de activar su cobertura. Revisa la discrepancia antes de operar.')
+        elif legacy:
+            raise ConflictError('Han aparecido recibos historicos en un intervalo de emision ERP. Revisa la fuente antes de operar.')
+        return {**dict(rows[0]),'registered_at':activation['registered_at'] if activation else rows[0]['registered_at']}
 
     def coverage_confirm(self,session,env):
         def op(conn,actor,e):
@@ -141,6 +150,22 @@ class RegularizationOperations:
                     period=periods[key];coverage=self._require_coverage(conn,q.community_id,'ordinario',period['fecha_inicio'],period['fecha_fin'])
                     if coverage['registered_at']>known:raise ConflictError('La cobertura no estaba acreditada en esa fecha de conocimiento.')
                     base=0;materialized=0;adjustments=0;collected=0;references=[]
+                    if conn.execute('''SELECT 1 FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=? AND concept_key='ordinario'
+                        AND period_from<=? AND period_until>=? AND (period_from<>? OR period_until<>?) AND registered_at<=?''',
+                        (q.community_id,pid,period['fecha_fin'],period['fecha_inicio'],period['fecha_inicio'],period['fecha_fin'],known)).fetchone():
+                        raise ConflictError('Los periodos historicos no coinciden con el plan. Requieren revision explicita, no prorrateo.')
+                    for historic in conn.execute('''SELECT * FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=?
+                        AND concept_key='ordinario' AND period_from=? AND period_until=? AND registered_at<=?''',
+                        (q.community_id,pid,period['fecha_inicio'],period['fecha_fin'],known)):
+                        original=json.loads(historic['snapshot_json'])
+                        if original['issued_on']>effective:raise ConflictError('La obligacion historica no estaba emitida en ese corte.')
+                        base+=historic['net_emitted_cents']
+                        corrections=list(conn.execute("SELECT * FROM erp_apertura_movimientos WHERE id_comunidad=? AND opening_id=? AND kind IN ('credit','reverse_credit') AND effective_on<=? AND registered_at<=?",(q.community_id,historic['opening_id'],effective,known)))
+                        if corrections:
+                            if conn.execute('SELECT COUNT(*) FROM erp_historico_obligaciones WHERE id_comunidad=? AND opening_id=?',(q.community_id,historic['opening_id'])).fetchone()[0]!=1:
+                                raise ConflictError('Un abono de apertura agregada no identifica su reparto entre recibos historicos. Revisa antes de regularizar.')
+                            base-=sum(r['amount_cents']*(-1 if r['kind']=='reverse_credit' else 1) for r in corrections)
+                        references.append({'legacy_receipt_id':historic['legacy_receipt_id'],'opening_id':historic['opening_id'],'net_cents':str(historic['net_emitted_cents']),'type':'activated_history'})
                     receipts=conn.execute('''SELECT * FROM erp_recibos WHERE id_comunidad=? AND id_propiedad=?
                         AND period_from=? AND period_until=? AND issued_on<=? AND registered_at<=? AND concept_key IN ('ordinario','regularizacion')''',
                         (q.community_id,pid,period['fecha_inicio'],period['fecha_fin'],effective,known))

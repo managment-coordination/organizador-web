@@ -1,6 +1,8 @@
 """ERP 3 migration/transaction tests on an isolated SQLite backup, never production."""
 
 import hashlib
+import base64
+import io
 import json
 from pathlib import Path
 import sqlite3
@@ -205,6 +207,95 @@ class ERP3Tests(unittest.TestCase):
         with self.assertRaises(ConflictError):self.command('history.import.confirm',{'import_id':conflict['id']},1,evidence={'type':'external_reference','id':'synthetic:history'})
         with self.assertRaises(sqlite3.IntegrityError):self.conn.execute("UPDATE erp_saldos_apertura SET amount_cents=1")
 
+    def activation_fixture(self):
+        rid=self.conn.execute('''INSERT INTO cf_recibos (referencia,fecha_emision,id_propiedad,id_comunidad,importe,cobrado,deuda)
+            VALUES ('SYNTHETIC-ACTIVATION','2030-01-03',?,?,100,25,75)''',(self.property,self.community)).lastrowid
+        self.before['cf_recibos']+=1
+        row={'reference':'ACTIVATION-SALDO','amount_cents':'7500','cutoff_date':'2030-01-31','coverage_from':'2030-01-01',
+             'coverage_until':'2030-01-31','scope':'receipt','property_id':self.property,'legacy_receipt_ids':[rid],
+             'limitations':'Observacion sintetica, no se reconstruyen pagos.'}
+        payload={'source':'activation-test','file_hash':'d'*64,'file_name':'historico.xlsx','rows':[row]}
+        draft=self.command('history.import.preview',payload)['entity']
+        opened=self.command('history.import.confirm',{'import_id':draft['id']},draft['version'],evidence={'type':'external_reference','id':'synthetic-history'})['entity']
+        coverage=self.command('coverage.confirm',{'concept_key':'ordinario','effective_from':'2030-01-01','effective_until':'2030-01-31','authority':'legacy_observed'},
+                              evidence={'type':'external_reference','id':'synthetic-cut'})['entity']['id']
+        return rid,payload,{'coverage_id':coverage,'mappings':[{'legacy_receipt_id':rid,'opening_id':opened['opening_ids'][0],
+                 'period_from':'2030-01-01','period_until':'2030-01-31','concept_key':'ordinario'}]}
+
+    def test_historical_activation_review_idempotency_and_originals(self):
+        rid,imported,payload=self.activation_fixture()
+        original=tuple(self.conn.execute('SELECT * FROM cf_recibos WHERE id_recibo=?',(rid,)).fetchone())
+        with self.assertRaises(ConflictError):self.service._require_coverage(self.conn,self.community,'ordinario','2030-01-01','2030-01-31')
+        with self.assertRaises(ConflictError):self.command('coverage.activation.preview',{**payload,'mappings':[]})
+        preview=self.command('coverage.activation.preview',payload)['entity']
+        self.assertEqual(preview['preview']['lines'][0]['net_emitted_cents'],'10000')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_historico_obligaciones').fetchone()[0],0)
+        result=self.command('coverage.activation.confirm',{'proposal_id':preview['id']},preview['version'],key='activate',evidence={'type':'external_reference','id':'reviewed-correspondence'})
+        self.assertTrue(self.command('coverage.activation.confirm',{'proposal_id':preview['id']},preview['version'],key='activate',evidence={'type':'external_reference','id':'reviewed-correspondence'})['idempotent_replay'])
+        self.assertFalse(result['entity']['receipts_created'])
+        self.service._require_coverage(self.conn,self.community,'ordinario','2030-01-01','2030-01-31')
+        self.assertEqual(tuple(self.conn.execute('SELECT * FROM cf_recibos WHERE id_recibo=?',(rid,)).fetchone()),original)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cobros').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT quality FROM erp_saldos_apertura').fetchone()[0],'observada')
+        with self.assertRaises(sqlite3.IntegrityError):self.conn.execute('UPDATE erp_historico_obligaciones SET net_emitted_cents=0')
+        self.assertEqual(self.command('history.import.preview',{**imported,'file_hash':'e'*64})['entity']['rows'][0]['decision'],'skip')
+        changed={**imported,'file_hash':'f'*64,'rows':[{**imported['rows'][0],'reference':'EXTRA','legacy_receipt_ids':[]}]}
+        self.assertEqual(self.command('history.import.preview',changed)['entity']['blocking_issues'],1)
+
+    def test_historical_activation_atomic_rollback(self):
+        rid,_,payload=self.activation_fixture()
+        preview=self.command('coverage.activation.preview',payload)['entity']
+        self.conn.execute("CREATE TRIGGER synthetic_activation_failure BEFORE INSERT ON erp_historico_obligaciones BEGIN SELECT RAISE(ABORT,'synthetic failure'); END")
+        with self.assertRaises(Exception):self.command('coverage.activation.confirm',{'proposal_id':preview['id']},preview['version'],evidence={'type':'external_reference','id':'reviewed-correspondence'})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cobertura_activaciones').fetchone()[0],0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM erp_hechos_economicos WHERE event_type='erp3.coverage.activated'").fetchone()[0],0)
+        self.conn.execute('DROP TRIGGER synthetic_activation_failure')
+        self.command('coverage.activation.confirm',{'proposal_id':preview['id']},preview['version'],evidence={'type':'external_reference','id':'reviewed-correspondence'})
+
+    def test_batch_allocation_many_to_many_atomic_and_replay(self):
+        r1=self.receipt(10000,'BATCH-1');r2=self.receipt(10000,'BATCH-2')
+        c1=self.collection(10000,'BATCH-C1');c2=self.collection(10000,'BATCH-C2')
+        payload={'effective_on':'2026-01-15','collections':[
+            {'collection_id':c1,'allocations':[{'receipt_id':r1,'amount_cents':'6000'},{'receipt_id':r2,'amount_cents':'4000'}]},
+            {'collection_id':c2,'allocations':[{'receipt_id':r1,'amount_cents':'4000'},{'receipt_id':r2,'amount_cents':'6000'}]}]}
+        p=self.command('allocation.batch.preview',payload)['entity']
+        self.assertEqual(p['preview']['total_cents'],'20000')
+        self.conn.execute(f"CREATE TRIGGER synthetic_batch_failure BEFORE INSERT ON erp_imputaciones WHEN NEW.collection_id={c2} BEGIN SELECT RAISE(ABORT,'synthetic failure'); END")
+        with self.assertRaises(Exception):self.command('allocation.batch.confirm',{'proposal_id':p['id']},p['version'],key='batch-confirm')
+        self.assertEqual(collection_balance(self.conn,self.community,c1)['available_cents'],'10000')
+        self.assertEqual(receipt_balance(self.conn,self.community,r1)['pending_cents'],'10000')
+        self.conn.execute('DROP TRIGGER synthetic_batch_failure')
+        self.command('allocation.batch.confirm',{'proposal_id':p['id']},p['version'],key='batch-confirm')
+        self.assertTrue(self.command('allocation.batch.confirm',{'proposal_id':p['id']},p['version'],key='batch-confirm')['idempotent_replay'])
+        self.assertEqual(receipt_balance(self.conn,self.community,r1)['pending_cents'],'0')
+        self.assertEqual(receipt_balance(self.conn,self.community,r2)['pending_cents'],'0')
+
+    def test_batch_rejects_combined_overapplication(self):
+        rid=self.receipt();a=self.collection(10000,'A');b=self.collection(10000,'B')
+        with self.assertRaises(ConflictError):self.command('allocation.batch.preview',{'effective_on':'2026-01-15',
+            'collections':[{'collection_id':c,'allocations':[{'receipt_id':rid,'amount_cents':'6000'}]} for c in (a,b)]})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_imputaciones').fetchone()[0],0)
+
+    def test_export_all_pages_exact_audited_formula_safe(self):
+        from openpyxl import load_workbook
+        for i in range(51):self.receipt(101,'=UNTRUSTED-'+str(i))
+        payload={'kind':'receipts','format':'csv','filters':{'property_id':self.property,'effective_at':'2026-01-31','limit':1}}
+        result=self.command('export.prepare',payload,key='export-request')
+        self.assertEqual(result['entity']['row_count'],51)
+        self.assertEqual(result['entity']['subtotal_cents'],'5151')
+        content=base64.b64decode(result['entity']['content_base64']).decode('utf-8-sig')
+        self.assertIn("'=UNTRUSTED-50",content)
+        self.assertIn('51.51',content)
+        self.assertTrue(self.command('export.prepare',payload,key='export-request')['idempotent_replay'])
+        xlsx=self.command('export.prepare',{**payload,'format':'xlsx'})['entity']
+        book=load_workbook(io.BytesIO(base64.b64decode(xlsx['content_base64'])))
+        self.assertEqual(book['Datos'].max_row,52)
+        self.assertTrue(all(cell.data_type!='f' for row in book['Datos'] for cell in row))
+        self.assertTrue(book['Origen y alcance']['B2'].value=='2026-01-31')
+        statement=execute_query(self.db,self.session,{'query':'erp3.account.statement','id_comunidad':self.community,
+            'filters':{'effective_at':'2026-02-15','property_id':self.property}})['entity']
+        self.assertEqual(statement['aging_cents']['31_60'],'5151')
+
     def test_pagination_exact_totals_and_personal_attribution(self):
         owners=[r[0] for r in self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 2',(self.community,))]
         for number,owner in [('DEBT-A',owners[0]),('DEBT-B',owners[1])]:
@@ -227,6 +318,91 @@ class ERP3Tests(unittest.TestCase):
             self.command('policy.save',{'effective_from':'2026-01-01','return_fee_mode':'none'},0,
                 evidence={'type':'attachment','id':'999999999'})
         self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_recibo_politicas').fetchone()[0],0)
+
+    def test_financial_user_document_evidence_and_export_permissions(self):
+        from access_control import permission
+        candidates=[profile(self.conn,r[0]) for r in self.conn.execute("SELECT id_usuario FROM usuarios WHERE activo=1 AND rol<>'Superusuario'")]
+        user=next(u for u in candidates if permission(u,self.community,'puede_ver_documentos'))
+        self.command('permissions.save',{'user_id':user['id_usuario'],'capabilities':{'read':True,'sensitive_read':True,'credit':True}},0)
+        doc=self.conn.execute("INSERT INTO anexos_registros(id_comunidad,tipo_entidad,id_registro,nombre_archivo,ruta_archivo,fecha_adjuntado) VALUES (?,'proyecto',0,'Justificante sintetico.pdf','synthetic-not-a-real-file','2026-01-01')",(self.community,)).lastrowid
+        documents=execute_query(self.db,user,{'query':'erp3.evidence.list','id_comunidad':self.community,'filters':{}})['entity']
+        self.assertTrue(any(d['id']==doc and d['type']=='attachment' for d in documents['items']))
+        rid=self.receipt()
+        p=self.command('credit.preview',{'receipt_id':rid,'effective_on':'2026-01-20','amount_cents':'1000'},session=user)['entity']
+        self.command('credit.confirm',{'proposal_id':p['id']},p['version'],session=user,evidence={'type':'attachment','id':str(doc)})
+        recorded=json.loads(self.conn.execute("SELECT evidence_json FROM erp_hechos_economicos WHERE event_type='erp3.credit.issued'").fetchone()[0])
+        self.assertEqual(recorded,{'type':'attachment','id':str(doc)})
+        export={'kind':'receipts','format':'csv','filters':{}}
+        self.command('export.prepare',export,session=user)
+        self.command('permissions.save',{'user_id':user['id_usuario'],'capabilities':{'read':True}},1)
+        basic=execute_query(self.db,user,{'query':'erp3.receipt.list','id_comunidad':self.community,'filters':{}})['entity']
+        self.assertTrue(all(not r['subjects'] and not r['responsibilities'] for r in basic['items']))
+        with self.assertRaises(PermissionError):execute_query(self.db,user,{'query':'erp3.receipt.get','id_comunidad':self.community,'filters':{'receipt_id':rid}})
+        with self.assertRaises(PermissionError):self.command('export.prepare',export,session=user)
+        with self.assertRaises(PermissionError):self.command('coverage.activation.preview',{'coverage_id':1,'mappings':[]},session=user)
+
+    def test_outbox_repeated_delivery_has_one_synthetic_consumer_effect(self):
+        payload={'amount_cents':'10000','currency':'EUR','effective_on':'2026-01-15','method':'transferencia','external_source':'synthetic','external_key':'EVENT-ONCE'}
+        first=self.command('collection.record',payload,key='event-once')
+        second=self.command('collection.record',payload,key='event-once')
+        self.assertEqual(first['outbox_event_id'],second['outbox_event_id'])
+        event=self.conn.execute('SELECT * FROM erp_outbox WHERE event_id=?',(first['outbox_event_id'],)).fetchone()
+        message=json.loads(event['payload_json'])
+        self.assertEqual(len(message['economic_event_ids']),1)
+        self.conn.execute('CREATE TEMP TABLE synthetic_consumer (community INTEGER,event_id INTEGER,amount_cents INTEGER,UNIQUE(community,event_id))')
+        for _ in range(2):
+            for eid in message['economic_event_ids']:
+                fact=self.conn.execute('SELECT * FROM erp_hechos_economicos WHERE id_comunidad=? AND id=?',(self.community,eid)).fetchone()
+                body=json.loads(fact['payload_json'])
+                self.conn.execute('INSERT OR IGNORE INTO synthetic_consumer VALUES (?,?,?)',(self.community,eid,int(body['amount_cents'])))
+        self.assertEqual(tuple(self.conn.execute('SELECT COUNT(*),SUM(amount_cents) FROM synthetic_consumer').fetchone()),(1,10000))
+
+    def test_person_is_not_inferred_from_owner_or_payer(self):
+        person=self.conn.execute("INSERT INTO erp_personas_cobro(id_comunidad,tipo,nombre,creada_en,creada_por,origen) VALUES (?,'fisica','Persona sintetica','2026-01-01',?,'test')",(self.community,self.uid)).lastrowid
+        rid=self.receipt()
+        self.conn.execute("INSERT INTO erp_recibo_sujetos (id_comunidad,receipt_id,role,person_id,snapshot_json) VALUES (?,?,'obligated',?,?)",(self.community,rid,person,json.dumps({'type':'person','id':person,'name':'Persona sintetica'})))
+        result=execute_query(self.db,self.session,{'query':'erp3.account.statement','id_comunidad':self.community,'filters':{'person_id':person}})['entity']
+        self.assertEqual(result['personal_cents'],'10000')
+        self.assertEqual(len(result['items']),1)
+
+    def test_shared_obligated_group_never_splits_or_doubles_charge(self):
+        rid=self.receipt()
+        owners=[r[0] for r in self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 2',(self.community,))]
+        for oid in owners:self.conn.execute("INSERT INTO erp_recibo_sujetos(id_comunidad,receipt_id,role,owner_id,snapshot_json) VALUES (?,?,'obligated',?,?)",(self.community,rid,oid,json.dumps({'type':'owner','id':oid})))
+        for oid in owners:
+            data=execute_query(self.db,self.session,{'query':'erp3.debt.summary','id_comunidad':self.community,'filters':{'owner_id':oid}})['entity']
+            self.assertEqual(data['shared_obligations_cents'],'10000');self.assertEqual(data['personal_pending_cents'],'0')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*),SUM(amount_cents) FROM erp_recibos').fetchone()[:],(1,10000))
+
+    def test_uncollectible_discard_and_period_lock_preserve_debt(self):
+        rid=self.receipt()
+        p=self.command('uncollectible.preview',{'receipt_id':rid,'effective_on':'2026-01-20','classification':'incobrable'},evidence={'type':'external_reference','id':'SYNTHETIC-REASON'})['entity']
+        self.command('uncollectible.confirm',{'proposal_id':p['id']},p['version'],evidence={'type':'external_reference','id':'SYNTHETIC-REASON'})
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'10000')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['management'],'incobrable')
+        p=self.command('credit.preview',{'receipt_id':rid,'effective_on':'2026-01-21','amount_cents':'100'})['entity']
+        before=self.conn.execute('SELECT COUNT(*) FROM erp_hechos_economicos').fetchone()[0]
+        self.command('proposal.discard',{'proposal_id':p['id']},p['version'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_hechos_economicos').fetchone()[0],before)
+        with self.assertRaises(ConflictError):self.command('credit.confirm',{'proposal_id':p['id']},p['version'])
+        self.conn.execute("UPDATE erp_ejercicios SET estado='cerrado' WHERE id_ejercicio=?",(self.exercise,))
+        with self.assertRaises(ConflictError):self.command('credit.preview',{'receipt_id':rid,'effective_on':'2026-01-22','amount_cents':'100'})
+
+    def test_mixed_return_and_known_time_no_automatic_netting(self):
+        rid=self.receipt(15000);cid=self.collection(20000);self.allocate(cid,rid,15000)
+        aid=self.conn.execute('SELECT id FROM erp_imputaciones WHERE receipt_id=?',(rid,)).fetchone()[0]
+        known_before=known_time(None)
+        p=self.command('return.preview',{'collection_id':cid,'effective_on':'2026-01-20','free_cents':'5000','external_key':'MIXED-80',
+            'reversals':[{'allocation_id':aid,'amount_cents':'3000'}]})['entity']
+        self.command('return.confirm',{'proposal_id':p['id']},p['version'])
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'3000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'0')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-20',known_before)['pending_cents'],'0')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-14')['pending_cents'],'15000')
+        p=self.command('return.preview',{'collection_id':cid,'effective_on':'2026-01-21','free_cents':'0','external_key':'REST',
+            'reversals':[{'allocation_id':aid,'amount_cents':'12000'}]})['entity']
+        self.command('return.confirm',{'proposal_id':p['id']},p['version'])
+        with self.assertRaises(ConflictError):self.command('void.preview',{'receipt_id':rid,'effective_on':'2026-01-22'})
 
     def test_concurrent_confirmation_cannot_spend_twice(self):
         a=self.receipt();b=self.receipt(10000,'CONCURRENT');cid=self.collection()
@@ -393,6 +569,8 @@ class ERP3Tests(unittest.TestCase):
         result=self.opening_move({'opening_id':oid,'kind':'allocation','effective_on':'2026-01-15','amount_cents':'3000','collection_id':cid})
         self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'527000')
         self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'7000')
+        workspace=execute_query(self.db,self.session,{'query':'erp3.workspace.get','id_comunidad':self.community,'filters':{'property_id':self.property}})['entity']
+        self.assertIn(cid,[r['id'] for r in workspace['collections']])
         self.assertEqual(opening_balance(self.conn,self.community,oid,'2025-01-01')['remaining_cents'],'530000')
         self.opening_move({'opening_id':oid,'kind':'reverse_allocation','effective_on':'2026-01-16','amount_cents':'1000','reverses_id':result['movement_id']})
         self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'528000')

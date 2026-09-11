@@ -10,12 +10,14 @@ import subprocess
 import tarfile
 import time
 import urllib.request
+import urllib.error
 
 APP = Path('/home/coordinador/apps/organizador-web')
 SERVICE = 'organizador-web.service'
 parser = argparse.ArgumentParser()
 parser.add_argument('archive', type=Path)
 parser.add_argument('--publish', action='store_true')
+parser.add_argument('--code-commit', default='')
 args = parser.parse_args()
 assert APP.is_dir() and args.archive.is_file()
 stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -29,6 +31,7 @@ with tarfile.open(args.archive) as bundle:
         assert not entry.issym() and not entry.islnk()
     bundle.extractall(stage, filter='data')
 subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
+subprocess.run(['python3',str(stage/'scripts/prepare-erp3-python.py')],cwd=stage,check=True)
 env = {**os.environ, 'VERIFY_SOURCE_DB':str(APP/'data/organizador_tareas.db'), 'PYTHON_BIN':'python3'}
 subprocess.run(['python3',str(stage/'scripts/verify-erp1-master-data.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
@@ -38,34 +41,62 @@ subprocess.run(['python3',str(stage/'scripts/verify-erp2a-foundations.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp2b-engine.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
-subprocess.run(['python3',str(stage/'scripts/verify-erp2-complete.py'),
+erp2 = subprocess.check_output(['python3',str(stage/'scripts/verify-erp2-complete.py'),
+    str(APP/'data/organizador_tareas.db'),'--keep'],cwd=stage,env=env,text=True)
+print(erp2,flush=True)
+fixture = Path(next(line.removeprefix('workspace=') for line in erp2.splitlines() if line.startswith('workspace='))) / 'database.db'
+subprocess.run(['python3',str(stage/'scripts/verify-erp3-foundations.py'),
     str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+for script in ('verify-erp3-emission.py','verify-erp3-activation.py'):
+    subprocess.run(['python3',str(stage/'scripts'/script),str(fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-operational-release.mjs')],cwd=stage,env=env,check=True)
 print(json.dumps({'staging_verified':str(stage)}),flush=True)
 if not args.publish:
     raise SystemExit(0)
 
-backup = APP/'backups'/('before-operational-publish-'+stamp)
-backup.mkdir(mode=0o700)
+def checkpoint(current=False):
+    command=['python3',str(stage/'scripts/erp0-backup.py'),'--app',str(APP),'--output-root',str(APP/'backups')]
+    if current and args.code_commit:command += ['--code-commit',args.code_commit]
+    result=json.loads(subprocess.check_output(command,text=True))
+    restored=json.loads(subprocess.check_output(['python3',str(stage/'scripts/verify-erp0-backup.py'),result['backup'],
+        '--keep','--runtime-node-modules',str(stage/'server/node_modules')],text=True))
+    assert restored['runtime_accessible']
+    return {'backup':result['backup'],'restore':restored}
+
+def historical_signature(database):
+    conn=sqlite3.connect('file:'+str(database)+'?mode=ro',uri=True)
+    try:
+        assert conn.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+        assert not conn.execute('PRAGMA foreign_key_check').fetchall()
+        result={}
+        for table in ('cf_recibos','cf_movimientos_deuda','cf_propietarios','cf_propiedades','asambleas'):
+            rows=conn.execute('SELECT * FROM '+table+' ORDER BY rowid').fetchall()
+            result[table]=hashlib.sha256(repr(rows).encode()).hexdigest()
+        return result
+    finally:conn.close()
+
 subprocess.run(['systemctl','--user','stop',SERVICE],check=True)
+backup=None
 try:
-    source=sqlite3.connect(APP/'data/organizador_tareas.db')
-    target=sqlite3.connect(backup/'database.db')
-    source.backup(target)
-    assert target.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
-    target.close()
-    source.close()
-    subprocess.run(['tar','-czf',str(backup/'application-and-documents.tar.gz'),
-        '--exclude=server/node_modules','--exclude=__pycache__',
-        '--exclude=data/organizador_tareas.db','--exclude=data/organizador_tareas.db-wal',
-        '--exclude=data/organizador_tareas.db-shm',
-        'server','scripts','docs','web','README.md','.env','data'],cwd=APP,check=True)
-    hashes={p.name:hashlib.file_digest(p.open('rb'),'sha256').hexdigest() for p in backup.iterdir() if p.is_file()}
-    (backup/'SHA256SUMS.json').write_text(json.dumps(hashes,indent=2))
+    before=historical_signature(APP/'data/organizador_tareas.db')
+    backup=checkpoint()
     with tarfile.open(args.archive) as bundle:
         bundle.extractall(APP,filter='data')
-    subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=APP/'server',check=True)
+    # Staged dependencies have already passed the release gates, without global installation.
+    shutil.copytree(stage/'server/node_modules',APP/'server/node_modules',dirs_exist_ok=True)
+    shutil.copytree(stage/'server/_python_packages',APP/'server/_python_packages',dirs_exist_ok=True)
     subprocess.run(['node','--check',str(APP/'server/index.js')],check=True)
+    migrated=json.loads(subprocess.check_output(['python3',str(APP/'server/access-bridge.py'),str(APP/'data/organizador_tareas.db')],
+        input='{"action":"migrate"}',text=True,env=env))
+    assert migrated['ok']
+    assert before==historical_signature(APP/'data/organizador_tareas.db'),'Historical data changed'
+except Exception:
+    if backup:
+        with tarfile.open(Path(backup['backup'])/'application-and-documents.tar.gz') as bundle:
+            bundle.extractall(APP,filter='data')
+        with sqlite3.connect(Path(backup['backup'])/'database.db') as source:
+            with sqlite3.connect(APP/'data/organizador_tareas.db') as target:source.backup(target)
+    raise
 finally:
     subprocess.run(['systemctl','--user','start',SERVICE],check=True)
 
@@ -78,5 +109,21 @@ for _ in range(30):
     except OSError:
         pass
     time.sleep(1)
-print(json.dumps({'published':healthy,'backup':str(backup),'stage':str(stage)}),flush=True)
 assert healthy, 'Service health failed; inspect logs. Backup retained; no later data overwritten.'
+with urllib.request.urlopen('http://127.0.0.1:8771/health',timeout=5) as response:
+    assert json.load(response)['databaseConfigured']
+try:
+    urllib.request.urlopen('http://127.0.0.1:8771/api/erp/query?query=erp3.receipt.list&id_comunidad=1',timeout=5)
+    raise AssertionError('Unauthenticated financial query was accepted')
+except urllib.error.HTTPError as error:
+    assert error.code==401
+historical_signature(APP/'data/organizador_tareas.db')
+subprocess.run(['node',str(APP/'scripts/verify-operational-release.mjs')],cwd=APP,env=env,check=True)
+subprocess.run(['python3',str(APP/'scripts/verify-erp3-foundations.py'),str(APP/'data/organizador_tareas.db')],cwd=APP,env=env,check=True)
+subprocess.run(['systemctl','--user','stop',SERVICE],check=True)
+try:after=checkpoint(current=True)
+finally:subprocess.run(['systemctl','--user','start',SERVICE],check=True)
+proof={'published':True,'before':backup,'after':after,'stage':str(stage),'commit':args.code_commit,
+       'historical_hashes_preserved':True,'integrity':'ok','foreign_keys':'ok','unauthenticated_finance':401}
+(Path(after['backup'])/'erp3-publication-proof.json').write_text(json.dumps(proof,indent=2))
+print(json.dumps(proof),flush=True)

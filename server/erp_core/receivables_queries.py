@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 import json
 
-from access_control import profile
+from access_control import profile, permission
 from .errors import ContractError
 from .receivables_contracts import CAPABILITIES, cents, day, identity, known_time, require_fields, text
 from .receivables_projection import receipt_balance, collection_balance, credit_balance, responsibility_balance, opening_balance
@@ -23,6 +23,23 @@ def legacy_cents(value):
 
 
 class ReceivablesQueries:
+    def evidence_list(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,(),('search',))
+            current=profile(conn,session['id_usuario'])
+            if not permission(current,q.community_id,'puede_ver_documentos'):return {'items':[]}
+            search=(text(q.filters.get('search'),'Buscar documento',required=False,maximum=200) or '').casefold()
+            items=[]
+            for table,key,kind,url in (('anexos_registros','id_anexo','attachment','/api/attachment'),
+                ('asamblea_documentos','id_documento_asamblea','assembly_document','/api/assembly/document')):
+                for row in conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? ORDER BY {key} DESC',(q.community_id,)):
+                    if kind=='attachment' and current['rol']=='Presidente' and row['id_tarea']:continue
+                    name=row['nombre_archivo']
+                    if search and search not in name.casefold():continue
+                    items.append({'type':kind,'id':row[key],'name':name,'url':url+'?id='+str(row[key])+'&inline=1'})
+            return {'items':items[:500],'total_count':len(items)}
+        return self._read(session,query,op,'sensitive_read')
+
     def period_summary(self,session,query):
         def op(conn,q):
             p=require_fields(q.filters,('from','until'),('known_at',))
@@ -63,9 +80,13 @@ class ReceivablesQueries:
             return {'opening':row,'balance':balance,'movements':movements}
         return self._read(session,query,op,'sensitive_read')
 
-    def account_statement(self,session,query):
+    def account_statement(self,session,query,connection=None,all_rows=False):
         def op(conn,q):
             filters=dict(q.filters);year=filters.pop('year',None)
+            person=identity(filters.pop('person_id')) if filters.get('person_id') else None
+            if person:
+                self._subject(conn,q.community_id,{'type':'person','id':person})
+                if filters.get('owner_id'):raise ContractError('Selecciona un propietario o una persona de cobro, no ambos.')
             minimum=cents(filters.pop('minimum_cents','0'),nonnegative=True)
             if year is not None and (type(year) is not int or not 1900<=year<=9999):raise ContractError('Ejercicio no valido.')
             f=self._financial_filters(filters);self._session(conn,session,q.community_id,'sensitive_read')
@@ -73,6 +94,7 @@ class ReceivablesQueries:
             for r in self._receipt_rows(conn,q.community_id,f):
                 if year and r['period_from'][:4]!=str(year):continue
                 for bucket in r['responsibilities']:
+                    if person and not any(x['type']=='person' and x['id']==person for x in bucket['subjects']):continue
                     if f['owner_id'] and not any(x['type']=='owner' and x['id']==f['owner_id'] for x in bucket['subjects']):continue
                     amount=int(bucket['pending_cents'])
                     if amount<minimum:continue
@@ -86,6 +108,8 @@ class ReceivablesQueries:
                         'quality':'confirmed','cutoff_date':f['effective_at']})
             for r in conn.execute('SELECT * FROM erp_saldos_apertura WHERE id_comunidad=? AND registered_at<=?',(q.community_id,f['known_at'])):
                 source=json.loads(r['source_json']);covered.update(source.get('normalized',{}).get('legacy_receipt_ids',[]))
+                if person:
+                    issues.append({'source':'opening','message':'La apertura no acredita responsabilidad de una persona de cobro distinta de propietario.'});continue
                 if f['property_id'] and r['id_propiedad']!=f['property_id']:continue
                 if f['owner_id'] and r['owner_id']!=f['owner_id']:continue
                 if r['limitations']:
@@ -102,7 +126,7 @@ class ReceivablesQueries:
                     'attribution':'accredited' if owner else 'unattributed','quality':'observed','cutoff_date':r['effective_on']})
             for r in conn.execute('SELECT * FROM cf_recibos WHERE id_comunidad=? AND (? IS NULL OR id_propiedad=?)',(q.community_id,f['property_id'],f['property_id'])):
                 if r['id_recibo'] in covered:continue
-                if f['owner_id']:
+                if f['owner_id'] or person:
                     if not any(i.get('type')=='unaccredited_legacy' for i in issues):issues.append({'type':'unaccredited_legacy','message':'El historico observado no acredita por si solo la deuda personal. No puede afirmarse ausencia de deuda.'})
                     continue
                 source_year=str(r['ejercicio'] or str(r['fecha_emision'] or '')[:4])
@@ -122,14 +146,24 @@ class ReceivablesQueries:
                         'obligated':r['propietario_texto'] or 'Sin atribuir','attribution':'unaccredited','quality':'observed','cutoff_date':cutoff})
                 except ContractError as error:issues.append({'source':'legacy_observed','reference':r['referencia'],'message':str(error)})
             items.sort(key=lambda r:(r['due_on'] or '9999-12-31',r['property'],r['reference']))
+            aging={key:0 for key in ('not_due','1_30','31_60','61_90','over_90','unknown')}
+            for item in items:
+                days=(date.fromisoformat(f['effective_at'])-date.fromisoformat(item['due_on'])).days if item['due_on'] else None
+                bucket='unknown' if days is None else 'not_due' if days<=0 else '1_30' if days<=30 else '31_60' if days<=60 else '61_90' if days<=90 else 'over_90'
+                item['overdue_days']=days;item['aging_bucket']=bucket
+                aging[bucket]+=int(item['pending_cents'])
             subtotal=cents(sum(int(r['pending_cents']) for r in items))
             shared=cents(sum(int(r['pending_cents']) for r in items if r['attribution']=='shared'))
             observed=cents(sum(int(r['pending_cents']) for r in items if r['quality']=='observed'))
-            return {'items':items[f['offset']:f['offset']+f['limit']],'total_count':len(items),'offset':f['offset'],'limit':f['limit'],
+            return {'items':items if all_rows else items[f['offset']:f['offset']+f['limit']],'total_count':len(items),'offset':f['offset'],'limit':f['limit'],
+                    'aging_cents':{k:str(cents(v)) for k,v in aging.items()},
                     'documented_subtotal_cents':str(subtotal),'shared_cents':str(shared),'observed_cents':str(observed),
-                    'personal_cents':str(subtotal-shared) if f['owner_id'] else None,
+                    'personal_cents':str(subtotal-shared) if f['owner_id'] or person else None,
                     'complete':not issues,'issues':issues,'year':year,'effective_at':f['effective_at'],'known_at':f['known_at'],
                     'totals_scope':'filtered_all_pages','automatic_netting':False}
+        if connection is not None:
+            self._session(connection,session,query.community_id,'read')
+            return op(connection,query)
         return self._read(session,query,op)
 
     def responsibility_get(self,session,query):
@@ -157,9 +191,14 @@ class ReceivablesQueries:
                                     (q.community_id,f['effective_at'],f['known_at'])):
                 row={**dict(row),**collection_payer(conn,q.community_id,row['id'],f['effective_at'],f['known_at'])}
                 if f['owner_id'] and row['payer_owner_id']!=f['owner_id']:continue
-                if f['property_id'] and not conn.execute('SELECT 1 FROM erp_imputaciones a JOIN erp_recibos r ON r.id=a.receipt_id AND r.id_comunidad=a.id_comunidad WHERE a.id_comunidad=? AND a.collection_id=? AND r.id_propiedad=? AND a.effective_on<=? AND a.registered_at<=?',(q.community_id,row['id'],f['property_id'],f['effective_at'],f['known_at'])).fetchone():continue
+                if f['property_id']:
+                    params=(q.community_id,row['id'],f['property_id'],f['effective_at'],f['known_at'])
+                    native=conn.execute('SELECT 1 FROM erp_imputaciones a JOIN erp_recibos r ON r.id=a.receipt_id AND r.id_comunidad=a.id_comunidad WHERE a.id_comunidad=? AND a.collection_id=? AND r.id_propiedad=? AND a.effective_on<=? AND a.registered_at<=?',params).fetchone()
+                    opening=conn.execute('SELECT 1 FROM erp_apertura_movimientos m JOIN erp_saldos_apertura a ON a.id=m.opening_id AND a.id_comunidad=m.id_comunidad WHERE m.id_comunidad=? AND m.collection_id=? AND a.id_propiedad=? AND m.effective_on<=? AND m.registered_at<=?',params).fetchone()
+                    if not (native or opening):continue
                 collections.append({**dict(row),'balance':collection_balance(conn,q.community_id,row['id'],f['effective_at'],f['known_at'])})
             result={'collections':collections[f['offset']:f['offset']+f['limit']],'collection_count':len(collections),
+                    'effective_at':f['effective_at'],'known_at':f['known_at'],
                     'properties':[dict(r) for r in conn.execute('SELECT id_propiedad,codigo_propiedad FROM cf_propiedades WHERE id_comunidad=? ORDER BY codigo_propiedad',(q.community_id,))],
                     'owners':[dict(r) for r in conn.execute('SELECT id_propietario,nombre FROM cf_propietarios WHERE id_comunidad=? ORDER BY nombre',(q.community_id,))],
                     'persons':[dict(r) for r in conn.execute('SELECT id_persona_cobro,nombre FROM erp_personas_cobro WHERE id_comunidad=? ORDER BY nombre',(q.community_id,))]}
@@ -178,6 +217,7 @@ class ReceivablesQueries:
                     LEFT JOIN erp_regularizaciones_materializadas m ON m.id_comunidad=l.id_comunidad AND m.line_id=l.id_linea
                     WHERE l.id_comunidad=? AND l.id_regularizacion=? ORDER BY l.id_linea''',(q.community_id,r['id_regularizacion']))]}
                 for r in conn.execute("SELECT * FROM erp_regularizaciones WHERE id_comunidad=? AND estado='aprobada' ORDER BY id_regularizacion DESC LIMIT 50",(q.community_id,))]
+            result['regularization_scope']='community'
             if current['rol']=='Superusuario':
                 result['permission_users']=[]
                 for user in conn.execute('SELECT id_usuario,nombre FROM usuarios WHERE activo=1 ORDER BY nombre'):
@@ -221,14 +261,18 @@ class ReceivablesQueries:
                         related=True;break
             if not related:continue
             if f['state'] and balance['state']!=f['state'] and balance['management']!=f['state']:continue
-            if f['search'] and f['search'] not in ' '.join([row['number'],row['description'],row['property_code'] or '',*(s.get('name','') for s in subjects)]).casefold():continue
+            if f['search'] and f['search'] not in ' '.join([row['number'],row['description'],row['property_code'] or '',*(s.get('name','') for s in subjects if f.get('sensitive',True))]).casefold():continue
             row=dict(row);row.pop('snapshot_json');row.pop('snapshot_hash')
             rows.append({**row,'balance':balance,'responsibilities':responsibilities,'subjects':subjects})
         return rows
 
     def receipt_list(self,session,query):
         def op(conn,q):
-            f=self._financial_filters(q.filters);rows=self._receipt_rows(conn,q.community_id,f)
+            f=self._financial_filters(q.filters);f['sensitive']=self._sensitive(conn,session,q.community_id)
+            if f['owner_id'] and not f['sensitive']:raise PermissionError('No tienes permiso para consultar datos personales.')
+            rows=self._receipt_rows(conn,q.community_id,f)
+            if not f['sensitive']:
+                for r in rows:r['subjects']=[];r['responsibilities']=[]
             return {'items':rows[f['offset']:f['offset']+f['limit']],'total_count':len(rows),'offset':f['offset'],'limit':f['limit'],
                 'pending_cents':str(cents(sum(int(r['balance']['pending_cents']) for r in rows))),
                 'effective_at':f['effective_at'],'known_at':f['known_at'],'source':'ERP3','totals_scope':'filtered_all_pages'}
@@ -292,6 +336,10 @@ class ReceivablesQueries:
                 if f['property_id']:continue
                 if f['owner_id'] and row['owner_id']!=f['owner_id']:continue
                 credit_available+=int(credit_balance(conn,q.community_id,row['id'],f['effective_at'],f['known_at'])['available_cents'])
+            if not self._sensitive(conn,session,q.community_id):
+                for opening in openings:
+                    opening['source']={'system':opening['source'].get('system','Historico')}
+                    opening.pop('owner_id',None)
             return {'native_pending_cents':str(cents(native)),'native_overdue_cents':str(cents(overdue)),
                 'personal_pending_cents':str(cents(personal)) if f['owner_id'] else None,
                 'shared_obligations_cents':str(cents(shared)) if f['owner_id'] else None,
@@ -317,7 +365,7 @@ class ReceivablesQueries:
                 if int(b['available_cents']):rows.append({**dict(row),'balance':b})
             return {'items':rows[f['offset']:f['offset']+f['limit']],'total_count':len(rows),'available_cents':str(cents(sum(int(r['balance']['available_cents']) for r in rows))),
                     'effective_at':f['effective_at'],'known_at':f['known_at'],'totals_scope':'filtered_all_pages'}
-        return self._read(session,query,op)
+        return self._read(session,query,op,'sensitive_read')
 
     def receipt_timeline(self,session,query):
         def op(conn,q):
@@ -330,7 +378,7 @@ class ReceivablesQueries:
                     events.append(dict(row))
             return {'balance':balance,'responsibilities':responsibility_balance(conn,q.community_id,rid,effective,known),
                     'events':sorted(events,key=lambda x:(x['effective_on'],x['registered_at'],x['id'],x['movement_id']))}
-        return self._read(session,query,op)
+        return self._read(session,query,op,'sensitive_read')
 
     def reference_get(self,session,query):
         def op(conn,q):
@@ -339,6 +387,8 @@ class ReceivablesQueries:
             grants={r['capability']:bool(r['allowed']) for r in conn.execute('SELECT * FROM erp_recibo_permisos WHERE id_comunidad=? AND id_usuario=?',(q.community_id,session['id_usuario']))}
             return {'capabilities':{k:current['rol']=='Superusuario' or grants.get(k,False) for k in sorted(CAPABILITIES)},
                 'currency':conn.execute('SELECT moneda FROM comunidades WHERE id_comunidad=?',(q.community_id,)).fetchone()[0],
-                'coverages':[dict(r) for r in conn.execute('SELECT * FROM erp_recibos_coberturas WHERE id_comunidad=? ORDER BY effective_from',(q.community_id,))],
+                'coverages':[dict(r) for r in conn.execute('''SELECT c.*,a.id AS activation_id FROM erp_recibos_coberturas c
+                    LEFT JOIN erp_cobertura_activaciones a ON a.id_comunidad=c.id_comunidad AND a.coverage_id=c.id
+                    WHERE c.id_comunidad=? ORDER BY c.effective_from''',(q.community_id,))],
                 'policies':[dict(r) for r in conn.execute('SELECT * FROM erp_recibo_politicas WHERE id_comunidad=? ORDER BY effective_from DESC,version DESC',(q.community_id,))]}
         return self._read(session,query,op)

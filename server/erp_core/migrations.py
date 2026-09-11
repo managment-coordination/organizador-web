@@ -1580,6 +1580,9 @@ MIGRATIONS += (Migration(10, "erp3_zero_obligation_identity", RECEIVABLES_EMISSI
 from .receivables_corrections_schema import STATEMENTS as RECEIVABLES_CORRECTION_STATEMENTS
 
 MIGRATIONS += (Migration(11, "erp3_return_reversals_payer_evidence", RECEIVABLES_CORRECTION_STATEMENTS),)
+from .receivables_activation_schema import STATEMENTS as RECEIVABLES_ACTIVATION_STATEMENTS
+
+MIGRATIONS += (Migration(12, "erp3_historical_coverage_activation", RECEIVABLES_ACTIVATION_STATEMENTS),)
 
 
 def _bootstrap(conn):

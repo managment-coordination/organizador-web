@@ -46,3 +46,4 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+server/_python_packages/
