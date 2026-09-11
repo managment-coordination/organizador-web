@@ -100,4 +100,14 @@ Escritorio: sidebar de 216 px, contenido flexible, filtros junto al listado, tab
 
 Pruebas de navegacion: 17 IDs preservados, 15 vistas del perfil completo en 360/390/1920 px, fichas contextuales y perfiles Presidente/Consulta/Seguridad. Evidencia `navigation-structure-S29Vr7`. Revision visual real de capturas; los estados de carga de algunos listados no se consideran evidencia suficiente y se complementan con recorridos ERP cargados de `verify-release-ui.mjs`.
 
-Regresion funcional y despliegue se registran al cierre. No hay migraciones, cambios de API ni de reglas economicas. Rollback mediante republicacion del checkpoint conservando `data/` y `backups/`; Git no sustituye el backup SQLite.
+No hay migraciones, cambios de API ni de reglas economicas. Rollback mediante republicacion del checkpoint conservando `data/` y `backups/`; Git no sustituye el backup SQLite.
+
+### Cierre del rediseno profesional
+
+- Implementacion principal `e5fb3dc`; checkpoint final `ux-professional-certified-20260911`. Navegacion plana, capa visual y documentacion publicadas en Ubuntu/GitHub.
+- Regresion UI completa `organizador-ui-release-4HzYTH`: siete vistas en 1440/390 px, operaciones de tareas/proyectos, adjuntos, informes, seguimiento IA, solicitudes, contactos, titularidades, estructuras, grupos, onboarding y presupuesto. Sin errores JavaScript ni paneles fuera del viewport en las comprobaciones.
+- Ultima pasada visual `navigation-structure-m4lFwb`: 15 vistas en 360/390/1920 px y restricciones de tres perfiles. Espera explicita a que terminen de cargar los listados. Revisadas capturas de Inicio, tareas, IA, asambleas, seguridad, fichas y presupuestos. Ajustados contraste de contadores, hover, altura de acciones IA y ausencia de boton flotante superpuesto.
+- Puerta de publicacion Ubuntu superada: ERP 0/1/2, onboarding, motor exacto y regresion operativa HTTP sobre copias. Resultados economicos ERP 2 identicos. Sin modificar recibos, deuda ni asambleas reales.
+- Backup `backups/before-operational-publish-20260911-103026`: base consistente, codigo, configuracion y documentos. Checksums verificados; restauracion aislada `backups/restore-ux-professional-z7s3ytuy/restored.db` con integridad y FKs correctas.
+- Ultimo refinamiento exclusivamente CSS sustituido atomicamente despues de superar navegacion; mismo backup de retorno. HTTP 200 y marcadores finales comprobados por LAN y Tailscale, puerto 8771. UNO Marbella intacto.
+- Limitaciones: algunas tablas amplias requieren desplazamiento dentro de su contenedor movil; verificacion con Chromium/Edge, no dispositivos Safari fisicos. Se conserva CSS heredado bajo una capa de sistema visual para evitar alterar dominios. Dependencias anteriores muestran avisos de deprecacion npm, fuera del alcance UX. Sin modulos futuros vacios ni avance ERP 3.

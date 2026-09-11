@@ -35,6 +35,7 @@ try{
       for(const group of await target.locator('xpath=ancestor::details').all())if(!await group.evaluate(n=>n.open))await group.locator(':scope > summary').click();
       await target.click();await page.waitForTimeout(350);
       await page.waitForLoadState('networkidle');
+      await page.waitForFunction(()=>!/^Cargando/i.test(document.querySelector('#cards').innerText.trim()),{},{timeout:60000});
       assert.equal(await page.locator('#appView').getAttribute('data-view'),view);
       assert.ok(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),`Overflow ${view}/${width}`);
       if(view==='master-data')assert.match(await page.locator('#navigationTrail').innerText(),/Gestion/);
