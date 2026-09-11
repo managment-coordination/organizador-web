@@ -1084,6 +1084,14 @@ class BudgetService:
                 WHERE id_plan_version=? AND (? IS NULL OR fecha_fin>=?) AND (? IS NULL OR fecha_inicio<=?)""",
                 (plan["id_plan_version"],coverage_start,coverage_start,coverage_end,coverage_end))}
             if not selected_periods: raise ContractError("La cobertura indicada no contiene periodos del plan.")
+            if p.get('emitted_source')=='erp3':
+                from .receivables_service import ReceivablesService
+                from .contracts import QueryEnvelope
+                coverage=ReceivablesService(self.database_path).emitted_coverage(session,QueryEnvelope.from_value({
+                    'query':'erp3.emitted.coverage','id_comunidad':env.community_id,
+                    'filters':{'plan_id':plan_id,'effective_at':p.get('cutoff_date') or date.today().isoformat(),
+                               'period_keys':sorted(selected_periods)}}),connection=conn)
+                emitted=coverage['emitted']
             expected={}
             for prop in result.get("property_totals",[]):
                 for period in prop.get("periods",[]):
@@ -1095,19 +1103,21 @@ class BudgetService:
             missing=set(expected)-set(emitted_map);unknown=set(emitted_map)-set(expected)
             if missing or unknown:
                 raise ConflictError(f"La cobertura de emitidos no esta completa: faltan {len(missing)} lineas y sobran {len(unknown)}.")
-            signature=hashlib.sha256(canonical_json({"plan":plan_id,"cutoff":p.get("cutoff_date"),"coverage_start":coverage_start,
-                "coverage_end":coverage_end,"emitted":sorted((key[0],key[1],value) for key,value in emitted_map.items())}).encode()).hexdigest()
-            existing=conn.execute("SELECT id_regularizacion,estado FROM erp_regularizaciones WHERE id_comunidad=? AND hash_calculo=?",(env.community_id,signature)).fetchone()
-            if existing:
-                return {"action":"Regularizacion recuperada","entity_type":"erp_regularizacion","entity_id":existing["id_regularizacion"],"entity_version":1,
-                        "before":None,"after":{"estado":existing["estado"]},"event_type":"erp2.regularization.replayed",
-                        "result":{"id_regularizacion":existing["id_regularizacion"],"duplicate":True,"receipt_emission":False}}
             previous_adjustments={}
             for row in conn.execute("""SELECT l.id_propiedad,l.periodo_clave,SUM(l.diferencia_centimos) AS total
                 FROM erp_regularizacion_lineas l JOIN erp_regularizaciones r ON r.id_regularizacion=l.id_regularizacion
                 WHERE r.id_comunidad=? AND r.id_plan_esperado=? AND r.estado='aprobada'
                 GROUP BY l.id_propiedad,l.periodo_clave""",(env.community_id,plan_id)):
-                previous_adjustments[(int(row["id_propiedad"]),row["periodo_clave"])]=int(row["total"] or 0)
+                previous_adjustments[(int(row['id_propiedad']),row['periodo_clave'])]=int(row['total'] or 0)
+            signature=hashlib.sha256(canonical_json({"plan":plan_id,"cutoff":p.get("cutoff_date"),"coverage_start":coverage_start,
+                "coverage_end":coverage_end,"emitted":sorted((key[0],key[1],value) for key,value in emitted_map.items()),
+                "approved_adjustments":sorted((key[0],key[1],value) for key,value in previous_adjustments.items() if value)}).encode()).hexdigest()
+            existing=conn.execute("SELECT id_regularizacion,estado FROM erp_regularizaciones WHERE id_comunidad=? AND hash_calculo=?",(env.community_id,signature)).fetchone()
+            if existing:
+                return {"action":"Regularizacion recuperada","entity_type":"erp_regularizacion","entity_id":existing["id_regularizacion"],"entity_version":1,
+                        "before":None,"after":{"estado":existing["estado"]},"event_type":"erp2.regularization.replayed",
+                        "result":{"id_regularizacion":existing["id_regularizacion"],"duplicate":True,"receipt_emission":False,
+                                  **self._regularization_result(conn,env.community_id,existing['id_regularizacion'])}}
             now=utc_now();regularization_id=conn.execute("""INSERT INTO erp_regularizaciones
                 (id_comunidad,id_plan_esperado,fecha_corte,conocida_en,cobertura_desde,cobertura_hasta,motivo,estado,version,evidencia_tipo,evidencia_id,creada_en,creada_por,origen,hash_calculo)
                 VALUES (?,?,?,?,?,?,?,'calculada',1,?,?,?,?,?,?)""",(env.community_id,plan_id,_iso(p.get("cutoff_date") or date.today().isoformat(),"fecha"),now,coverage_start,coverage_end,_text(p.get("reason"),"motivo",1000,True),env.evidence.entity_type if env.evidence else None,env.evidence.entity_id if env.evidence else None,now,actor.user_id,env.origin,signature)).lastrowid
@@ -1128,11 +1138,41 @@ class BudgetService:
             return {"action":"Regularizacion calculada","entity_type":"erp_regularizacion","entity_id":regularization_id,"entity_version":1,"before":None,"after":summary,"event_type":"erp2.regularization.calculated","result":{"id_regularizacion":regularization_id,"summary":summary,"lines":lines}}
         return self._write(session,envelope,op)
 
+    @staticmethod
+    def _regularization_result(conn,community,rid):
+        lines=[{'property_id':r['id_propiedad'],'period_key':r['periodo_clave'],'due_cents':r['debido_centimos'],
+                'net_emitted_cents':r['emitido_neto_centimos'],'previous_adjustments_cents':r['ajustes_previos_centimos'],
+                'difference_cents':r['diferencia_centimos']} for r in conn.execute(
+            'SELECT * FROM erp_regularizacion_lineas WHERE id_comunidad=? AND id_regularizacion=? ORDER BY id_linea',(community,rid))]
+        return {'lines':lines,'summary':{'charge_cents':sum(max(0,r['difference_cents']) for r in lines),
+                    'credit_cents':sum(min(0,r['difference_cents']) for r in lines),'lines':len(lines),'receipt_emission':False}}
+
     def regularization_approve(self,session,envelope):
         def op(conn,actor,env):
             regularization_id=_id(env.payload.get("id_regularizacion"),"regularizacion")
             row=conn.execute("SELECT * FROM erp_regularizaciones WHERE id_comunidad=? AND id_regularizacion=?",(env.community_id,regularization_id)).fetchone()
             if not row or row["estado"]!="calculada": raise ConflictError("La regularizacion no esta calculada o ya fue procesada.")
+            origins=list(conn.execute('''SELECT o.* FROM erp_regularizacion_origenes o
+                JOIN erp_regularizacion_lineas l ON l.id_comunidad=o.id_comunidad AND l.id_linea=o.id_linea
+                WHERE l.id_comunidad=? AND l.id_regularizacion=?''',(env.community_id,regularization_id)))
+            fresh_emitted=None
+            if origins and all(o['sistema']=='erp3' for o in origins):
+                from .receivables_service import ReceivablesService
+                from .contracts import QueryEnvelope
+                periods=sorted({r[0] for r in conn.execute('SELECT periodo_clave FROM erp_regularizacion_lineas WHERE id_comunidad=? AND id_regularizacion=?',(env.community_id,regularization_id))})
+                coverage=ReceivablesService(self.database_path).emitted_coverage(session,QueryEnvelope.from_value({
+                    'query':'erp3.emitted.coverage','id_comunidad':env.community_id,
+                    'filters':{'plan_id':row['id_plan_esperado'],'effective_at':row['fecha_corte'],'period_keys':periods}}),connection=conn)
+                fresh_emitted={(int(r['property_id']),r['period_key']):int(r['net_emitted_cents']) for r in coverage['emitted']}
+            for line in conn.execute('SELECT * FROM erp_regularizacion_lineas WHERE id_comunidad=? AND id_regularizacion=?',(env.community_id,regularization_id)):
+                if fresh_emitted is not None and fresh_emitted.get((line['id_propiedad'],line['periodo_clave']))!=line['emitido_neto_centimos']:
+                    raise ConflictError('Han cambiado los importes emitidos desde el calculo. Revisa una nueva propuesta.')
+                prior=sum(r[0] for r in conn.execute('''SELECT l.diferencia_centimos FROM erp_regularizacion_lineas l
+                    JOIN erp_regularizaciones g ON g.id_comunidad=l.id_comunidad AND g.id_regularizacion=l.id_regularizacion
+                    WHERE g.id_comunidad=? AND g.id_plan_esperado=? AND g.estado='aprobada' AND l.id_propiedad=? AND l.periodo_clave=?''',
+                    (env.community_id,row['id_plan_esperado'],line['id_propiedad'],line['periodo_clave'])))
+                if prior!=line['ajustes_previos_centimos']:
+                    raise ConflictError('Se han aprobado otros ajustes desde el calculo. Revisa una nueva propuesta.')
             pending=conn.execute("SELECT COUNT(*) FROM erp_regularizacion_lineas WHERE id_regularizacion=? AND estado_destinatario='pendiente'",(regularization_id,)).fetchone()[0]
             if pending and not env.payload.get("confirm_pending_recipients"): raise ConflictError("Confirma que ERP 3 revisara los destinatarios antes de emitir.")
             conn.execute("UPDATE erp_regularizaciones SET estado='aprobada',version=version+1 WHERE id_regularizacion=?",(regularization_id,))

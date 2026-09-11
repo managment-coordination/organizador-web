@@ -6,10 +6,13 @@ import re
 from .contracts import canonical_json
 from .errors import ConflictError, ContractError, NotFoundError
 from .receivables_contracts import cents, day, fingerprint, identity, known_time, require_fields, text
+from .receivables_tabular import normalize_rows
 
 
 class HistoryOperations:
     def _history_row(self,conn,community,source,row):
+        if row.get('_tabular_issue'):
+            raise ContractError(text(row['_tabular_issue'],'Incidencia de la fila'))
         require_fields(row,('reference','amount_cents','cutoff_date','coverage_from','coverage_until','scope','limitations'),
                        ('property_id','owner_id','attribution_confirmed','legacy_receipt_ids','original'))
         reference=text(row['reference'],'Referencia estable de origen',maximum=200)
@@ -57,16 +60,23 @@ class HistoryOperations:
 
     def history_import_preview(self,session,env):
         def op(conn,actor,e):
-            p=require_fields(e.payload,('source','file_hash','file_name','rows'))
+            p=require_fields(e.payload,('source','file_hash','file_name','rows'),('mapping','defaults','file_path','sheet'))
+            p=dict(p)
             source=text(p['source'],'Sistema de origen',maximum=80);file_name=text(p['file_name'],'Nombre de archivo',maximum=250)
             if not isinstance(p['file_hash'],str) or not re.fullmatch('[0-9a-f]{64}',p['file_hash']):raise ContractError('El archivo requiere huella SHA-256.')
             if not isinstance(p['rows'],list) or not 1<=len(p['rows'])<=500:raise ContractError('Revisa sublotes de entre 1 y 500 filas.')
+            raw_rows=p['rows']
+            if 'mapping' in p:
+                p['rows']=normalize_rows(conn,e.community_id,raw_rows,p['mapping'],p.get('defaults',{}))
             digest=fingerprint(p['rows'])
             existing=conn.execute('SELECT * FROM erp_importaciones_economicas WHERE id_comunidad=? AND source=? AND file_hash=?',(e.community_id,source,p['file_hash'])).fetchone()
             if existing:
-                if json.loads(existing['source_json'])['rows_hash']!=digest:raise ConflictError('La huella del archivo ya se uso para otras filas.')
-                return {'id':existing['id'],'version':existing['version'],'state':existing['state'],'duplicate':True,
-                        'rows':[json.loads(r[0]) for r in conn.execute('SELECT preview_json FROM erp_importaciones_economicas_filas WHERE id_comunidad=? AND import_id=? ORDER BY row_number',(e.community_id,existing['id']))]}
+                if json.loads(existing['source_json'])['rows_hash']==digest:
+                    previous=[json.loads(r[0]) for r in conn.execute('SELECT preview_json FROM erp_importaciones_economicas_filas WHERE id_comunidad=? AND import_id=? ORDER BY row_number',(e.community_id,existing['id']))]
+                    return {'id':existing['id'],'version':existing['version'],'state':existing['state'],'duplicate':True,
+                            'rows':previous,'blocking_issues':sum(bool(r['issues']) for r in previous)}
+                if existing['state']!='draft':raise ConflictError('El archivo ya esta confirmado con otro mapeo. No puede reescribirse.')
+                self._version(dict(existing),e.expected_version)
             results=[];seen=set();legacy_seen=set();created=[]
             for index,row in enumerate(p['rows'],1):
                 try:
@@ -84,14 +94,26 @@ class HistoryOperations:
                 except (ContractError,ConflictError,NotFoundError) as error:
                     results.append({'row_number':index,'decision':'review','issues':[str(error)]})
             now=known_time(None)
-            iid=conn.execute('''INSERT INTO erp_importaciones_economicas
+            metadata={'file_name':file_name,'rows_hash':digest,'file_path':p.get('file_path'),
+                      'sheet':p.get('sheet'),'mapping':p.get('mapping'),'defaults':p.get('defaults'),
+                      'raw_rows':raw_rows}
+            before=None
+            if existing:
+                iid=existing['id'];version=existing['version']+1
+                before={'source':json.loads(existing['source_json']),
+                        'rows':[json.loads(r[0]) for r in conn.execute('SELECT preview_json FROM erp_importaciones_economicas_filas WHERE import_id=?',(iid,))]}
+                conn.execute('DELETE FROM erp_importaciones_economicas_filas WHERE import_id=?',(iid,))
+                conn.execute('UPDATE erp_importaciones_economicas SET source_json=?,version=? WHERE id=?',(canonical_json(metadata),version,iid))
+            else:
+                version=1
+                iid=conn.execute('''INSERT INTO erp_importaciones_economicas
                 (id_comunidad,source,file_hash,source_json,state,version,registered_at,actor_id) VALUES (?,?,?,?,'draft',1,?,?)''',
-                (e.community_id,source,p['file_hash'],canonical_json({'file_name':file_name,'rows_hash':digest}),now,actor.user_id)).lastrowid
+                (e.community_id,source,p['file_hash'],canonical_json(metadata),now,actor.user_id)).lastrowid
             for original,preview in zip(p['rows'],results):
                 conn.execute('''INSERT INTO erp_importaciones_economicas_filas
                     (id_comunidad,import_id,row_number,source_key,original_json,preview_json,state) VALUES (?,?,?,?,?,?,?)''',
                     (e.community_id,iid,preview['row_number'],str(original.get('reference','')),canonical_json(original),canonical_json(preview),preview['decision']))
-            return {'id':iid,'version':1,'state':'draft','rows':results,'blocking_issues':sum(bool(r['issues']) for r in results),
+            return {'id':iid,'version':version,'state':'draft','before':before,'rows':results,'blocking_issues':sum(bool(r['issues']) for r in results),
                     'total_cents':str(cents(sum(int(r['normalized']['amount_cents']) for r in results if r['decision']=='create')))}
         return self._write(session,env,op,'import_history')
 

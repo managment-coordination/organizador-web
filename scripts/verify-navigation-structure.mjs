@@ -24,7 +24,7 @@ try{
     await page.goto(base);await page.locator('#loginUser').selectOption({label:'SuperUsuario'});
     await page.locator('#loginPassword').fill('Only-local-fixture-629');await page.locator('#loginButton').click();await page.locator('#appView').waitFor();
     const views=await page.locator('.tabs .tab:not(.hidden)').evaluateAll(ns=>ns.map(n=>n.dataset.view));
-    assert.equal(await page.locator('.tabs .tab').count(),17);
+    assert.equal(await page.locator('.tabs .tab').count(),18);
     assert.ok(views.includes('master-data')&&views.includes('budgets')&&views.includes('assemblies'));
     for(const view of views){
       const mobile=width<700;

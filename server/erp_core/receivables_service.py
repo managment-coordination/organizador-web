@@ -19,16 +19,18 @@ from .receivables_adjustments import AdjustmentOperations
 from .receivables_regularization import RegularizationOperations
 from .receivables_history import HistoryOperations
 from .receivables_queries import ReceivablesQueries
+from .receivables_openings import OpeningOperations
+from .receivables_reversals import ReversalOperations
 
 
-class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries):
+class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries, OpeningOperations, ReversalOperations):
     def __init__(self, database_path):
         self.database_path = database_path
 
     @staticmethod
     def _wire(value):
         if isinstance(value,dict):
-            return {k:str(v) if k.endswith('_cents') and type(v) is int else ReceivablesService._wire(v) for k,v in value.items()}
+            return {k:str(v) if k.endswith(('_cents','_centimos')) and type(v) is int else ReceivablesService._wire(v) for k,v in value.items()}
         if isinstance(value,list):return [ReceivablesService._wire(v) for v in value]
         return value
 
@@ -189,7 +191,7 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
         return self._write(session,env,op,'resolve_responsibility')
 
     def _emission_preview(self,conn,community_id,p):
-        require_fields(p,('plan_version_id','period_keys','issued_on'),('property_ids','due_on'))
+        require_fields(p,('plan_version_id','period_keys','issued_on'),('property_ids','due_on','replaces_receipt_ids'))
         issue=self._date_open(conn,community_id,p['issued_on'])
         plan=conn.execute('''SELECT v.*,p.tipo,p.origen_tipo,p.origen_id,p.moneda,p.estado AS plan_state
             FROM erp_plan_versiones v JOIN erp_planes_cuota p ON p.id_comunidad=v.id_comunidad AND p.id_plan=v.id_plan
@@ -205,6 +207,9 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
         if selection is not None and (not isinstance(selection,list) or not selection):raise ContractError('Seleccion de propiedades vacia.')
         selected={identity(i) for i in selection} if selection is not None else {int(q['property_id']) for q in result['property_totals']}
         if selected-{int(q['property_id']) for q in result['property_totals']}:raise ContractError('Propiedad ajena al calculo aprobado.')
+        replacements=p.get('replaces_receipt_ids',[])
+        if not isinstance(replacements,list) or len(replacements)!=len(set(replacements)):raise ContractError('Reemisiones duplicadas o no validas.')
+        replacements={identity(r) for r in replacements};used_replacements=set()
         lines=[];total=0
         budget=BudgetService(self.database_path)
         for quota in result['property_totals']:
@@ -222,15 +227,24 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                 concept='ordinario' if plan['tipo']=='ordinario' else 'derrama:'+str(plan['origen_id'])
                 self._require_coverage(conn,community_id,concept,period['fecha_inicio'],period['fecha_fin'])
                 configs=list(conn.execute('''SELECT * FROM erp_obligacion_config_versiones WHERE id_comunidad=? AND id_propiedad=?
-                    AND concept_key IN (?, '*') AND effective_from<=? AND (effective_until IS NULL OR effective_until>?)
-                    ORDER BY CASE WHEN concept_key=? THEN 0 ELSE 1 END,effective_from DESC,version DESC''',(community_id,pid,concept,issue,issue,concept)))
+                    AND concept_key IN (?, '*') AND effective_from<=?
+                    ORDER BY CASE WHEN concept_key=? THEN 0 ELSE 1 END,effective_from DESC,version DESC''',(community_id,pid,concept,issue,concept)))
                 if not configs:raise ContractError('Confirma previamente los obligados economicos de la propiedad; no se deducen del destinatario.')
                 config=configs[0]
+                if config['effective_until'] and config['effective_until']<=issue:
+                    raise ConflictError('La ultima configuracion de obligados ha finalizado. Acredita su sucesion; no se reactiva una configuracion anterior.')
                 obligations=[self._subject(conn,community_id,{'type':s['type'],'id':s['id']}) for s in json.loads(config['subjects_json'])]
                 semantic=f"{pid}:{concept}:{period['fecha_inicio']}:{period['fecha_fin']}"
                 source=f"{plan['id_plan_version']}:{period['id_periodo_plan']}:{pid}"
-                if conn.execute('SELECT 1 FROM erp_recibos WHERE id_comunidad=? AND obligation_key=?',(community_id,semantic)).fetchone():
-                    raise ConflictError('Esta obligacion ya fue emitida. Una revision del presupuesto no permite duplicarla.')
+                previous=list(conn.execute('SELECT id FROM erp_recibos WHERE id_comunidad=? AND obligation_key=? ORDER BY id',(community_id,semantic)))
+                replaced=None
+                if previous:
+                    latest=previous[-1]['id']
+                    if latest not in replacements or any(receipt_balance(conn,community_id,r['id'],issue)['state']!='anulado' for r in previous):
+                        raise ConflictError('Esta obligacion ya fue emitida. Solo puede sustituirse un recibo anulado mediante reemision explicita.')
+                    replaced=latest;used_replacements.add(latest);source+=':replacement:'+str(latest)
+                if conn.execute('SELECT 1 FROM erp_cuotas_cero_procesadas WHERE id_comunidad=? AND obligation_key=?',(community_id,semantic)).fetchone():
+                    raise ConflictError('La cuota cero ya esta procesada. Un cambio economico requiere ajuste documentado.')
                 details=[]
                 for line in result['lines']:
                     if int(line['property_id'])!=pid:continue
@@ -247,7 +261,9 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                     'source_key':source,'obligation_key':semantic,'amount_cents':str(amount),'issued_on':issue,'due_on':due,
                     'recipient':recipient,'payer':payer,'obligated':obligations,'responsibility_version':config['id'],
                     'billing_config':billing['config'],'details':details})
+                if replaced:lines[-1]['replaces_receipt_id']=replaced
                 total=cents(total+amount)
+        if replacements!=used_replacements:raise ContractError('Hay recibos a sustituir que no corresponden a las cuotas seleccionadas.')
         if len(lines)>500:raise ContractError('Selecciona un sublote de hasta 500 lineas para revision atomica.')
         return {'plan_version_id':plan['id_plan_version'],'simulation_id':plan['id_simulacion'],
                 'calculation_hash':result['stored_result_hash'],'currency':plan['moneda'],
@@ -270,10 +286,16 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             if lot['state']!='draft' or lot['operation']!='emission':raise ConflictError('La propuesta no se puede emitir.')
             preview=self._emission_preview(conn,e.community_id,json.loads(lot['payload_json']))
             if fingerprint(preview)!=lot['preview_hash']:raise ConflictError('El contexto de emision ha cambiado; revisa otra vez.')
-            ids=[];events=[]
+            if any(line.get('replaces_receipt_id') for line in preview['lines']):self._evidence(e,required=True)
+            ids=[];events=[];zeros=[]
             serial=conn.execute('SELECT COUNT(*) FROM erp_recibos WHERE id_comunidad=?',(e.community_id,)).fetchone()[0]
             for index,line in enumerate(preview['lines']):
-                if not int(line['amount_cents']):continue
+                if not int(line['amount_cents']):
+                    event,now=self._event(conn,actor,e,'erp3.zero_obligation.processed',line['issued_on'],line,str(index))
+                    zero=conn.execute('''INSERT INTO erp_cuotas_cero_procesadas
+                        (id_comunidad,id_propiedad,obligation_key,event_id,source_key,snapshot_json,effective_on,registered_at)
+                        VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,line['property_id'],line['obligation_key'],event,line['source_key'],canonical_json(line),line['issued_on'],now)).lastrowid
+                    zeros.append(zero);events.append(event);continue
                 serial+=1;number=f"R-{serial:08d}"
                 snapshot={**line,'simulation_id':preview['simulation_id'],'plan_version_id':preview['plan_version_id'],'calculation_hash':preview['calculation_hash']}
                 event,now=self._event(conn,actor,e,'erp3.receipt.issued',line['issued_on'],
@@ -293,7 +315,7 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                     conn.execute('INSERT INTO erp_recibo_detalles (id_comunidad,receipt_id,line_key,amount_cents,snapshot_json) VALUES (?,?,?,?,?)',
                         (e.community_id,rid,detail['key'],int(detail['amount_cents']),canonical_json(detail['calculation'])))
                 ids.append(rid);events.append(event)
-            result={'id':lot['id'],'version':lot['version']+1,'receipt_ids':ids,'event_ids':events,'total_cents':preview['total_cents']}
+            result={'id':lot['id'],'version':lot['version']+1,'receipt_ids':ids,'zero_obligation_ids':zeros,'event_ids':events,'total_cents':preview['total_cents']}
             conn.execute("UPDATE erp_emisiones_lotes SET state='confirmed',version=version+1,confirmed_at=?,result_json=? WHERE id=?",(known_time(None),canonical_json(result),lot['id']))
             return result
         return self._write(session,env,op,'confirm_emission')
@@ -382,7 +404,11 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
             p=require_fields(q.filters,('receipt_id',),('effective_at','known_at'))
             row=self._entity(conn,'erp_recibos',q.community_id,p['receipt_id'])
             balance=receipt_balance(conn,q.community_id,row['id'],p.get('effective_at'),p.get('known_at'))
-            return {'receipt':row,'balance':balance,'subjects':[dict(r) for r in conn.execute('SELECT role,snapshot_json FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))],
+            allocations=[]
+            for allocation in conn.execute('SELECT * FROM erp_imputaciones WHERE id_comunidad=? AND receipt_id=? AND reverses_id IS NULL AND effective_on<=? AND registered_at<=?',(q.community_id,row['id'],balance['effective_at'],balance['known_at'])):
+                reversed_total=sum(r[0] for r in conn.execute('SELECT amount_cents FROM erp_imputaciones WHERE id_comunidad=? AND reverses_id=? AND effective_on<=? AND registered_at<=?',(q.community_id,allocation['id'],balance['effective_at'],balance['known_at'])))
+                allocations.append({**dict(allocation),'remaining_cents':str(allocation['amount_cents']-reversed_total)})
+            return {'receipt':row,'balance':balance,'allocations':allocations,'subjects':[dict(r) for r in conn.execute('SELECT role,snapshot_json FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))],
                     'details':[dict(r) for r in conn.execute('SELECT line_key,amount_cents,snapshot_json FROM erp_recibo_detalles WHERE id_comunidad=? AND receipt_id=?',(q.community_id,row['id']))]}
         return self._read(session,query,op)
 
@@ -423,7 +449,7 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
         balance=receipt_balance(conn,community_id,r['id'],effective)
         if operation=='void':
             if balance['state']=='anulado':raise ConflictError('El recibo ya esta anulado.')
-            for table in ('erp_imputaciones','erp_rectificaciones','erp_credito_aplicaciones','erp_reasignaciones_obligacion'):
+            for table in ('erp_imputaciones','erp_rectificaciones','erp_credito_aplicaciones','erp_reasignaciones_obligacion','erp_apertura_movimientos'):
                 if conn.execute(f'SELECT 1 FROM {table} WHERE id_comunidad=? AND receipt_id=?',(community_id,r['id'])).fetchone():
                     raise ConflictError('Existen movimientos posteriores; utiliza una rectificacion, no anulacion simple.')
             amount=int(r['amount_cents'])
@@ -510,7 +536,13 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
 
     def collection_get(self,session,query):
         def op(conn,q):
+            from .receivables_projection import collection_payer
             p=require_fields(q.filters,('collection_id',),('effective_at','known_at'))
             row=self._entity(conn,'erp_cobros',q.community_id,p['collection_id'])
-            return {'collection':row,'balance':collection_balance(conn,q.community_id,row['id'],p.get('effective_at'),p.get('known_at'))}
+            effective=day(p.get('effective_at') or date.today().isoformat());known=known_time(p.get('known_at'))
+            allocations=[]
+            for item in conn.execute('SELECT a.*,r.number FROM erp_imputaciones a JOIN erp_recibos r ON r.id_comunidad=a.id_comunidad AND r.id=a.receipt_id WHERE a.id_comunidad=? AND a.collection_id=? AND a.reverses_id IS NULL AND a.effective_on<=? AND a.registered_at<=?',(q.community_id,row['id'],effective,known)):
+                reversed_total=sum(r[0] for r in conn.execute('SELECT amount_cents FROM erp_imputaciones WHERE id_comunidad=? AND reverses_id=? AND effective_on<=? AND registered_at<=?',(q.community_id,item['id'],effective,known)))
+                allocations.append({**dict(item),'remaining_cents':str(item['amount_cents']-reversed_total)})
+            return {'collection':{**row,**collection_payer(conn,q.community_id,row['id'],effective,known)},'allocations':allocations,'balance':collection_balance(conn,q.community_id,row['id'],effective,known)}
         return self._read(session,query,op)

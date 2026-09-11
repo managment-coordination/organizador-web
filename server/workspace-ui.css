@@ -194,3 +194,34 @@ tbody tr:hover { background:#f7fafc; }
   .copilotFab,#copilotFab { min-height:36px; width:36px; padding:8px; font-size:0; gap:0; }
 }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none!important; scroll-behavior:auto!important; } }
+/* Receivables reuse the workspace typography, controls and density. */
+.finWorkspace,.finEditor,.finReview { min-width:0; max-width:100%; }
+.finWorkspace { display:grid; gap:12px; }
+.finWorkspace .toolbar { align-items:end; margin:0; }
+.finWorkspace .toolbar button { align-self:end; min-height:36px; }
+.finWorkspace input,.finWorkspace select { min-width:0; max-width:100%; }
+.finWorkspace .masterFormGrid { margin:12px 0; }
+.finTabs { border-bottom:1px solid var(--line); padding-bottom:10px; }
+.finTableWrap { min-width:0; max-width:100%; overflow:auto; }
+.finTable td { overflow-wrap:anywhere; }
+.finTable th { white-space:nowrap; }
+.finReview,.finEditor { border-top:2px solid var(--teal); padding-top:14px; }
+.finWorkspace details { border-top:1px solid var(--line); padding:12px 0; }
+.finWarning { color:#843a12; background:#fff4df; padding:8px 10px; overflow-wrap:anywhere; border-radius:4px; }
+.finSource { color:var(--muted); font-size:12px; }
+.finScope { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.finCheck { display:flex!important; align-items:flex-start; gap:8px; margin:8px 0; }
+.finCheck input[type=checkbox] { width:18px; min-width:18px; height:18px; margin:0; }
+.finPermissions { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:4px 14px; }
+.finWide { grid-column:1/-1; min-width:0; }
+@media(max-width:700px) {
+  .finWorkspace .budgetToolbar,.finWorkspace .toolbar { align-items:stretch; }
+  .finWorkspace .budgetToolbar>label,.finWorkspace .toolbar>label { width:100%; }
+  .finWorkspace .finTable,.finWorkspace .finTable tbody,.finWorkspace .finTable tr,.finWorkspace .finTable td { display:block; width:100%; box-sizing:border-box; }
+  .finWorkspace .finTable thead { display:none; }
+  .finWorkspace .finTable tr { padding:8px 0; border-bottom:1px solid var(--line); }
+  .finWorkspace .finTable td { border:0; padding:4px 0; }
+  .finWorkspace .finTable td::before { content:attr(data-label); display:block; color:var(--muted); font-size:12px; }
+  .finWorkspace .budgetTabs { gap:4px; flex-wrap:wrap; overflow:visible; }
+  .finWorkspace .budgetTabs button { white-space:normal; min-height:40px; }
+}

@@ -351,7 +351,14 @@ try:
         "id_plan": plan_id, "cutoff_date": "2027-12-31", "coverage_start": "2027-01-01",
         "coverage_end": "2027-12-31", "reason": "Intento repetido", "emitted": emitted,
     })["entity"]
-    assert duplicate_regularization["duplicate"] is True and duplicate_regularization["id_regularizacion"] == regularization["id_regularizacion"]
+    # A new calculation must include the newly approved reserve, not replay its predecessor.
+    assert duplicate_regularization['id_regularizacion'] != regularization['id_regularizacion']
+    assert all(int(line['difference_cents']) == 0 for line in duplicate_regularization['lines'])
+    repeat_zero = command(session, 'erp2.regularization.preview', community, {
+        'id_plan': plan_id, 'cutoff_date': '2027-12-31', 'coverage_start': '2027-01-01',
+        'coverage_end': '2027-12-31', 'reason': 'Repeticion sin cambios', 'emitted': emitted,
+    })['entity']
+    assert repeat_zero['duplicate'] is True and repeat_zero['id_regularizacion'] == duplicate_regularization['id_regularizacion']
     emitted_changed = json.loads(json.dumps(emitted))
     target = next(row for row in emitted_changed if row["property_id"] == properties[0] and row["period_key"] == "P01")
     target["net_emitted_cents"] -= 50

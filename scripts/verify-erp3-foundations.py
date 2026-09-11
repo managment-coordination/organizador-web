@@ -339,6 +339,175 @@ class ERP3Tests(unittest.TestCase):
         self.assertEqual(receipt_balance(self.conn,self.community,third)['pending_cents'],'10000')
 
 
+    def test_tabular_mapping_revision_exact_values_and_freeze(self):
+        from erp_core.receivables_tabular import money_text
+        self.assertEqual(money_text('1.234,56'),'123456')
+        self.assertEqual(money_text('-0,01'),'-1')
+        for value in ('1.234','1e3','1,234','12.34,56',float('nan')):
+            with self.assertRaises(ContractError):money_text(value)
+        code=self.conn.execute('SELECT codigo_propiedad FROM cf_propiedades WHERE id_propiedad=?',(self.property,)).fetchone()[0]
+        payload={'source':'tabular-test','file_hash':'e'*64,'file_name':'historico.xlsx',
+                 'rows':[{'rowNumber':2,'values':{'Referencia':'SALDO-1','Propiedad':code,'Saldo':'53,00'}}],
+                 'mapping':{'Referencia':'reference','Propiedad':'property_code','Saldo':'amount'},
+                 'defaults':{'cutoff_date':'2020-12-31','coverage_from':'2020-01-01','coverage_until':'2020-12-31',
+                             'scope':'receipt','limitations':'Sin movimientos anteriores al corte'}}
+        bad={**payload,'mapping':{**payload['mapping'],'Propiedad':''}}
+        draft=self.command('history.import.preview',bad)['entity']
+        self.assertEqual(draft['blocking_issues'],1)
+        with self.assertRaises(ConflictError):self.command('history.import.preview',payload,999)
+        draft=self.command('history.import.preview',payload,draft['version'])['entity']
+        self.assertEqual(draft['blocking_issues'],0)
+        self.assertEqual(draft['rows'][0]['normalized']['amount_cents'],'5300')
+        self.assertEqual(draft['rows'][0]['normalized']['original']['row_number'],2)
+        self.assertIsNotNone(draft['before'])
+        self.command('history.import.confirm',{'import_id':draft['id']},draft['version'],evidence={'type':'external_reference','id':'test-file'})
+        same=self.command('history.import.preview',payload)['entity']
+        self.assertTrue(same['duplicate'])
+        with self.assertRaises(ConflictError):self.command('history.import.preview',bad,same['version'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_saldos_apertura').fetchone()[0],1)
+
+    def test_workspace_and_scoped_collection_history(self):
+        rid=self.receipt();cid=self.collection();self.allocate(cid,rid,3000)
+        result=execute_query(self.db,self.session,{'query':'erp3.workspace.get','id_comunidad':self.community,'filters':{}})['entity']
+        self.assertEqual(result['collection_count'],1)
+        self.assertEqual(result['collections'][0]['balance']['available_cents'],'7000')
+        detail=execute_query(self.db,self.session,{'query':'erp3.collection.get','id_comunidad':self.community,'filters':{'collection_id':cid}})['entity']
+        self.assertEqual(detail['allocations'][0]['remaining_cents'],'3000')
+
+    def opening(self,amount,reference='OPEN-1'):
+        owner=self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 1',(self.community,)).fetchone()[0]
+        row={'reference':reference,'amount_cents':str(amount),'property_id':self.property,'owner_id':owner,'attribution_confirmed':True,
+             'cutoff_date':'2020-12-31','coverage_from':'2020-01-01','coverage_until':'2020-12-31','scope':'receipt','limitations':'Saldo documentado sin movimientos anteriores'}
+        draft=self.command('history.import.preview',{'source':'opening-test','file_hash':hashlib.sha256(reference.encode()).hexdigest(),'file_name':'historico.csv','rows':[row]})['entity']
+        result=self.command('history.import.confirm',{'import_id':draft['id']},draft['version'],evidence={'type':'external_reference','id':reference})['entity']
+        return result['opening_ids'][0],owner
+
+    def opening_move(self,payload):
+        draft=self.command('opening.move.preview',payload)['entity']
+        return self.command('opening.move.confirm',{'proposal_id':draft['id']},draft['version'],evidence={'type':'external_reference','id':'movimiento-documentado'})['entity']
+
+    def test_opening_collection_and_reversal_preserve_source(self):
+        from erp_core.receivables_projection import opening_balance
+        oid,_=self.opening(530000);cid=self.collection(10000)
+        before=tuple(self.conn.execute('SELECT * FROM erp_saldos_apertura WHERE id=?',(oid,)).fetchone())
+        result=self.opening_move({'opening_id':oid,'kind':'allocation','effective_on':'2026-01-15','amount_cents':'3000','collection_id':cid})
+        self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'527000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'7000')
+        self.assertEqual(opening_balance(self.conn,self.community,oid,'2025-01-01')['remaining_cents'],'530000')
+        self.opening_move({'opening_id':oid,'kind':'reverse_allocation','effective_on':'2026-01-16','amount_cents':'1000','reverses_id':result['movement_id']})
+        self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'528000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'8000')
+        self.assertEqual(tuple(self.conn.execute('SELECT * FROM erp_saldos_apertura WHERE id=?',(oid,)).fetchone()),before)
+        with self.assertRaises(ConflictError):self.command('opening.move.preview',{'opening_id':oid,'kind':'allocation','effective_on':'2026-01-17','amount_cents':'8001','collection_id':cid})
+
+    def test_opening_credit_application_and_refund(self):
+        from erp_core.receivables_projection import opening_balance
+        oid,owner=self.opening(-10000);rid=self.receipt()
+        move=self.opening_move({'opening_id':oid,'kind':'credit_apply','receipt_id':rid,'effective_on':'2026-01-16','amount_cents':'3000'})
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'7000')
+        self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'-7000')
+        self.opening_move({'opening_id':oid,'kind':'reverse_credit_apply','reverses_id':move['movement_id'],'effective_on':'2026-01-17','amount_cents':'1000'})
+        self.opening_move({'opening_id':oid,'kind':'refund','effective_on':'2026-01-17','amount_cents':'2000','beneficiary':{'type':'owner','id':owner}})
+        self.assertEqual(opening_balance(self.conn,self.community,oid)['remaining_cents'],'-6000')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'8000')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM erp_cobros').fetchone()[0],0)
+        with self.assertRaises(ConflictError):self.command('void.preview',{'receipt_id':rid,'effective_on':'2026-01-18'})
+
+    def test_return_reversal_restores_free_funds_without_autoallocation(self):
+        rid=self.receipt();cid=self.collection();self.allocate(cid,rid,10000)
+        aid=self.conn.execute('SELECT id FROM erp_imputaciones WHERE receipt_id=?',(rid,)).fetchone()[0]
+        draft=self.command('return.preview',{'collection_id':cid,'effective_on':'2026-01-16','free_cents':'0','external_key':'return-then-correct','reversals':[{'allocation_id':aid,'amount_cents':'4000'}]})['entity']
+        self.command('return.confirm',{'proposal_id':draft['id']},1)
+        original=dict(self.conn.execute('SELECT * FROM erp_devoluciones WHERE collection_id=?',(cid,)).fetchone())
+        draft=self.command('return.reverse.preview',{'return_id':original['id'],'effective_on':'2026-01-17'})['entity']
+        self.command('return.reverse.confirm',{'proposal_id':draft['id']},1,evidence={'type':'external_reference','id':'banco-corrige-devolucion'})
+        self.assertEqual(collection_balance(self.conn,self.community,cid,'2026-01-16')['returned_cents'],'4000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['returned_cents'],'0')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'4000')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'4000')
+        self.assertEqual(dict(self.conn.execute('SELECT * FROM erp_devoluciones WHERE id=?',(original['id'],)).fetchone()),original)
+        with self.assertRaises(ConflictError):self.command('return.reverse.preview',{'return_id':original['id'],'effective_on':'2026-01-18'})
+
+    def test_unknown_payer_accreditation_is_temporal_and_preserves_original(self):
+        from erp_core.receivables_projection import collection_payer
+        cid=self.collection()
+        owner=self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 1',(self.community,)).fetchone()[0]
+        draft=self.command('collection.payer.preview',{'collection_id':cid,'payer':{'type':'owner','id':owner},'effective_on':'2026-01-16'})['entity']
+        self.command('collection.payer.confirm',{'proposal_id':draft['id']},1,evidence={'type':'external_reference','id':'justificante-del-pagador'})
+        self.assertIsNone(collection_payer(self.conn,self.community,cid,'2026-01-15')['payer_owner_id'])
+        self.assertEqual(collection_payer(self.conn,self.community,cid,'2026-01-16')['payer_owner_id'],owner)
+        self.assertIsNone(self.conn.execute('SELECT payer_owner_id FROM erp_cobros WHERE id=?',(cid,)).fetchone()[0])
+        draft=self.command('refund.preview',{'collection_id':cid,'beneficiary':{'type':'owner','id':owner},'effective_on':'2026-01-17','amount_cents':'1000'})['entity']
+        self.command('refund.confirm',{'proposal_id':draft['id']},1,evidence={'type':'external_reference','id':'justificante-reintegro'})
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'9000')
+
+    def test_credit_reversal_preserves_original_and_cutoffs(self):
+        rid=self.receipt()
+        draft=self.command('credit.preview',{'receipt_id':rid,'effective_on':'2026-01-16','amount_cents':'3000'})['entity']
+        self.command('credit.confirm',{'proposal_id':draft['id']},1)
+        original=dict(self.conn.execute("SELECT * FROM erp_rectificaciones WHERE receipt_id=? AND kind='credit'",(rid,)).fetchone())
+        payload={'movement_id':original['id'],'effective_on':'2026-01-18','amount_cents':'1000'}
+        draft=self.command('credit.reverse.preview',payload)['entity']
+        with self.assertRaises(ContractError):self.command('credit.reverse.confirm',{'proposal_id':draft['id']},1)
+        result=self.command('credit.reverse.confirm',{'proposal_id':draft['id']},1,key='reverse-credit-once',evidence={'type':'external_reference','id':'rectificacion-documentada'})
+        replay=self.command('credit.reverse.confirm',{'proposal_id':draft['id']},1,key='reverse-credit-once',evidence={'type':'external_reference','id':'rectificacion-documentada'})
+        self.assertEqual(result['entity'],replay['entity'])
+        self.assertTrue(replay['idempotent_replay'])
+        self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-17')['pending_cents'],'7000')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-18')['pending_cents'],'8000')
+        self.assertEqual(dict(self.conn.execute('SELECT * FROM erp_rectificaciones WHERE id=?',(original['id'],)).fetchone()),original)
+        with self.assertRaises(ConflictError):self.command('credit.reverse.preview',{**payload,'amount_cents':'2001'})
+
+    def test_credit_application_reversal_does_not_create_cash(self):
+        from erp_core.receivables_projection import credit_balance
+        rid=self.receipt()
+        owner=self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 1',(self.community,)).fetchone()[0]
+        event=self.conn.execute("INSERT INTO erp_hechos_economicos (id_comunidad,event_key,event_type,schema_version,effective_on,registered_at,actor_id,reason,payload_json,payload_hash,evidence_json) VALUES (?,'synthetic-credit','synthetic','erp_receivables_v1','2026-01-01','2026-01-01T00:00:00.000000Z',?,'test','{}','test','null')",(self.community,self.uid)).lastrowid
+        credit=self.conn.execute("INSERT INTO erp_creditos (id_comunidad,event_id,owner_id,amount_cents,effective_on,registered_at) VALUES (?,?,?,4000,'2026-01-01','2026-01-01T00:00:00.000000Z')",(self.community,event,owner)).lastrowid
+        draft=self.command('credit.apply.preview',{'credit_id':credit,'receipt_id':rid,'amount_cents':'3000','effective_on':'2026-01-16'})['entity']
+        self.command('credit.apply.confirm',{'proposal_id':draft['id']},1)
+        original=self.conn.execute('SELECT id FROM erp_credito_aplicaciones WHERE credit_id=? AND reverses_id IS NULL',(credit,)).fetchone()[0]
+        draft=self.command('credit.apply.reverse.preview',{'movement_id':original,'amount_cents':'1000','effective_on':'2026-01-17'})['entity']
+        self.command('credit.apply.reverse.confirm',{'proposal_id':draft['id']},1,evidence={'type':'external_reference','id':'reversion-documentada'})
+        self.assertEqual(credit_balance(self.conn,self.community,credit)['available_cents'],'2000')
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'8000')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+
+    def test_period_summary_uses_cash_once_and_respects_cuts(self):
+        rid=self.receipt();cid=self.collection(12000);self.allocate(cid,rid,10000)
+        aid=self.conn.execute('SELECT id FROM erp_imputaciones WHERE receipt_id=?',(rid,)).fetchone()[0]
+        draft=self.command('return.preview',{'collection_id':cid,'effective_on':'2026-01-20','free_cents':'1000','external_key':'mixed-return',
+            'reversals':[{'allocation_id':aid,'amount_cents':'3000'}]})['entity']
+        self.command('return.confirm',{'proposal_id':draft['id']},1)
+        report=execute_query(self.db,self.session,{'query':'erp3.period.summary','id_comunidad':self.community,
+            'filters':{'from':'2026-01-01','until':'2026-01-31'}})['entity']
+        self.assertEqual(report['issued_cents'],'10000')
+        self.assertEqual(report['cash_received_cents'],'12000')
+        self.assertEqual(report['cash_returns_cents'],'4000')
+        self.assertEqual(report['issued_in_period_pending_at_end_cents'],'3000')
+        self.assertFalse(report['legacy_combined'])
+        before=execute_query(self.db,self.session,{'query':'erp3.period.summary','id_comunidad':self.community,
+            'filters':{'from':'2026-01-01','until':'2026-01-19'}})['entity']
+        self.assertEqual(before['cash_returns_cents'],'0')
+        self.assertEqual(before['issued_in_period_pending_at_end_cents'],'0')
+
+    def test_statement_and_assistant_share_exact_projection(self):
+        from erp_core.receivables_agent import debt_answer
+        oid,owner=self.opening(5300)
+        rid=self.receipt();cid=self.collection();self.allocate(cid,rid,3000)
+        statement=execute_query(self.db,self.session,{'query':'erp3.account.statement','id_comunidad':self.community,
+            'filters':{'property_id':self.property}})['entity']
+        native=next(r for r in statement['items'] if r.get('receipt_id')==rid)
+        self.assertEqual(native['pending_cents'],'7000')
+        opening=next(r for r in statement['items'] if r.get('opening_id')==oid)
+        self.assertEqual(opening['pending_cents'],'5300')
+        answer=debt_answer(self.db,self.session,[self.community],property_id=self.property)
+        self.assertEqual(answer['facts']['deuda_centimos'],statement['documented_subtotal_cents'])
+        self.assertTrue(any(r['Referencia']=='TEST-1' and r['Pendiente']=='70,00 EUR' for r in answer['display']['tables'][0]['rows']))
+        personal=debt_answer(self.db,self.session,[self.community],owner_id=owner)
+        self.assertNotIn('no tiene deuda',personal['answer'])
+        self.assertEqual(personal['data_status'],'incompleto')
+
 if __name__=='__main__':
     print('Isolated workspace:',WORK,flush=True)
     unittest.main(verbosity=2)

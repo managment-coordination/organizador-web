@@ -62,12 +62,12 @@ class RegularizationOperations:
             if not period:raise ConflictError('No se puede resolver el periodo de la regularizacion.')
             coverage=self._require_coverage(conn,community,'ordinario',period['fecha_inicio'],period['fecha_fin'])
             require_fields(decision,('line_id','subjects'),('credit_beneficiary',))
-            if not isinstance(decision['subjects'],list) or not decision['subjects']:raise ContractError('Acredita los obligados del ajuste sin deducirlos del titular actual.')
+            if not isinstance(decision['subjects'],list) or (amount and not decision['subjects']):raise ContractError('Acredita los obligados del ajuste sin deducirlos del titular actual.')
             subjects=[self._subject(conn,community,x) for x in decision['subjects']]
             if len({(x['type'],x['id']) for x in subjects})!=len(subjects):raise ContractError('Obligado duplicado.')
-            billing=BudgetService(self.database_path)._billing_at(conn,community,row['id_propiedad'],effective)
             roles={}
             if amount>0:
+                billing=BudgetService(self.database_path)._billing_at(conn,community,row['id_propiedad'],effective)
                 for role in ('recipient','payer'):
                     value=billing[role]
                     if not value:raise ConflictError('Falta destinatario o pagador confirmado para el ajuste.')
@@ -122,7 +122,7 @@ class RegularizationOperations:
     def regularization_emission_confirm(self,s,e):
         return self._review_operation(s,e,'regularization_emission','adjust',self._regularization_preview,self._regularization_apply)
 
-    def emitted_coverage(self,session,query):
+    def emitted_coverage(self,session,query,connection=None):
         def op(conn,q):
             p=require_fields(q.filters,('plan_id','effective_at'),('period_keys','known_at'))
             effective=day(p['effective_at']);known=known_time(p.get('known_at'))
@@ -161,11 +161,28 @@ class RegularizationOperations:
                     prior=conn.execute('''SELECT l.*,m.credit_id,m.amount_cents AS materialized_cents,m.effective_on,m.registered_at AS materialized_at
                         FROM erp_regularizacion_lineas l JOIN erp_regularizaciones g ON g.id_comunidad=l.id_comunidad AND g.id_regularizacion=l.id_regularizacion
                         LEFT JOIN erp_regularizaciones_materializadas m ON m.id_comunidad=l.id_comunidad AND m.line_id=l.id_linea
-                        WHERE g.id_comunidad=? AND g.id_plan_esperado=? AND g.estado='aprobada' AND l.id_propiedad=? AND l.periodo_clave=?''',
-                        (q.community_id,plan['id_plan'],pid,key))
+                        WHERE g.id_comunidad=? AND g.id_plan_esperado=? AND g.estado='aprobada' AND l.id_propiedad=? AND l.periodo_clave=?
+                        AND EXISTS (SELECT 1 FROM erp_outbox o WHERE o.id_comunidad=g.id_comunidad
+                            AND o.event_type='erp2.regularization.approved' AND o.aggregate_id=CAST(g.id_regularizacion AS TEXT)
+                            AND o.created_at_utc<=?)''',
+                        (q.community_id,plan['id_plan'],pid,key,known))
                     for r in prior:
                         adjustments+=r['diferencia_centimos']
                         if r['credit_id'] and r['effective_on']<=effective and r['materialized_at']<=known:materialized+=r['materialized_cents']
+                    # Credits from another target plan are already issued adjustments,
+                    # not reserves of this plan. They reduce the comparable emitted base.
+                    for r in conn.execute('''SELECT m.* FROM erp_regularizaciones_materializadas m
+                        JOIN erp_regularizacion_lineas l ON l.id_comunidad=m.id_comunidad AND l.id_linea=m.line_id
+                        JOIN erp_regularizaciones g ON g.id_comunidad=l.id_comunidad AND g.id_regularizacion=l.id_regularizacion
+                        JOIN erp_planes_cuota p ON p.id_comunidad=g.id_comunidad AND p.id_plan=g.id_plan_esperado
+                        WHERE m.id_comunidad=? AND l.id_propiedad=? AND g.id_plan_esperado<>? AND m.credit_id IS NOT NULL
+                            AND m.effective_on<=? AND m.registered_at<=? AND EXISTS (
+                                SELECT 1 FROM erp_plan_versiones v JOIN erp_plan_periodos pp ON pp.id_plan_version=v.id_plan_version AND pp.id_comunidad=v.id_comunidad
+                                WHERE v.id_comunidad=p.id_comunidad AND v.id_plan=p.id_plan AND v.estado='aprobada'
+                                    AND pp.clave_periodo=l.periodo_clave AND pp.fecha_inicio=? AND pp.fecha_fin=?)''',
+                        (q.community_id,pid,plan['id_plan'],effective,known,period['fecha_inicio'],period['fecha_fin'])):
+                        base+=r['amount_cents']
+                        references.append({'credit_id':r['credit_id'],'net_cents':str(r['amount_cents']),'type':'other_plan_regularization'})
                     total=base+materialized;reserved=adjustments-materialized
                     if base+adjustments!=total+reserved:raise ContractError('La cobertura de regularizaciones no es disjunta.')
                     emitted.append({'property_id':pid,'period_key':key,'net_emitted_cents':str(cents(base)),
@@ -174,4 +191,7 @@ class RegularizationOperations:
                         'total_net_emitted_cents':str(cents(total)),'system':'erp3','reference':f'{pid}:{key}',
                         'coverage_id':coverage['id'],'references':references,'confirmed':True})
             return {'effective_at':effective,'known_at':known,'emitted':emitted,'manual_collections_not_used':True}
+        if connection is not None:
+            self._session(connection,session,query.community_id,'read')
+            return op(connection,query)
         return self._read(session,query,op)

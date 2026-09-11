@@ -1571,6 +1571,15 @@ MIGRATIONS += (Migration(7, "erp3_receivables", RECEIVABLES_STATEMENTS),)
 from .receivables_extensions_schema import STATEMENTS as RECEIVABLES_EXTENSION_STATEMENTS
 
 MIGRATIONS += (Migration(8, "erp3_coverage_regularization_links", RECEIVABLES_EXTENSION_STATEMENTS),)
+from .receivables_opening_schema import STATEMENTS as RECEIVABLES_OPENING_STATEMENTS
+
+MIGRATIONS += (Migration(9, "erp3_opening_movements", RECEIVABLES_OPENING_STATEMENTS),)
+from .receivables_emission_schema import STATEMENTS as RECEIVABLES_EMISSION_STATEMENTS
+
+MIGRATIONS += (Migration(10, "erp3_zero_obligation_identity", RECEIVABLES_EMISSION_STATEMENTS),)
+from .receivables_corrections_schema import STATEMENTS as RECEIVABLES_CORRECTION_STATEMENTS
+
+MIGRATIONS += (Migration(11, "erp3_return_reversals_payer_evidence", RECEIVABLES_CORRECTION_STATEMENTS),)
 
 
 def _bootstrap(conn):

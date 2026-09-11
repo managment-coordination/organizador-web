@@ -95,6 +95,16 @@ ERP2_QUERIES = {
 }
 
 ERP3_COMMANDS = {
+    'erp3.return.reverse.preview':'return_reverse_preview',
+    'erp3.return.reverse.confirm':'return_reverse_confirm',
+    'erp3.collection.payer.preview':'collection_payer_preview',
+    'erp3.collection.payer.confirm':'collection_payer_confirm',
+    'erp3.credit.reverse.preview':'credit_reverse_preview',
+    'erp3.credit.reverse.confirm':'credit_reverse_confirm',
+    'erp3.credit.apply.reverse.preview':'credit_apply_reverse_preview',
+    'erp3.credit.apply.reverse.confirm':'credit_apply_reverse_confirm',
+    'erp3.opening.move.preview':'opening_move_preview',
+    'erp3.opening.move.confirm':'opening_move_confirm',
     'erp3.permissions.save':'permissions_save',
     'erp3.coverage.confirm':'coverage_confirm',
     'erp3.policy.save':'policy_save',
@@ -109,6 +119,12 @@ ERP3_COMMANDS = {
 }
 
 ERP3_QUERIES = {
+    'erp3.period.summary':'period_summary',
+    'erp3.opening.get':'opening_get',
+    'erp3.account.statement':'account_statement',
+    'erp3.responsibility.get':'responsibility_get',
+    'erp3.import.access':'import_access',
+    'erp3.workspace.get':'workspace_get',
     'erp3.receipt.get':'receipt_get',
     'erp3.receipt.explain':'receipt_get',
     'erp3.receipt.list':'receipt_list',

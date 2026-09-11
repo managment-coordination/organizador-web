@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import mammoth from "mammoth";
 import ExcelJS from "exceljs";
+import { receivablesImportHttp } from './receivables-http.js';
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
 import { DOCUMENT_CATEGORIES, reportOptions, selectReportAttachments, reportSnapshot } from './report-domain.js';
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
@@ -3562,6 +3563,7 @@ path = ${JSON.stringify(databasePath)}
 question = ${JSON.stringify(text)}
 role = ${JSON.stringify(session?.rol || "")}
 session_user_id = ${JSON.stringify(Number(session?.id_usuario || 0))}
+financial_session = json.loads(${JSON.stringify(JSON.stringify(session || {}))})
 allowed_ids = ${JSON.stringify((session?.comunidades || []).map((community) => Number(community.id_comunidad)).filter(Boolean))}
 
 def norm(value):
@@ -3964,159 +3966,7 @@ def properties_for_owner(owner_id):
         ORDER BY p.codigo_propiedad
     """, (owner_id,))
 
-def debt_conditions(owner=None, year=None, property_id=None):
-    clauses = ["COALESCE(r.deuda,0) > 0"]
-    params = []
-    if owner:
-        owner_id = owner.get("id_propietario") if isinstance(owner, dict) else owner
-        owner_name = owner.get("nombre") if isinstance(owner, dict) else ""
-        owner_name_norm = norm(owner_name)
-        if owner_name_norm:
-            clauses.append("(r.id_propietario = ? AND (COALESCE(TRIM(r.propietario_texto),'') = '' OR NORMTXT(r.propietario_texto) = ?))")
-            params.extend([owner_id, owner_name_norm])
-        else:
-            clauses.append("r.id_propietario = ?")
-            params.append(owner_id)
-    if year:
-        clauses.append("COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) = ?")
-        params.append(year)
-    if property_id:
-        clauses.append("r.id_propiedad = ?")
-        params.append(property_id)
-    return " AND ".join(clauses), tuple(params)
-
-def debt_for_owner(owner_id, year=None, property_id=None):
-    owner = owner_id if isinstance(owner_id, dict) else {"id_propietario": owner_id, "nombre": ""}
-    where_sql, params = debt_conditions(owner, year, property_id)
-    total = first("SELECT COALESCE(SUM(r.deuda),0) AS total FROM cf_recibos r WHERE " + where_sql, params)["total"]
-    by_year = rows("""
-        SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
-               COALESCE(SUM(deuda),0) AS deuda,
-               COUNT(*) AS recibos
-        FROM cf_recibos r
-        WHERE """ + where_sql + """
-        GROUP BY COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER))
-        ORDER BY ejercicio
-    """, params)
-    by_property = rows("""
-        SELECT COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
-               COALESCE(SUM(r.deuda),0) AS deuda,
-               COUNT(*) AS recibos
-        FROM cf_recibos r
-        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
-        WHERE """ + where_sql + """
-        GROUP BY COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad')
-        ORDER BY deuda DESC
-    """, params)
-    receipts = rows("""
-        SELECT COALESCE(r.referencia, '') AS referencia,
-               COALESCE(r.fecha_emision, '') AS fecha_emision,
-               COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) AS ejercicio,
-               COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
-               COALESCE(r.tipo_recibo, '') AS tipo_recibo,
-               COALESCE(r.importe, 0) AS importe,
-               COALESCE(r.cobrado, 0) AS cobrado,
-               COALESCE(r.deuda, 0) AS deuda,
-               COALESCE(r.estado, '') AS estado
-        FROM cf_recibos r
-        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
-        WHERE """ + where_sql + """
-        ORDER BY r.fecha_emision, propiedad, r.referencia
-        LIMIT 250
-    """, params)
-    return total, by_year, by_property, receipts
-
-def debt_for_property(property_id, year=None):
-    where_sql, params = debt_conditions(None, year, property_id)
-    total = first("SELECT COALESCE(SUM(r.deuda),0) AS total FROM cf_recibos r WHERE " + where_sql, params)["total"]
-    by_year = rows("""
-        SELECT COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) AS ejercicio,
-               COALESCE(SUM(deuda),0) AS deuda,
-               COUNT(*) AS recibos
-        FROM cf_recibos r
-        WHERE """ + where_sql + """
-        GROUP BY COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER))
-        ORDER BY ejercicio
-    """, params)
-    by_debtor = rows("""
-        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario') AS propietario,
-               COALESCE(SUM(r.deuda),0) AS deuda,
-               COUNT(*) AS recibos
-        FROM cf_recibos r
-        LEFT JOIN cf_propietarios o ON o.id_propietario = r.id_propietario
-        WHERE """ + where_sql + """
-        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')),
-                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')
-        ORDER BY deuda DESC, propietario
-    """, params)
-    receipts = rows("""
-        SELECT COALESCE(r.referencia, '') AS referencia,
-               COALESCE(r.fecha_emision, '') AS fecha_emision,
-               COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) AS ejercicio,
-               COALESCE(r.propietario_texto, '') AS propietario,
-               COALESCE(r.tipo_recibo, '') AS tipo_recibo,
-               COALESCE(r.importe, 0) AS importe,
-               COALESCE(r.cobrado, 0) AS cobrado,
-               COALESCE(r.deuda, 0) AS deuda,
-               COALESCE(r.estado, '') AS estado
-        FROM cf_recibos r
-        WHERE """ + where_sql + """
-        ORDER BY r.fecha_emision, r.referencia
-        LIMIT 250
-    """, params)
-    return total, by_year, by_debtor, receipts
-
-def other_property_debt_for_owner(owner, year=None):
-    owner_norm = norm(owner.get("nombre") or "")
-    if not owner_norm:
-        return []
-    property_rows = properties_for_owner(owner["id_propietario"])
-    property_ids = [int(row["id_propiedad"]) for row in property_rows if row.get("id_propiedad")]
-    if not property_ids:
-        return []
-    qmarks = ",".join("?" for _ in property_ids)
-    clauses = [
-        "COALESCE(r.deuda,0) > 0",
-        f"r.id_propiedad IN ({qmarks})",
-        "COALESCE(TRIM(r.propietario_texto),'') <> ''",
-        "NORMTXT(r.propietario_texto) <> ?",
-    ]
-    params = property_ids + [owner_norm]
-    if year:
-        clauses.append("COALESCE(r.ejercicio, CAST(substr(r.fecha_emision,1,4) AS INTEGER)) = ?")
-        params.append(year)
-    where_sql = " AND ".join(clauses)
-    return rows("""
-        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario') AS propietario,
-               COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad') AS propiedad,
-               COALESCE(SUM(r.deuda),0) AS deuda,
-               COUNT(*) AS recibos
-        FROM cf_recibos r
-        LEFT JOIN cf_propiedades p ON p.id_propiedad = r.id_propiedad
-        WHERE """ + where_sql + """
-        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario')),
-                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), 'Sin propietario'),
-                 COALESCE(p.codigo_propiedad, r.propiedad_texto, 'Sin propiedad')
-        ORDER BY deuda DESC, propietario
-    """, tuple(params))
-
-def debtor_listing(year=None, minimum=0):
-    where_sql, params = debt_conditions(None, year, None)
-    listing = rows("""
-        SELECT COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario') AS propietario,
-               COALESCE(o.codigo_netfincas, '') AS codigo,
-               COUNT(DISTINCT COALESCE(CAST(r.id_propiedad AS TEXT), r.propiedad_texto, '')) AS propiedades,
-               COUNT(*) AS recibos,
-               COALESCE(SUM(r.deuda),0) AS deuda
-        FROM cf_recibos r
-        LEFT JOIN cf_propietarios o ON o.id_propietario = r.id_propietario
-        WHERE """ + where_sql + """
-        GROUP BY NORMTXT(COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario')),
-                 COALESCE(NULLIF(TRIM(r.propietario_texto), ''), o.nombre, 'Sin propietario'),
-                 COALESCE(o.codigo_netfincas, '')
-        ORDER BY deuda DESC, propietario
-    """, params)
-    return [item for item in listing if float(item.get("deuda") or 0) >= float(minimum or 0)]
+# Economic balances are projected by erp3.account.statement, not SQL totals here.
 
 def handle_contact_query(email):
     owners = owners_for_email(email)
@@ -4377,9 +4227,11 @@ def handle_accounting_query():
     start, end = dates_from_question(question)
     if not start or not end:
         return response("Para preparar el balance financiero necesito que indiques fecha desde y fecha hasta. Ejemplo: balance financiero desde 01/01/2026 hasta 30/08/2026.", 0.5, questions=["Fecha desde", "Fecha hasta"], sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="incompleto", query_domain="contabilidad")
-    ingresos_emitidos = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?)", (start, end))["total"]
-    cobros = first("SELECT COALESCE(SUM(-importe),0) AS total FROM cf_movimientos_deuda WHERE tipo_movimiento = 'Cobro' AND date(fecha) BETWEEN date(?) AND date(?)", (start, end))["total"]
-    deuda_periodo = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE date(fecha_emision) BETWEEN date(?) AND date(?) AND COALESCE(deuda,0) > 0", (start, end))["total"]
+    from erp_core.receivables_agent import period_answer
+    totals = period_answer(path, financial_session, list(allowed_ids), start, end)
+    ingresos_emitidos = totals['issued_cents']
+    cobros = totals['cash_received_cents']
+    deuda_periodo = totals['issued_in_period_pending_at_end_cents']
     gastos_devengados = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
     mejoras = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') = '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
     gastos_pagados = first("SELECT COALESCE(SUM(pagado),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_pago) BETWEEN date(?) AND date(?)", (start, end))["total"]
@@ -4388,9 +4240,14 @@ def handle_accounting_query():
     saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
     answer = "\\n".join([
         f"Balance financiero provisional del {start} al {end}:",
-        f"- Ingresos/recibos emitidos: {money(ingresos_emitidos)}",
-        f"- Cobros registrados en deuda/recibos: {money(cobros)}",
-        f"- Deuda pendiente generada en el periodo: {money(deuda_periodo)}",
+        f"- Recibos emitidos ERP: {ingresos_emitidos}",
+        f"- Entradas de cobro ERP (antes de devoluciones): {cobros}",
+        f"- Pendiente al cierre de los recibos emitidos en el periodo: {deuda_periodo}",
+        f"- Devoluciones netas ERP: {totals['cash_returns_cents']}",
+        f"- Reintegros ERP: {totals['cash_refunds_cents']}",
+        f"- Abonos/anulaciones ERP: {totals['receipt_reductions_cents']}",
+        f"- Emitidos Netfincas observados, no sumados al ERP: {totals['legacy_observed_issued_cents']}",
+        totals['note'],
         f"- Gastos devengados ordinarios: {money(gastos_devengados)}",
         f"- Gastos pagados ordinarios: {money(gastos_pagados)}",
         f"- Gastos ordinarios pendientes de pago: {money(pendientes)}",
@@ -4403,8 +4260,8 @@ def handle_accounting_query():
         "title": "Balance financiero provisional",
         "subtitle": f"{start} a {end}",
         "cards": [
-            {"label": "Recibos emitidos", "value": money(ingresos_emitidos)},
-            {"label": "Cobros registrados", "value": money(cobros)},
+            {"label": "Recibos emitidos", "value": ingresos_emitidos},
+            {"label": "Cobros registrados", "value": cobros},
             {"label": "Gastos devengados", "value": money(gastos_devengados)},
             {"label": "Saldo final banco", "value": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
         ],
@@ -4412,9 +4269,9 @@ def handle_accounting_query():
             "title": "Magnitudes del periodo",
             "columns": ["Concepto", "Importe"],
             "rows": [
-                {"Concepto": "Ingresos/recibos emitidos", "Importe": money(ingresos_emitidos)},
-                {"Concepto": "Cobros registrados en deuda/recibos", "Importe": money(cobros)},
-                {"Concepto": "Deuda pendiente generada en el periodo", "Importe": money(deuda_periodo)},
+                {"Concepto": "Recibos emitidos ERP", "Importe": ingresos_emitidos},
+                {"Concepto": "Entradas de cobro ERP (antes de devoluciones)", "Importe": cobros},
+                {"Concepto": "Pendiente al cierre de los recibos emitidos en el periodo", "Importe": deuda_periodo},
                 {"Concepto": "Gastos devengados ordinarios", "Importe": money(gastos_devengados)},
                 {"Concepto": "Gastos pagados ordinarios", "Importe": money(gastos_pagados)},
                 {"Concepto": "Gastos ordinarios pendientes de pago", "Importe": money(pendientes)},
@@ -4423,9 +4280,9 @@ def handle_accounting_query():
                 {"Concepto": "Saldo banco final disponible", "Importe": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
             ],
         }],
-        "note": "Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
+        "note": totals["note"] + " Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
     }
-    return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("receipts", "debt_movements", "expense_invoices", "bank_lines"), data_status="inferido", query_domain="contabilidad")
+    return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("expense_invoices", "bank_lines") + [{"module":"ingresos_recibos","table":"erp3.period.summary","description":"Movimientos ERP y observaciones historicas separados"}], data_status="incompleto" if totals["note"] else "inferido", query_domain="contabilidad")
 
 def handle_property_query():
     prop_query = extract_property_query(question)
@@ -4468,30 +4325,34 @@ def handle_named_owner_query(name):
     answer += (' Propiedades vinculadas: ' + ', '.join(codes) + '.') if codes else ' No constan propiedades activas vinculadas.'
     return response(answer,0.9 if exact else 0.7,facts={'id_propietario':owner['id_propietario'],'nombre':owner['nombre']},sources=source_refs('owners','properties','owner_properties'),data_status='confirmado' if exact else 'inferido',query_domain='propietario_identidad')
 
+def financial_debt_answer(owner_id=None,property_id=None,year=None,minimum_cents='0'):
+    from erp_core.receivables_agent import debt_answer
+    communities=list(allowed_ids)
+    if owner_id:
+        row=first('SELECT id_comunidad FROM cf_propietarios WHERE id_propietario=?',(owner_id,))
+        communities=[row['id_comunidad']] if row and row['id_comunidad'] in communities else []
+    if property_id:
+        row=first('SELECT id_comunidad FROM cf_propiedades WHERE id_propiedad=?',(property_id,))
+        communities=[row['id_comunidad']] if row and row['id_comunidad'] in communities else []
+    if not communities:
+        return response('Selecciona una comunidad o una ficha accesible para consultar su deuda.',questions=['Comunidad'],data_status='incompleto',query_domain='deuda')
+    result=debt_answer(path,financial_session,communities,owner_id=owner_id,property_id=property_id,year=year,minimum_cents=minimum_cents)
+    return response(**result)
+
 def handle_global_debt_year(year):
-    total = first("SELECT COALESCE(SUM(deuda),0) AS total, COUNT(*) AS recibos FROM cf_recibos WHERE COALESCE(deuda,0) > 0 AND COALESCE(ejercicio, CAST(substr(fecha_emision,1,4) AS INTEGER)) = ?", (year,))
-    overall = first("SELECT COALESCE(SUM(deuda),0) AS total FROM cf_recibos WHERE COALESCE(deuda,0) > 0")
-    answer = f"La deuda pendiente correspondiente a {year} asciende a {money(total['total'])} en {total['recibos']} recibos. La deuda total pendiente registrada en la base es {money(overall['total'])}."
-    display = {
-        "title": f"Deuda pendiente {year}",
-        "cards": [
-            {"label": "Deuda del ejercicio", "value": money(total["total"])},
-            {"label": "Recibos pendientes", "value": str(total["recibos"])},
-            {"label": "Deuda total registrada", "value": money(overall["total"])},
-        ],
-    }
-    return response(answer, 0.84, facts={"ejercicio": year, "deuda": total["total"]}, display=display, sources=source_refs("receipts"), data_status="confirmado", query_domain="deuda")
+    return financial_debt_answer(year=year)
 
 def handle_debt_query():
     years = re.findall(r"\\b(20\\d{2})\\b", question)
     requested_year = int(years[0]) if years else None
-    minimum_debt = 0
+    minimum_cents = '0'
     minimum_match = re.search(r"(?:mayor|superior|mas)\\s+(?:de|a)?\\s*([\\d\\.]+(?:,\\d{1,2})?)", str(question or ""), re.I)
     if minimum_match:
         try:
-            minimum_debt = float(minimum_match.group(1).replace(".", "").replace(",", "."))
-        except ValueError:
-            minimum_debt = 0
+            from erp_core.receivables_tabular import money_text
+            minimum_cents = money_text(minimum_match.group(1))
+        except Exception:
+            return response('Indica el importe minimo sin separadores de miles, por ejemplo 1000,00.',questions=['Importe minimo'],data_status='incompleto',query_domain='deuda')
     global_list_pattern = bool(re.search(
         r"(?:LISTA|LISTADO|RELACION|DETALLE|DESGLOSE).*(?:DEUDORES|MOROSOS|PROPIETARIOS (?:CON DEUDA|QUE DEBEN)|DEUDA POR PROPIETARIO|DEUDA DE TODOS|TODOS LOS QUE DEBEN)",
         q_norm
@@ -4521,162 +4382,13 @@ def handle_debt_query():
     if not owners and owner_query and is_debt_question:
         owners = find_owners(owner_query)
     if property_debt_mode and debt_property_id:
-        total, by_year, by_debtor, receipts = debt_for_property(debt_property_id, requested_year)
-        pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
-        period_text = f" en {requested_year}" if requested_year else ""
-        property_name = debt_property["codigo_propiedad"] if debt_property else "la propiedad indicada"
-        if total <= 0:
-            answer = f"{property_name} no tiene deuda pendiente registrada{period_text}."
-        else:
-            year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
-            debtor_text = "\\n".join([f"- {r['propietario']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_debtor[:8]])
-            answer = f"{property_name} tiene deuda pendiente total por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por titular/deudor del recibo:\\n{debtor_text}"
-        debt_tables = [
-            {
-                "title": "Desglose por ejercicio",
-                "columns": ["Ejercicio", "Deuda", "Recibos"],
-                "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
-            },
-            {
-                "title": "Desglose por titular/deudor",
-                "columns": ["Titular/deudor", "Deuda", "Recibos"],
-                "rows": [{"Titular/deudor": r["propietario"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_debtor],
-            },
-        ]
-        if is_list_request:
-            debt_tables.append({
-                "title": "Relacion de recibos pendientes",
-                "columns": ["Referencia", "Fecha", "Ejercicio", "Titular/deudor", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
-                "rows": [{
-                    "Referencia": r.get("referencia") or "",
-                    "Fecha": r.get("fecha_emision") or "",
-                    "Ejercicio": str(r.get("ejercicio") or ""),
-                    "Titular/deudor": r.get("propietario") or "",
-                    "Tipo": r.get("tipo_recibo") or "",
-                    "Importe": money(r.get("importe")),
-                    "Cobrado": money(r.get("cobrado")),
-                    "Pendiente": money(r.get("deuda")),
-                    "Estado": r.get("estado") or "",
-                } for r in receipts],
-            })
-        display = {
-            "title": property_name,
-            "subtitle": ("Listado detallado" if is_list_request else "Consulta de deuda de propiedad") + (f" | Ejercicio {requested_year}" if requested_year else ""),
-            "cards": [
-                {"label": "Deuda total propiedad", "value": money(total)},
-                {"label": "Recibos pendientes", "value": str(pending_receipts)},
-                {"label": "Titulares/deudores", "value": str(len(by_debtor))},
-            ],
-            "tables": debt_tables,
-            "note": "Consulta por propiedad: la deuda se muestra completa, separada por el titular/deudor que figura en cada recibo.",
-        }
-        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "deuda_propiedad", "id_propiedad": debt_property_id, "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts}, display=display, sources=source_refs("receipts", "properties", "owners"), data_status="confirmado", query_domain="deuda")
+        return financial_debt_answer(property_id=debt_property_id,year=requested_year)
     if global_list_pattern and not owners:
-        listing = debtor_listing(requested_year, minimum_debt)
-        total_listed = sum(float(item.get("deuda") or 0) for item in listing)
-        period_text = f" del ejercicio {requested_year}" if requested_year else ""
-        minimum_text = f" con deuda igual o superior a {money(minimum_debt)}" if minimum_debt else ""
-        answer = f"He encontrado {len(listing)} propietarios{period_text}{minimum_text}. La deuda pendiente incluida en el listado asciende a {money(total_listed)}."
-        display = {
-            "title": "Listado de propietarios con deuda",
-            "subtitle": (f"Ejercicio {requested_year}" if requested_year else "Todos los ejercicios") + (f" | Minimo {money(minimum_debt)}" if minimum_debt else ""),
-            "cards": [
-                {"label": "Propietarios", "value": str(len(listing))},
-                {"label": "Deuda incluida", "value": money(total_listed)},
-                {"label": "Recibos pendientes", "value": str(sum(int(item.get("recibos") or 0) for item in listing))},
-            ],
-            "tables": [{
-                "title": "Relacion de deudores",
-                "columns": ["Propietario", "Codigo", "Propiedades", "Recibos", "Deuda"],
-                "rows": [{
-                    "Propietario": item["propietario"],
-                    "Codigo": item.get("codigo") or "",
-                    "Propiedades": str(item.get("propiedades") or 0),
-                    "Recibos": str(item.get("recibos") or 0),
-                    "Deuda": money(item.get("deuda")),
-                } for item in listing],
-            }],
-            "note": "Listado ordenado de mayor a menor deuda pendiente segun los recibos actualmente importados.",
-        }
-        return response(answer, 0.9, facts={"tipo_resultado": "listado_deudores", "ejercicio": requested_year, "deudores": len(listing), "deuda": total_listed}, display=display, sources=source_refs("receipts", "owners"), data_status="confirmado", query_domain="deuda")
+        return financial_debt_answer(year=requested_year,minimum_cents=minimum_cents)
+    if len(owners)==1:
+        return financial_debt_answer(owner_id=owners[0]['id_propietario'],property_id=debt_property_id,year=requested_year)
     if years and not owners:
-        return handle_global_debt_year(int(years[0]))
-    if len(owners) == 1:
-        owner = owners[0]
-        total, by_year, by_property, receipts = debt_for_owner(owner, requested_year, debt_property_id)
-        other_debt = other_property_debt_for_owner(owner, requested_year)
-        other_total = sum(float(item.get("deuda") or 0) for item in other_debt)
-        pending_receipts = sum(int(item.get("recibos") or 0) for item in by_year)
-        if total <= 0:
-            filter_text = f" en {requested_year}" if requested_year else ""
-            answer = f"{owner['nombre']} no tiene deuda pendiente registrada{filter_text}."
-            display = {
-                "title": owner["nombre"],
-                "subtitle": "Consulta de deuda",
-                "cards": [{"label": "Deuda pendiente", "value": money(0)}],
-            }
-        else:
-            year_text = ", ".join([f"{r['ejercicio']}: {money(r['deuda'])}" for r in by_year]) or "sin desglose"
-            prop_text = "\\n".join([f"- {r['propiedad']}: {money(r['deuda'])} ({r['recibos']} recibos)" for r in by_property[:8]])
-            answer = f"{owner['nombre']} tiene deuda pendiente por {money(total)} en {pending_receipts} recibos.\\nDesglose por ejercicio: {year_text}.\\nDesglose por propiedad:\\n{prop_text}"
-            debt_tables = [
-                {
-                    "title": "Desglose por ejercicio",
-                    "columns": ["Ejercicio", "Deuda", "Recibos"],
-                    "rows": [{"Ejercicio": str(r["ejercicio"]), "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_year],
-                },
-                {
-                    "title": "Desglose por propiedad",
-                    "columns": ["Propiedad", "Deuda", "Recibos"],
-                    "rows": [{"Propiedad": r["propiedad"], "Deuda": money(r["deuda"]), "Recibos": str(r["recibos"])} for r in by_property],
-                },
-            ]
-            if is_list_request:
-                debt_tables.append({
-                    "title": "Relacion de recibos pendientes",
-                    "columns": ["Referencia", "Fecha", "Ejercicio", "Propiedad", "Tipo", "Importe", "Cobrado", "Pendiente", "Estado"],
-                    "rows": [{
-                        "Referencia": r.get("referencia") or "",
-                        "Fecha": r.get("fecha_emision") or "",
-                        "Ejercicio": str(r.get("ejercicio") or ""),
-                        "Propiedad": r.get("propiedad") or "",
-                        "Tipo": r.get("tipo_recibo") or "",
-                        "Importe": money(r.get("importe")),
-                        "Cobrado": money(r.get("cobrado")),
-                        "Pendiente": money(r.get("deuda")),
-                        "Estado": r.get("estado") or "",
-                    } for r in receipts],
-                })
-            if other_total > 0:
-                debt_tables.append({
-                    "title": "Deuda vinculada a sus propiedades a nombre de otros titulares/deudores",
-                    "columns": ["Titular/deudor", "Propiedad", "Deuda", "Recibos"],
-                    "rows": [{
-                        "Titular/deudor": r.get("propietario") or "",
-                        "Propiedad": r.get("propiedad") or "",
-                        "Deuda": money(r.get("deuda")),
-                        "Recibos": str(r.get("recibos") or 0),
-                    } for r in other_debt],
-                })
-                answer += f"\\n\\nAviso: las propiedades vinculadas actualmente a {owner['nombre']} tienen ademas {money(other_total)} de deuda registrada a nombre de otros titulares/deudores del recibo. No la sumo como deuda personal de {owner['nombre']}."
-            subtitle_parts = ["Listado detallado" if is_list_request else "Consulta de deuda"]
-            if requested_year:
-                subtitle_parts.append(f"Ejercicio {requested_year}")
-            if debt_property_id and by_property:
-                subtitle_parts.append(by_property[0]["propiedad"])
-            display = {
-                "title": owner["nombre"],
-                "subtitle": " | ".join(subtitle_parts),
-                "cards": [
-                    {"label": "Deuda total", "value": money(total)},
-                    {"label": "Recibos pendientes", "value": str(pending_receipts)},
-                    {"label": "Ejercicios con deuda", "value": str(len(by_year))},
-                    {"label": "Propiedades afectadas", "value": str(len(by_property))},
-                ],
-                "tables": debt_tables,
-                "note": (f"Se muestran los primeros {len(receipts)} de {pending_receipts} recibos." if is_list_request and pending_receipts > len(receipts) else "Consulta personal: solo se suma la deuda cuyo recibo figura a nombre del propietario consultado. La deuda antigua de otro titular se muestra aparte cuando afecta a una propiedad actualmente vinculada."),
-            }
-        return response(answer, 0.9 if is_list_request else 0.86, facts={"tipo_resultado": "listado_recibos" if is_list_request else "resumen_deuda", "id_propietario": owner["id_propietario"], "ejercicio": requested_year, "deuda": total, "recibos": pending_receipts, "deuda_propiedades_otros_titulares": other_total}, display=display, sources=source_refs("receipts", "owners", "properties", "owner_properties"), data_status="confirmado", query_domain="deuda")
+        return financial_debt_answer(year=requested_year)
     if len(owners) > 1:
         answer = "He encontrado varios propietarios posibles. Necesito que elijas uno:\\n" + "\\n".join([f"- {o['nombre']} (codigo {o.get('codigo_netfincas') or 'sin codigo'})" for o in owners[:8]])
         return response(answer, 0.52, candidates=[{"type":"owner","id":o["id_propietario"],"title":o["nombre"],"score":1} for o in owners[:8]], questions=["Propietario exacto"], sources=source_refs("owners"), data_status="incompleto", query_domain="deuda")
@@ -7569,6 +7281,7 @@ finally:
 }
 
 function homePage() {
+  const receivablesScript=fs.readFileSync(path.join(__dirname,'receivables-ui.js'),'utf8');
   const workspaceStyle=fs.readFileSync(path.join(__dirname,'workspace-ui.css'),'utf8');
   const workspaceIcons=Object.fromEntries(['house','list-checks','building-2','calendar-days','folder-kanban','bell','files','file-chart-column','sparkles','upload','shield-check','search','settings-2','landmark','users','clipboard-check','circle-check','refresh-cw','filter-x','log-out','x'].map(name=>[name,fs.readFileSync(path.join(__dirname,'node_modules/lucide-static/icons',name+'.svg'),'utf8').replace('<svg','<svg aria-hidden="true" focusable="false"')]));
   return `<!doctype html>
@@ -8833,6 +8546,7 @@ function homePage() {
                   <div class="navGroupBody">
                     <button class="tab hidden" id="masterDataTab" data-view="master-data"><span>Datos de la comunidad</span></button>
                     <button class="tab hidden" id="budgetTab" data-view="budgets"><span>Presupuestos</span></button>
+                    <button class="tab hidden" id="receivablesTab" data-view="receivables"><span>Ingresos y recibos</span></button>
                   </div>
                 </details>
                 <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
@@ -9148,6 +8862,8 @@ function homePage() {
     <datalist id="responsiblesList"></datalist>
   </main>
   <script>
+    ${receivablesScript}
+    const receivablesUI=createReceivablesUI({api,html:value=>html(value),moneyLabel,moneyCents,moneyInput,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='receivables',navigate:()=>switchView('receivables')});
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "home";
@@ -9414,6 +9130,7 @@ function homePage() {
     }
 
     async function logout() {
+      receivablesUI.reset();
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
       state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
       importAnalysis = null;
@@ -10193,7 +9910,7 @@ function homePage() {
       {area:'home',label:'Resumen',items:[['homeTab','house']]},
       {area:'tasks',label:'Trabajo',items:[['mapTab','calendar-days'],['taskTab','list-checks'],['projectTab','folder-kanban'],['workTab','clipboard-check'],['reviewTab','circle-check'],['notificationTab','bell']]},
       {area:'tasks',label:'Recursos',items:[['documentsTab','files'],['reportsTab','file-chart-column'],['aiTab','sparkles'],['importTab','upload'],['securityTab','shield-check']]},
-      {area:'management',label:'Comunidad',items:[['masterDataTab','building-2'],['budgetTab','landmark'],['assemblyTab','users']]},
+      {area:'management',label:'Comunidad',items:[['masterDataTab','building-2'],['budgetTab','landmark'],['receivablesTab','landmark'],['assemblyTab','users']]},
       {area:'global',label:'General',items:[['globalSearchTab','search'],['adminTab','settings-2']]}
     ];
     function initializeWorkspaceNavigation(){
@@ -10222,10 +9939,11 @@ function homePage() {
       });
     }
     function setActiveNavigation(view) {
+      $('receivablesTab').classList.toggle('active',view==='receivables');
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "masterDataTab", "budgetTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", "master-data":"masterDataTab", budgets:"budgetTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
-      const targetArea=target?$(target).closest('[data-nav-area]')?.dataset.navArea:'home';
+      const targetArea=view==='receivables'?'management':target?$(target).closest('[data-nav-area]')?.dataset.navArea:'home';
       const area=targetArea==='global'?'global':targetArea||'home';
       const areaLabel={home:'Inicio',tasks:'Tareas',management:'Gestion',global:'General'}[area];
       document.querySelectorAll('.tabs [data-nav-area]').forEach(group=>{
@@ -10237,7 +9955,7 @@ function homePage() {
         const available=workspaceNavigation.filter(g=>g.area===button.dataset.workspaceArea).flatMap(g=>g.items).some(([id])=>!$(id).classList.contains('hidden'));
         button.classList.toggle('hidden',!available);button.classList.toggle('active',button.dataset.workspaceArea===area);button.setAttribute('aria-pressed',String(button.dataset.workspaceArea===area));
       });
-      const trail=target?[areaLabel,$(target).querySelector('span').textContent]:[];
+      const trail=view==='receivables'?[areaLabel,'Ingresos y recibos']:target?[areaLabel,$(target).querySelector('span').textContent]:[];
       $('navigationTrail').textContent=trail.join(' / ');
       $('navigationTrail').classList.toggle('hidden', view==='home'||(state.usuario||{}).rol==='Seguridad');
       $("appView").dataset.view = view;
@@ -11882,8 +11600,8 @@ function homePage() {
     function renderAssessmentEditor(){const target=$('assessmentEditor'),d=budgetData.assessmentDraft;if(!target||!d)return;const editable=d.state==='borrador'&&budgetCan('puede_preparar');const assignments=d.assignments.map((a,i)=>'<div class="budgetAssignment" data-assessment-assignment="'+i+'"><label>Grupo<select data-aa="group"'+(editable?'':' disabled')+'>'+budgetGroupOptions(a.group_id)+'</select></label><label>Regla<select data-aa="rule"'+(editable?'':' disabled')+'>'+assessmentRuleOptions(a.rule_type)+'</select></label><label>Parte de la derrama<select data-aa="mode"'+(editable?'':' disabled')+'><option value="porcentaje"'+(a.mode==='porcentaje'?' selected':'')+'>Porcentaje</option><option value="importe"'+(a.mode==='importe'?' selected':'')+'>Importe</option></select></label><label>Valor<input data-aa="value" value="'+html(a.value)+'"'+(editable?'':' disabled')+'></label><label>Finalidad del coeficiente<input data-aa="purpose" value="'+html(a.purpose)+'"'+(editable?'':' disabled')+'></label>'+(editable?'<button class="ghost" data-assessment-remove-assignment>Quitar</button>':'')+'</div>').join('');const schedules=d.schedules.map((s,i)=>'<div class="budgetAssignment" data-assessment-schedule="'+i+'"><label>Desde<input type="date" data-as="start" value="'+html(s.start)+'"'+(editable?'':' disabled')+'></label><label>Hasta<input type="date" data-as="end" value="'+html(s.end)+'"'+(editable?'':' disabled')+'></label><label>Emision prevista<input type="date" data-as="issue" value="'+html(s.issue)+'"'+(editable?'':' disabled')+'></label><label>Vencimiento<input type="date" data-as="due" value="'+html(s.due)+'"'+(editable?'':' disabled')+'></label><label>Peso del plazo<input data-as="weight" value="'+html(s.weight)+'"'+(editable?'':' disabled')+'></label>'+(editable&&d.schedules.length>1?'<button class="ghost" data-assessment-remove-schedule>Quitar</button>':'')+'</div>').join('');const simulation=d.simulation;target.innerHTML='<h2>'+(d.id_derrama?'Derrama':'Nueva derrama')+'</h2><span class="budgetStatus">'+html(d.state)+'</span><div class="masterFormGrid"><label>Concepto<input id="assessmentConcept" value="'+html(d.concept)+'"'+(editable?'':' disabled')+'></label><label>Importe total<input id="assessmentAmount" value="'+html(d.amount)+'"'+(editable?'':' disabled')+'></label></div><h3>Como se reparte</h3>'+assignments+(editable?'<button class="ghost" id="assessmentAddAssignment">+ Anadir grupo</button>':'')+'<h3>Calendario de cobro</h3>'+schedules+(editable?'<button class="ghost" id="assessmentAddSchedule">+ Anadir plazo</button><button class="green" id="assessmentSave">Guardar y simular</button>':'')+(simulation?'<div class="masterNotice"><strong>'+(simulation.status==='completa'?'Calculo correcto: '+moneyLabel(simulation.result_total_cents):'Simulacion bloqueada')+'</strong><br>'+html((simulation.incidents||[]).map(i=>i.message).join(' '))+'</div>':'')+(editable&&simulation?.status==='completa'&&budgetCan('puede_aprobar')?'<button class="green" id="assessmentApprove">Aprobar derrama</button>':editable&&simulation?.status==='completa'?'<p class="muted">Pendiente de aprobacion por un usuario autorizado.</p>':'')+'<div id="assessmentResult"></div>';target.querySelector('#assessmentAddAssignment')?.addEventListener('click',()=>{assessmentCollect();d.assignments.push({group_id:budgetData.references?.groups?.[0]?.id_grupo||'',rule_type:'coeficiente',mode:'porcentaje',value:'100',purpose:'general'});renderAssessmentEditor();});target.querySelector('#assessmentAddSchedule')?.addEventListener('click',()=>{assessmentCollect();const last=d.schedules[d.schedules.length-1],date=new Date((last?.start||new Date().toISOString().slice(0,10))+'T12:00:00');date.setMonth(date.getMonth()+1);const next=date.toISOString().slice(0,10);d.schedules.push({key:'P'+String(d.schedules.length+1).padStart(2,'0'),start:next,end:next,issue:next,due:next,weight:'1'});renderAssessmentEditor();});target.querySelectorAll('[data-assessment-remove-assignment]').forEach(b=>b.onclick=()=>{assessmentCollect();d.assignments.splice(Number(b.closest('[data-assessment-assignment]').dataset.assessmentAssignment),1);renderAssessmentEditor();});target.querySelectorAll('[data-assessment-remove-schedule]').forEach(b=>b.onclick=()=>{assessmentCollect();d.schedules.splice(Number(b.closest('[data-assessment-schedule]').dataset.assessmentSchedule),1);renderAssessmentEditor();});target.querySelector('#assessmentSave')?.addEventListener('click',assessmentSave);target.querySelector('#assessmentApprove')?.addEventListener('click',assessmentApprove);}
     async function assessmentSave(){try{const d=assessmentCollect(),payload={id_derrama:d.id_derrama||undefined,concept:d.concept,amount_cents:moneyCents(d.amount),assignments:d.assignments.map(a=>({...a,value:a.mode==='importe'?moneyCents(a.value):a.value,series_purpose:a.purpose,series_unit:'porcentaje'})),schedules:d.schedules.map(s=>({key:s.key,date_start:s.start,date_end:s.end,issue_date:s.issue||null,due_date:s.due||null,weight:s.weight}))};const saved=await budgetCommand('erp2.assessment.save',payload,d.version);const simulated=await budgetCommand('erp2.assessment.simulate',{id_derrama:saved.entity.id_derrama});const detail=await budgetQuery('erp2.assessment.get',{id_derrama:saved.entity.id_derrama});assessmentEditor({...detail.entity,simulation:simulated.entity});}catch(error){alert(error.message);}}
     async function assessmentApprove(){if(!confirm('Aprobar esta derrama y congelar su calculo?'))return;try{await budgetCommand('erp2.assessment.approve',{id_derrama:budgetData.assessmentDraft.id_derrama,date:new Date().toISOString().slice(0,10)});await loadBudgetData();budgetData.section='assessments';render();}catch(error){alert(error.message);}}
-    function regularizationEditor(){const target=$('regularizationEditor');target.innerHTML='<div class="masterSection"><label>Plan aprobado<select id="regularizationPlan">'+budgetData.plans.filter(p=>p.tipo==='ordinario').map(p=>'<option value="'+p.id_plan+'">Plan '+p.id_plan+' · '+html(p.fecha_inicio)+'</option>').join('')+'</select></label><label>Motivo<input id="regularizationReason" value="Regularizacion de cuotas emitidas"></label><label>Importes ya emitidos revisados<textarea id="regularizationEmitted" rows="6" placeholder="Una linea por importe: propiedad | periodo | importe neto\\nEjemplo: 123 | P01 | 100,00"></textarea></label><p class="muted">Esta entrada temporal se sustituira por los recibos estructurados de ERP 3. Un pendiente cuenta como emitido.</p><button class="green" id="regularizationCalculate">Calcular propuesta</button><div id="regularizationResult"></div></div>';target.querySelector('#regularizationCalculate').onclick=regularizationCalculate;}
-    async function regularizationCalculate(){try{const emitted=$('regularizationEmitted').value.split(/\\r?\\n/).filter(Boolean).map((line,index)=>{const cells=line.split('|').map(s=>s.trim());if(cells.length!==3||!Number(cells[0])||!cells[1])throw new Error('Linea '+(index+1)+': usa propiedad | periodo | importe neto.');const cents=moneyCents(cells[2],true);return {property_id:Number(cells[0]),period_key:cells[1],net_emitted_cents:cents,collected_cents:'0',confirmed:true,system:'entrada_revisada',type:cents.startsWith('-')?'abono':'cargo',reference:'WEB-'+index};});const result=await budgetCommand('erp2.regularization.preview',{id_plan:Number($('regularizationPlan').value),cutoff_date:new Date().toISOString().slice(0,10),reason:$('regularizationReason').value,emitted});const changed=(result.entity.lines||[]).filter(l=>String(l.difference_cents)!=='0');$('regularizationResult').innerHTML='<div class="budgetMetrics"><div class="budgetMetric"><span>Cargos</span><strong>'+moneyLabel(result.entity.summary.charge_cents)+'</strong></div><div class="budgetMetric"><span>Abonos</span><strong>'+moneyLabel(result.entity.summary.credit_cents)+'</strong></div><div class="budgetMetric"><span>Diferencias</span><strong>'+changed.length+'</strong></div></div><div class="budgetTableWrap"><table class="budgetResultTable"><thead><tr><th>Propiedad</th><th>Periodo</th><th>Correspondia</th><th>Emitido neto</th><th>Diferencia</th></tr></thead><tbody>'+changed.slice(0,500).map(l=>'<tr><td>'+html(String(l.property_id))+'</td><td>'+html(l.period_key)+'</td><td>'+moneyLabel(l.due_cents)+'</td><td>'+moneyLabel(l.net_emitted_cents)+'</td><td>'+budgetDifference(l.difference_cents)+'</td></tr>').join('')+'</tbody></table></div><p class="muted">La propuesta no modifica recibos anteriores ni emite cargos.</p>'+(budgetCan('puede_aprobar')?'<button class="green" id="regularizationApprove">Aprobar propuesta</button>':'<p class="muted">Pendiente de aprobacion por un usuario autorizado.</p>');if($('regularizationApprove'))$('regularizationApprove').onclick=async()=>{await budgetCommand('erp2.regularization.approve',{id_regularizacion:result.entity.id_regularizacion,confirm_pending_recipients:true});await loadBudgetData();};}catch(error){alert(error.message);}}
+    function regularizationEditor(){const target=$('regularizationEditor');target.innerHTML='<div class="masterSection"><label>Plan aprobado<select id="regularizationPlan">'+budgetData.plans.filter(p=>p.tipo==='ordinario').map(p=>'<option value="'+p.id_plan+'">'+html(p.denominacion||'Presupuesto ordinario')+' · '+html(p.fecha_inicio)+'</option>').join('')+'</select></label><div class="masterFormGrid"><label>Fecha de corte<input type="date" id="regularizationCutoff" value="'+new Date().toLocaleDateString('sv-SE')+'"></label><label>Periodos desde<input type="date" id="regularizationStart"></label><label>Periodos hasta<input type="date" id="regularizationEnd"></label></div><label>Motivo<input id="regularizationReason" value="Regularizacion de cuotas emitidas"></label><button class="green" id="regularizationCalculate">Calcular contra recibos emitidos</button><div id="regularizationResult"></div></div>';target.querySelector('#regularizationCalculate').onclick=regularizationCalculate;}
+    async function regularizationCalculate(){try{const result=await budgetCommand('erp2.regularization.preview',{id_plan:Number($('regularizationPlan').value),cutoff_date:$('regularizationCutoff').value,coverage_start:$('regularizationStart').value||null,coverage_end:$('regularizationEnd').value||null,reason:$('regularizationReason').value,emitted_source:'erp3'});const changed=(result.entity.lines||[]).filter(l=>String(l.difference_cents)!=='0');$('regularizationResult').innerHTML='<div class="budgetMetrics"><div class="budgetMetric"><span>Cargos</span><strong>'+moneyLabel(result.entity.summary.charge_cents)+'</strong></div><div class="budgetMetric"><span>Abonos</span><strong>'+moneyLabel(result.entity.summary.credit_cents)+'</strong></div><div class="budgetMetric"><span>Diferencias</span><strong>'+changed.length+'</strong></div></div><div class="budgetTableWrap"><table class="budgetResultTable"><thead><tr><th>Propiedad</th><th>Periodo</th><th>Correspondia</th><th>Emitido neto</th><th>Diferencia</th></tr></thead><tbody>'+changed.slice(0,500).map(l=>'<tr><td>'+html(String(l.property_id))+'</td><td>'+html(l.period_key)+'</td><td>'+moneyLabel(l.due_cents)+'</td><td>'+moneyLabel(l.net_emitted_cents)+'</td><td>'+budgetDifference(l.difference_cents)+'</td></tr>').join('')+'</tbody></table></div><p class="muted">La propuesta no modifica recibos anteriores ni emite cargos.</p>'+(budgetCan('puede_aprobar')?'<button class="green" id="regularizationApprove">Aprobar propuesta</button>':'<p class="muted">Pendiente de aprobacion por un usuario autorizado.</p>');if($('regularizationApprove'))$('regularizationApprove').onclick=async()=>{await budgetCommand('erp2.regularization.approve',{id_regularizacion:result.entity.id_regularizacion,confirm_pending_recipients:true});await loadBudgetData();};}catch(error){alert(error.message);}}
     function bindBudgetPanel(){const root=$('cards');root.querySelector('#budgetCommunity')?.addEventListener('change',e=>{budgetData.communityId=Number(e.target.value);budgetData.selected=null;loadBudgetData();});root.querySelector('#budgetReload')?.addEventListener('click',()=>loadBudgetData());root.querySelectorAll('[data-budget-section]').forEach(b=>b.onclick=()=>{budgetData.section=b.dataset.budgetSection;budgetData.selected=null;budgetData.simulation=null;render();});root.querySelectorAll('[data-budget-id]').forEach(b=>b.onclick=async()=>{const result=await budgetQuery('erp2.budget.get',{id_presupuesto:Number(b.dataset.budgetId)});budgetData.selected=result.entity;budgetData.draft=budgetDetailToDraft(result.entity);budgetData.simulation=result.entity.simulation?.id_simulacion?(await budgetQuery('erp2.simulation.get',{id_simulacion:result.entity.simulation.id_simulacion})).entity:null;render();});
       root.querySelector('#budgetCreateOpen')?.addEventListener('click',()=>budgetCreateForm('new'));root.querySelector('#budgetCopyOpen')?.addEventListener('click',()=>budgetCreateForm('copy'));root.querySelector('#budgetImportOpen')?.addEventListener('click',()=>budgetCreateForm('import'));root.querySelector('#budgetSave')?.addEventListener('click',budgetSave);root.querySelector('#budgetSimulate')?.addEventListener('click',budgetSimulate);root.querySelector('#budgetCompare')?.addEventListener('click',budgetCompare);root.querySelector('#budgetPropose')?.addEventListener('click',budgetPropose);root.querySelector('#budgetApprove')?.addEventListener('click',budgetApprove);root.querySelector('#budgetClose')?.addEventListener('click',async()=>{if(confirm('Cerrar este presupuesto aprobado?')){await budgetCommand('erp2.budget.close',{id_presupuesto:budgetData.selected.id_presupuesto,date:new Date().toISOString().slice(0,10),reason:'Cierre confirmado'});await loadBudgetData();}});
       root.querySelector('#budgetAddChapter')?.addEventListener('click',()=>{budgetData.draft.chapters.push(budgetNewChapter());render();});root.querySelectorAll('[data-budget-add-item]').forEach(b=>b.onclick=()=>{budgetData.draft.chapters[Number(b.closest('[data-budget-chapter]').dataset.budgetChapter)].items.push(budgetNewItem());render();});root.querySelectorAll('[data-budget-add-assignment]').forEach(b=>b.onclick=()=>{const [ci,ii]=b.closest('[data-budget-item]').dataset.budgetItem.split(':').map(Number);budgetData.draft.chapters[ci].items[ii].assignments.push(budgetNewAssignment());render();});root.querySelectorAll('[data-budget-add-exclusion]').forEach(b=>b.onclick=()=>{const [ci,ii]=b.closest('[data-budget-item]').dataset.budgetItem.split(':').map(Number);budgetData.draft.chapters[ci].items[ii].exclusions.push({property_id:budgetData.references?.properties?.[0]?.id_propiedad||'',reason:''});render();});root.querySelectorAll('[data-budget-remove-chapter]').forEach(b=>b.onclick=()=>{budgetData.draft.chapters.splice(Number(b.closest('[data-budget-chapter]').dataset.budgetChapter),1);render();});root.querySelectorAll('[data-budget-remove-item]').forEach(b=>b.onclick=()=>{const [ci,ii]=b.closest('[data-budget-item]').dataset.budgetItem.split(':').map(Number);budgetData.draft.chapters[ci].items.splice(ii,1);render();});root.querySelectorAll('[data-budget-remove-assignment]').forEach(b=>b.onclick=()=>{const [ci,ii,ai]=b.closest('[data-budget-assignment]').dataset.budgetAssignment.split(':').map(Number);budgetData.draft.chapters[ci].items[ii].assignments.splice(ai,1);render();});root.querySelectorAll('[data-budget-remove-exclusion]').forEach(b=>b.onclick=()=>{const [ci,ii,ei]=b.closest('[data-budget-exclusion]').dataset.budgetExclusion.split(':').map(Number);budgetData.draft.chapters[ci].items[ii].exclusions.splice(ei,1);render();});root.querySelectorAll('[data-budget-explain]').forEach(b=>b.onclick=()=>budgetExplain(Number(b.dataset.budgetExplain)));
@@ -12368,6 +12086,12 @@ function homePage() {
 
     function bindMasterDataPanel() {
       const root=$('cards');
+      if (masterData.communityId && ['properties','owners','community'].includes(masterData.section)) {
+        const financialLink=document.createElement('button');financialLink.type='button';financialLink.textContent='Recibos y deuda';
+        const property=masterData.section==='properties'?masterData.property:null,owner=masterData.section==='owners'?masterData.owner:null;
+        financialLink.onclick=()=>receivablesUI.open(masterData.communityId,property?{property_id:property.id_propiedad}:owner?{owner_id:owner.id_propietario}:{},property?.codigo_propiedad||owner?.nombre||'Comunidad');
+        (root.querySelector('.masterToolbar')||root).append(financialLink);
+      }
       root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.onboarding={kind:masterData.onboarding.kind,upload:null,preview:null,message:''};masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
       root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
       root.querySelectorAll('[data-onboarding-kind]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding={kind:button.dataset.onboardingKind,upload:null,preview:null,message:''};render();}));
@@ -12499,11 +12223,19 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin", "master-data", "budgets"].includes(currentView);
+      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin", "master-data", "budgets", "receivables"].includes(currentView);
       $("copilotFab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol));
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
+      if (currentView === 'receivables') {
+        $('contentTitle').textContent='Ingresos y recibos';
+        $('contentSubtitle').textContent='';
+        $('visibleCount').textContent='';
+        $('viewActions').classList.add('hidden');
+        receivablesUI.render();
+        return;
+      }
       if (currentView === "home") {
         $("contentTitle").textContent = "Inicio";
         $("contentSubtitle").textContent = "Situación operativa y prioridades del día.";
@@ -14390,6 +14122,7 @@ function homePage() {
         $("aiTab").classList.toggle("hidden", user.rol === "Presidente");
         $("masterDataTab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes(user.rol));
         $("budgetTab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario", "Consulta"].includes(user.rol));
+        $('receivablesTab').classList.toggle('hidden',!['Superusuario','Administrador','Usuario','Consulta'].includes(user.rol));
         $("reportsTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
         $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
@@ -14445,6 +14178,7 @@ function homePage() {
       if (view === "admin" && !adminData.loaded) loadAdmin();
       if (view === "master-data" && !masterData.loaded) loadMasterData();
       if (view === "budgets" && !budgetData.loaded) loadBudgetData();
+      if (view === 'receivables') receivablesUI.ensure();
       if (view === "security" && (securityData.access || {}).can_manage && !securityData.overview) loadSecurityData();
     }
 
@@ -14461,6 +14195,7 @@ function homePage() {
     $("documentsTab").addEventListener("click", () => switchView("documents"));
     $("masterDataTab").addEventListener("click", () => switchView("master-data"));
     $("budgetTab").addEventListener("click", () => switchView("budgets"));
+    $('receivablesTab').addEventListener('click',()=>switchView('receivables'));
     $("reportsTab").addEventListener("click", () => switchView("reports"));
     $("importTab").addEventListener("click", () => switchView("imports"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));
@@ -15503,6 +15238,7 @@ finally:
     const result=await runErpContract(session,"command",{command:"erp1.onboarding.preview",id_comunidad:communityId,payload:{tipo:kind,hash_archivo:token.slice(0,64),nombre_archivo:body.filename||token,ruta_privada:path.relative(dataDir,stored),hoja:parsed.sheet,cabeceras:parsed.headers,mapeo:mapping,opciones:body.opciones||{},filas:rows},idempotency_key:crypto.randomUUID(),expected_version:null,reason:"Configuracion inicial revisada desde Excel",origin:"importer",evidence:{type:"onboarding_file",id:token.slice(0,64)}});
     return sendJson(res,200,result);
   }
+  if (await receivablesImportHttp(req,res,url,{readSession,runErpContract,readRawBody,readBody,sendJson,readWorkbook:readOnboardingWorkbook,uploadsDir,dataDir})) return;
   if (req.method === "GET" && url.pathname === "/api/erp/query") {
     const session = readSession(req);
     let filters = {};

@@ -7,6 +7,7 @@ from .contracts import canonical_json
 from .errors import ConflictError, ContractError
 from .receivables_contracts import cents, day, fingerprint, identity, known_time, require_fields, text
 from .receivables_projection import collection_balance, credit_balance, receipt_balance, validate_timeline, responsibility_balance, original_responsibility, subject_group
+from .receivables_projection import collection_payer
 
 
 class AdjustmentOperations:
@@ -117,7 +118,8 @@ class AdjustmentOperations:
         row=self._entity(conn,'erp_cobros' if is_cash else 'erp_creditos',community,p[key])
         balance=(collection_balance if is_cash else credit_balance)(conn,community,row['id'],effective)
         if amount>int(balance['available_cents']):raise ConflictError('El reintegro supera el saldo disponible.')
-        owner=row['payer_owner_id'] if is_cash else row['owner_id']; person=row['payer_person_id'] if is_cash else row['person_id']
+        payer=collection_payer(conn,community,row['id'],effective) if is_cash else None
+        owner=payer['payer_owner_id'] if is_cash else row['owner_id']; person=payer['payer_person_id'] if is_cash else row['person_id']
         if (owner and (beneficiary['type']!='owner' or beneficiary['id']!=owner)) or (person and (beneficiary['type']!='person' or beneficiary['id']!=person)):
             raise ContractError('El beneficiario no coincide con el titular acreditado del saldo.')
         if not owner and not person:raise ConflictError('Acredita el titular del cobro antes de reintegrarlo.')
