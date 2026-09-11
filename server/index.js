@@ -11947,7 +11947,7 @@ function homePage() {
       const history=(masterData.imports||[]).map(row=>'<div class="masterRow"><strong>'+html(row.nombre_archivo)+'</strong><span>'+html(row.tipo)+' · '+html(row.estado)+' · '+row.filas_validas+' preparadas'+(row.incidencias?' · '+row.incidencias+' incidencias':'')+'</span></div>').join('');
       const mapping=upload?upload.headers.map(header=>{
         const examples=(upload.sample||[]).map(row=>safe(row[header])).filter(Boolean).slice(0,3);
-        return '<label><strong>'+html(header)+'</strong><span class="onboardingSample">'+html(examples.join(' / ')||'Sin valores en la muestra')+'</span><select class="masterOnboardingMap" data-header="'+html(header)+'">'+masterOnboardingOptions(kind,flow.mapping?.[header]??upload.suggestions?.[header]??'')+'</select></label>';
+        return '<label><strong>'+html(header)+'</strong><span class="onboardingSample">'+html(examples.join(' / ')||'Sin valores en la muestra')+'</span><select class="masterOnboardingMap" data-header="'+html(header)+'">'+masterOnboardingOptions(kind,flow.mapping?.[header]??upload.suggestions?.[header]??'')+'</select>'+(kind==='propiedades'&&/coef/i.test(header)?'<button type="button" data-onboarding-new-group="'+html(header)+'">Crear grupo para este coeficiente</button>':'')+'</label>';
       }).join(''):'';
       const propertyFile=upload?.headers.some(header=>['propiedad','codigo propiedad','codigo de propiedad','inmueble','finca'].includes(safe(header).toLowerCase().trim()));
       return '<div class="masterLayout onboardingLayout"><section class="masterPane"><div class="contentHead"><div><h3>Configuracion inicial</h3><p class="muted">Importa primero propietarios y despues propiedades. Cada paso se revisa antes de guardar.</p></div>'+masterInfo('Las coincidencias dudosas nunca se fusionan automaticamente.')+'</div>'+
@@ -11959,9 +11959,15 @@ function homePage() {
         (kind==='propietarios'&&propertyFile?'<div class="masterQualityNotice">Este archivo tambien contiene propiedades. Para importar sus coeficientes, utiliza el paso Propiedades, una vez registrados los propietarios. <button id="masterOnboardingAsProperties" type="button">Analizar como propiedades</button></div>':'')+
         '<p class="muted">'+(kind==='propietarios'?'Obligatorios: codigo de propietario y nombre.':'Obligatorios: propiedad y nombre o codigo del propietario existente. Revisa la vinculacion propuesta. Relaciona cada coeficiente con su grupo de reparto.')+'</p>'+
         (upload.sheets.length>1?'<label>Hoja<select id="masterOnboardingSheet">'+upload.sheets.map(name=>'<option'+(name===upload.sheet?' selected':'')+'>'+html(name)+'</option>').join('')+'</select></label>':'')+
-        '<div class="onboardingMap">'+mapping+'</div>'+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+html(flow.effectiveDate||new Date().toISOString().slice(0,10))+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+
+        (kind==='propiedades'&&!(masterData.groups||[]).length?'<p class="masterQualityNotice">Esta comunidad todavia no tiene grupos de reparto. Crea el grupo para poder relacionar la columna de coeficientes.</p>':'')+
+        '<div class="onboardingMap">'+mapping+'</div>'+masterOnboardingGroupFormHtml()+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+html(flow.effectiveDate||new Date().toISOString().slice(0,10))+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+
         '<button class="green" id="masterOnboardingPreview">Revisar antes de guardar</button>'+masterOnboardingPreviewHtml()+'</section>':'')+
         '</section><aside class="masterPane"><h3>Importaciones recientes</h3>'+(history||'<div class="empty">Todavia no hay importaciones de configuracion.</div>')+'</aside></div>';
+    }
+
+    function masterOnboardingGroupFormHtml(){
+      const draft=masterData.onboarding.groupDraft;if(!draft)return '';
+      return '<form id="onboardingGroupForm" class="masterSection masterForm"><h3>Crear grupo de reparto</h3><p class="muted">Columna: '+html(draft.header)+'. Se creara un grupo vacio en esta comunidad. Las propiedades y coeficientes se incorporaran al confirmar la importacion.</p><label>Nombre<input name="nombre" required value="'+html(draft.name)+'"></label><div class="masterFormGrid"><label>Total esperado (%)<input name="suma" required inputmode="decimal" value="'+html(draft.total)+'"></label><label>Vigente desde<input name="fecha" type="date" required value="'+html(draft.date)+'"></label></div><p class="muted">Participacion por porcentaje. Los valores deben sumar el total indicado; no se normalizaran automaticamente.</p><p class="dangerText" role="alert">'+html(draft.error||'')+'</p><div class="toolbar"><button class="green" type="submit"'+(draft.busy?' disabled':'')+'>Crear y usar grupo</button><button id="onboardingGroupCancel" type="button"'+(draft.busy?' disabled':'')+'>Cancelar</button></div></form>';
     }
 
     function masterPropertyForm(row = {}) {
@@ -12241,7 +12247,7 @@ function homePage() {
       const flow=masterData.onboarding,communityId=masterData.communityId;
       if(flow.busy)return;
       const file=$('cards').querySelector('#masterOnboardingFile')?.files?.[0]||flow.file;
-      flow.error=false;flow.preview=null;flow.upload=null;flow.mapping={};flow.reviewToken=null;flow.ownerChoices={};flow.ownerLabels={};flow.choicesDirty=false;flow.reviewPage=0;
+      flow.error=false;flow.preview=null;flow.upload=null;flow.mapping={};flow.reviewToken=null;flow.ownerChoices={};flow.ownerLabels={};flow.choicesDirty=false;flow.reviewPage=0;flow.groupDraft=null;
       const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),60000);
       try{
         if(!file)throw new Error('Selecciona un archivo .xlsx o .csv.');
@@ -12292,6 +12298,36 @@ function homePage() {
       root.querySelector('#masterOnboardingSheet')?.addEventListener('change',event=>masterUploadOnboarding(event.target.value));
       root.querySelector('#masterOnboardingPreview')?.addEventListener('click',masterPreviewOnboarding);
       root.querySelector('#masterOnboardingRecheck')?.addEventListener('click',masterPreviewOnboarding);
+      root.querySelectorAll('[data-onboarding-new-group]').forEach(button=>button.addEventListener('click',()=>{
+        const flow=masterData.onboarding;flow.effectiveDate=root.querySelector('#masterOnboardingDate')?.value||flow.effectiveDate||new Date().toISOString().slice(0,10);
+        flow.groupDraft={header:button.dataset.onboardingNewGroup,name:'General',total:'100',date:flow.effectiveDate};render();$('cards').querySelector('#onboardingGroupForm')?.scrollIntoView({block:'start'});
+      }));
+      root.querySelector('#onboardingGroupCancel')?.addEventListener('click',()=>{masterData.onboarding.groupDraft=null;render();});
+      root.querySelectorAll('#onboardingGroupForm input').forEach(input=>{input.readOnly=Boolean(masterData.onboarding.groupDraft?.busy||masterData.onboarding.groupDraft?.createdId);});
+      if(masterData.onboarding.groupDraft?.createdId){const submit=root.querySelector('#onboardingGroupForm button[type="submit"]');if(submit)submit.textContent='Reintentar vinculacion del grupo creado';}
+      root.querySelector('#onboardingGroupForm')?.addEventListener('submit',async event=>{
+        event.preventDefault();const flow=masterData.onboarding,draft=flow.groupDraft,communityId=masterData.communityId;if(!draft||draft.busy)return;
+        const fields=new FormData(event.target);if(!draft.createdId){draft.name=String(fields.get('nombre')||'').trim();draft.total=String(fields.get('suma')||'').trim();draft.date=String(fields.get('fecha')||'');}draft.error='';draft.busy=true;
+        const norm=value=>safe(value).normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').trim().toUpperCase().replace(/\\s+/g,' ');
+        const code=norm(draft.name).replace(/[^A-Z0-9]+/g,'_').slice(0,60);
+        render();
+        try{
+          if(!code)throw new Error('Indica un nombre valido.');
+          if(!draft.createdId){
+            const latest=await erpQuery('erp1.group.list');if(masterData.onboarding!==flow||masterData.communityId!==communityId||flow.groupDraft!==draft)return;
+            masterData.groups=latest.items||[];
+            const existing=masterData.groups.find(g=>norm(g.nombre)===norm(draft.name)||norm(g.codigo)===code||(code==='GENERAL'&&g.codigo==='LEGACY_GENERAL'));
+            if(existing)throw new Error('Ya existe el grupo "'+existing.nombre+'". Cancela y selecciona ese grupo en la columna; si requiere revision, gestionarlo desde Coeficientes y grupos.');
+            const payload={codigo:code,nombre:draft.name,finalidad:'Grupo configurado desde la importacion de propiedades',estado:'activo',base:'porcentaje',suma_esperada_decimal:draft.total,efectiva_desde:draft.date};
+            const signature=JSON.stringify(payload);if(signature!==draft.signature){draft.signature=signature;draft.key=crypto.randomUUID?crypto.randomUUID():String(Date.now())+'-'+Math.random();}
+            const created=await api('/api/erp/command',{method:'POST',body:JSON.stringify({command:'erp1.group.save',id_comunidad:communityId,payload,idempotency_key:draft.key,expected_version:null,reason:'Crear grupo revisado durante importacion',origin:'web',evidence:null})});draft.createdId=created.entity.id_grupo;
+          }
+          if(masterData.onboarding!==flow||masterData.communityId!==communityId||flow.groupDraft!==draft)return;
+          const latest=await erpQuery('erp1.group.list');if(masterData.onboarding!==flow||masterData.communityId!==communityId||flow.groupDraft!==draft)return;
+          masterData.groups=latest.items||[];flow.mapping={...flow.mapping,[draft.header]:'coeficiente_grupo:'+draft.createdId};flow.preview=null;flow.reviewToken=null;flow.groupDraft=null;flow.message='Grupo creado y vinculado a la columna. Revisa la importacion antes de guardar las propiedades.';
+        }catch(error){draft.error=error.message;}finally{draft.busy=false;}
+        if(masterData.onboarding!==flow||masterData.communityId!==communityId||currentView!=='master-data')return;render();$('cards').querySelector(flow.groupDraft?'#onboardingGroupForm':'#masterOnboardingResult')?.scrollIntoView({block:'start'});
+      });
       root.querySelector('#onboardingOnlyIssues')?.addEventListener('change',event=>{masterData.onboarding.reviewOnlyIssues=event.target.checked;masterData.onboarding.reviewPage=0;render();$('cards').querySelector('.onboardingPreview')?.scrollIntoView({block:'start'});});
       root.querySelectorAll('[data-onboarding-page]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding.reviewPage=Number(button.dataset.onboardingPage);render();$('cards').querySelector('.onboardingPreview')?.scrollIntoView({block:'start'});}));
       root.querySelectorAll('.onboardingOwnerPicker').forEach(picker=>{
