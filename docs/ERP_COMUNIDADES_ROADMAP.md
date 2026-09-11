@@ -8,6 +8,8 @@ El modulo 06 queda cerrado por aceptacion expresa del usuario para su alcance op
 
 La linea de diseno se conserva en este roadmap, el [modelo maestro](ERP_MODELO_DATOS_MAESTROS.md) y [titularidades y reparto](ERP_TITULARIDADES_COEFICIENTES_REPARTO.md). La evidencia de implantacion se registra separadamente en [ERP 0](ERP_00_FUNDAMENTOS_IMPLEMENTACION.md) y [ERP 1](ERP_01_DATOS_MAESTROS_IMPLEMENTACION.md).
 
+Referencia transversal de producto: [hallazgos verificados de Gesfincas, Terranet, Fynkus y Netfincas](ERP_REFERENCIAS_SECTOR_UX.md), 11/09/2026. Consultar sus ajustes A1-A6 antes de ampliar el recorrido financiero y sus criterios P1-P8 al preparar ERP 3-7. Son recomendaciones pendientes, no nuevos dominios ni cambios aprobados de reglas. La investigacion no modifica porcentajes ni certificaciones; el rediseño general queda separado de la consolidacion inmediata.
+
 ## Medicion y estados
 
 Estados permitidos: PENDIENTE, ANÁLISIS, DESARROLLO, PRUEBAS, BLOQUEADO, COMPLETADO.
@@ -63,10 +65,11 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 - Dependencias: 0, 1, 2; contrato contable de 6 previo a puesta en servicio.
 - Componentes: emision, obligados y documento de cargo, imputaciones parciales, cobros no asignados, devoluciones, abonos, baja/incobrable documentada, ajustes y trazabilidad.
 - Reutiliza: `cf_recibos`, `cf_movimientos_deuda`, referencias y fechas originales de importacion.
-- Estado inicial: PENDIENTE. Implantacion certificada: 0%.
-- Aceptacion: saldo reconstruible a una fecha; pago parcial y devolucion reversible con contramovimiento; titular actual no sustituye al deudor historico; ninguna reduccion sin evento/motivo; duplicado de importacion no genera cobro nuevo.
+- Estado de implantacion: PENDIENTE, listo para implementacion con Sol. Diseno funcional/tecnico/UX: CERRADO, 100%; D1-D6 ratificadas expresamente el 11/09/2026 e incorporadas al [contrato ERP 3](ERP_03_RECIBOS_COBROS_DEUDA.md). Implantacion certificada: 0%; aceptacion funcional no ejecutada. ERP 2 tiene contratos suficientes como origen. La secuencia 3A-3D conserva los cuatro hitos de 25 puntos, sin conceder avance por documentacion. No se inicia desarrollo en esta entrega.
+- Aceptacion: saldo reconstruible a fecha efectiva y conocimiento; pago parcial N:M y devolucion con contramovimiento; titular actual no sustituye al obligado historico; ninguna reduccion sin evento/motivo; duplicado de importacion no genera cobro nuevo; apertura y recibos detallados no se cuentan dos veces; ajustes ERP 2 aprobados/materializados se descuentan una sola vez.
 - Riesgos: saldo importado no prueba todos sus movimientos historicos; deuda de propiedad no equivale a deuda de titular actual.
-- Decisiones pendientes: obligados del recibo y tratamiento documentado de transmisiones e incobrables. ERP 2 define destinatario operativo explicito en copropiedad sin dividir cuotas; esa eleccion no decide responsabilidad juridica ni mueve deuda.
+- Decisiones cerradas: D1 cargo unico por propiedad/concepto/periodo, uno o varios obligados sin division por porcentaje de dominio; D2 exceso cobrado sin aplicacion automatica; D3 imputacion asistida con confirmacion humana; D4 gastos configurables por comunidad (no repercutir/coste real/fijo) mediante cargo separado; D5 anulacion con historico solo sin movimientos economicos posteriores, resto por rectificacion; D6 incobrable conserva deuda y traslado excepcional explicito, documentado, autorizado y auditado. Titularidad, obligado y pagador permanecen separados.
+- Decisiones funcionales bloqueantes: ninguna para implementar el alcance ratificado. Division especifica futura requiere regla expresa y no se activa ahora; automatizacion economica ERP 5 y contabilidad definitiva ERP 6 siguen fuera de alcance. No reabrir fecha efectiva de emision, no prorrateo ni destinatario operativo de ERP 2. Antes de activar datos reales: asignar usuarios/capacidades, politica de gastos y comunidad/cobertura/corte rector Netfincas. Son configuraciones/puertas de puesta en servicio, no diseno pendiente. Implementacion requiere autorizacion posterior.
 
 ## ERP 4 - Domiciliaciones, SEPA y remesas
 
@@ -144,4 +147,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-ERP 2 completado con 100% certificado y revision UX/onboarding previa superada. El siguiente paso es disenar ERP 3 - Recibos, cobros y deuda, manteniendo como entrada inmutable los planes y cuotas explicables de ERP 2. No iniciar recibos, SEPA ni contabilidad definitiva sin autorizacion expresa.
+ERP 2 completado con 100% certificado y revision UX/onboarding previa superada. Diseno ERP 3 cerrado al 100%, [D1-D6 incorporadas](ERP_03_RECIBOS_COBROS_DEUDA.md#12-decisiones-materiales-ratificadas) y coherencia ERP 0/1/2 comprobada documentalmente. Siguiente paso: autorizar a Sol la implementacion ERP 3A conforme al contrato cerrado, con checkpoint, backup y migracion sobre copia. Implantacion ERP 3 continua al 0% hasta evidencia. Mantener planes/cuotas explicables de ERP 2 como origen inmutable. No iniciar recibos, SEPA ni contabilidad definitiva en esta ejecucion documental.
