@@ -8,13 +8,13 @@ Dependencia economica: [cierre ERP 3](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION
 
 ## Estado verificable
 
-DESARROLLO. Diseno 100%. Implementacion parcial; aceptacion funcional completa pendiente.
+DESARROLLO. Diseno 100%. Implementacion **25% certificado**; aceptacion funcional completa pendiente.
 No publicado. No hay rutas, dispatcher ni interfaz ERP 4 activos.
 No se han tratado datos bancarios reales ni migrado produccion.
 
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
-| 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones; restauracion de checkpoint en comprobacion | Pendiente de prueba final de restauracion |
+| 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
 | 4B Servicios deterministas | Cuentas, mandatos, domiciliaciones y reservas parciales; faltan XML/resultados y servicios detallados abajo | Sin puntos |
 | 4C Recorrido integrado | No implementado | Sin puntos |
 | 4D Aceptacion y publicacion | No implementado; 28 pruebas del nucleo no equivalen a los 50 casos del contrato | Sin puntos |
@@ -100,7 +100,15 @@ No hay nueva decision funcional material que requiera al usuario. Configuracione
 
 `scripts/verify-erp4-checkpoint.py` archiva el commit, genera backup mediante ERP 0 y lo restaura aisladamente. Verifica todos los hashes de tablas, integridad/FK y descifrado usando el codigo restaurado y una copia independiente de la clave de pruebas. La clave no entra en el archivo de aplicacion. La prueba requiere un fixture sintetico con secretos, nunca una base productiva.
 
-Evidencia final de esta comprobacion: pendiente de registrar tras ejecutar el checkpoint.
+Comprobacion final superada con codigo `6a6363ddc515fb5022e09af3d8a6d0c8a2283e42`:
+
+- Backup: `backups/erp4-progress-foundations-20260911/erp0-backup-20260911-204659`.
+- Restauracion: `%TEMP%/organizador-erp0-restore-v5z1r_8x`.
+- Custodia independiente de la clave sintetica: `%TEMP%/erp4-checkpoint-custody-so6l66y3`.
+- 196 tablas con hashes identicos; integridad y FK correctas; valores descifrados identicos; claves excluidas del archivo de aplicacion.
+- Evidencia mecanica: `erp4-restore-proof.json` dentro del backup. El codigo utilizado para descifrar procede del archivo restaurado, no del working tree.
+- Checkpoint de continuidad: `erp4-progress-foundations-20260911`. Los cambios posteriores al commit de codigo son documentales; no modifican migraciones ni datos.
+- Estos fixtures y sus claves son recuperacion sintetica de prueba, no custodia bancaria productiva. No borrar la copia de clave antes de acabar la validacion; en produccion se necesitara almacenamiento independiente duradero, ACL, retencion y ensayo de perdida del servidor.
 
 ## Publicacion
 
