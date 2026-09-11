@@ -9,9 +9,11 @@ Contrato obligatorio: [ERP 3 ratificado](ERP_03_RECIBOS_COBROS_DEUDA.md). [Roadm
 - Codigo previo `b4ee95a`; contrato ratificado incorporado a Git en `feebc61`.
 - Checkpoint recuperable `erp3-pre-20260911` en `feebc61`.
 - Reanudacion desde `72d4e45`, sin revertir `82eb185`; tag `erp3-resume-20260911`. Checkpoint de esta ampliacion: `erp3-progress-services-20260911` (no es cierre de ERP 3).
+- Commit de servicios: `67c12a3b3f7a56a87858af0eabf66aecf4c6c1db`.
 - Backup Ubuntu valido: `/home/coordinador/apps/organizador-web/backups/erp3-pre-20260911-105917`. SQLite mediante backup API, archivo de codigo/configuracion/documentos y `SHA256SUMS.json`. Restauracion aislada `restore-check.db`, integridad y FKs correctas. Parada breve solo de `organizador-web.service`, reiniciado al terminar; UNO Marbella intacto.
 - Intento previo `erp3-pre-20260911-105815` NO valido para cierre: tar detecto cambios mientras leia `data/`. Se conserva, pero no se usa como checkpoint recuperable.
 - Copia local de trabajo: `%TEMP%/erp3-source-20260911.db`. Cada prueba crea otra copia temporal; nunca modifica esta fuente ni la base del servidor.
+- Backup de verificacion **SINTETICO, NO RESTAURAR EN PRODUCCION**: `C:/Users/EQUIPO/Documents/Codex/ERP3-synthetic-checkpoints/erp0-backup-20260911-140522`. Creado con `erp0-backup.py` desde el codigo del commit de servicios y el fixture ERP 3. `verify-erp0-backup.py --keep` verifica SHA-256, 160 tablas, recuentos, integridad, apertura/migracion del codigo restaurado y sintaxis Node. Restauracion `%TEMP%/organizador-erp0-restore-fin5n7mw`; comprobacion adicional de FK y proyecciones identicas para sus 41 recibos y un credito. No se ejecuta HTTP en ese restore (`runtime_accessible:false`); la regresion HTTP separada si ha pasado. No sustituye el futuro backup productivo de publicacion.
 - Restauracion: verificar checksums del backup valido; preservar operaciones posteriores; restaurar codigo/configuracion/documentos compatibles y base desde backup con servicio detenido. No restaurar datos antiguos solo para deshacer codigo no publicado. Git no sustituye backup de SQLite.
 
 ## Implementacion de dominio
@@ -37,6 +39,7 @@ Los servicios disponibles **estan registrados en el dispatcher allow-listed** y 
 ## Evidencia de pruebas parcial
 
 - `verify-erp3-foundations.py`: 19 pruebas sobre copia; conserva los casos anteriores y anade abono cobrado atomico, desimputacion, tres politicas de gastos, reintegro, staging/reimportacion, atribucion personal, evidencia inexistente, reasignacion 60/40 economica sin usar copropiedad, cobro posterior explicitamente atribuido, devolucion, concurrencia real de dos confirmaciones y rollback de un traslado de varias lineas. No equivalen a los 35 casos completos de aceptacion.
+- Ultima ejecucion de esas 19 pruebas: `%TEMP%/organizador-erp3-foundations-cxnmix__`, 19/19 correctas. `git diff --check` correcto. Servicio Ubuntu consultado en lectura: `organizador-web.service` activo; sin despliegue, reinicio ni cambio productivo en esta ampliacion.
 - `verify-erp3-emission.py`: fixture ERP 2 de 40 viviendas/16 jardines; 40 cargos por 46.704 centimos, detalle congelado, idempotencia y doble obligacion bloqueada. Ademas materializa la regularizacion aprobada del fixture (cargos y creditos), conserva hashes/importes originales y verifica conjuntos disjuntos antes/despues sin aplicar creditos automaticamente. Evidencia `%TEMP%/organizador-erp3-emission-af7ket5y`. No es una prueba web ni una importacion real.
 - `verify-erp2-complete.py`: regresion completa superada con migracion 8, incluidos 40/16, presupuesto inmutable, copia/importacion, derrama, regularizaciones, inquilino/pagador, permisos y restauracion. Fixture `%TEMP%/organizador-erp2-complete-kw6q7x3p`.
 - `verify-erp1-master-data.py`: regresion maestra superada; mantiene su propio alcance certificado de migracion ERP 1. No se usa como prueba de la totalidad de ERP 3.
