@@ -1565,6 +1565,11 @@ MIGRATIONS = (
 )
 
 
+from .receivables_schema import STATEMENTS as RECEIVABLES_STATEMENTS
+
+MIGRATIONS += (Migration(7, "erp3_receivables", RECEIVABLES_STATEMENTS),)
+
+
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (
         version INTEGER PRIMARY KEY,
