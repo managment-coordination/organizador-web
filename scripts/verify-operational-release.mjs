@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -71,6 +72,20 @@ try {
   }
   const rootName = pythonRun("import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute('SELECT nombre FROM usuarios WHERE id_usuario=1').fetchone()[0])",[database]);
   let admin = await login(rootName);
+  const wrongPassword=(await request('/api/login','',{usuario:rootName,password:'incorrect-password'},401)).value;
+  const unknownUser=(await request('/api/login','',{usuario:'Nonexistent-login-fixture',password:'incorrect-password'},401)).value;
+  assert.deepEqual(wrongPassword,unknownUser);
+  assert.equal(wrongPassword.code,'INVALID_CREDENTIALS');
+  assert.equal(wrongPassword.error,'Usuario o contrasena incorrectos.');
+  assert.equal((await request('/api/me','',undefined,401)).value.code,'SESSION_MISSING');
+  assert.equal((await request('/api/me','organizador_web_session=bad.signature',undefined,401)).value.code,'SESSION_INVALID');
+  const originalPayload=JSON.parse(Buffer.from(admin.split('=')[1].split('.')[0],'base64url').toString());
+  const expiredPayload=Buffer.from(JSON.stringify({...originalPayload,exp:1})).toString('base64url');
+  const expiredSignature=crypto.createHmac('sha256',fs.readFileSync(path.join(temp,'files/session_secret'),'utf8').trim()).update(expiredPayload).digest('base64url');
+  const expired=(await request('/api/me','organizador_web_session='+expiredPayload+'.'+expiredSignature,undefined,401)).value;
+  assert.equal(expired.code,'SESSION_EXPIRED');
+  assert.equal(expired.error,'Sesion caducada. Vuelve a entrar con tu usuario.');
+  results.push('Login: incorrect credentials without user enumeration; missing, signed-expired and invalid sessions distinguished');
   const adminAction = async (action,data)=> (await request('/api/admin/action',admin,{action,data})).value;
   const communityA = (await adminAction('save_community',{nombre:'Verification A',activo:true})).id_comunidad;
   const communityB = (await adminAction('save_community',{nombre:'Verification B',activo:true})).id_comunidad;

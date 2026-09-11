@@ -326,13 +326,19 @@ function makeSessionCookie(user) {
 function readSession(req) {
   if (Object.hasOwn(req, "validatedSession")) return req.validatedSession;
   const cookie = parseCookies(req)[sessionCookieName];
+  req.sessionFailure = cookie ? "SESSION_INVALID" : "SESSION_MISSING";
   if (!cookie || !cookie.includes(".")) return null;
   const [payload, signature] = cookie.split(".", 2);
   const expected = signPayload(payload);
   try {
     if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
     const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (!data.exp || data.exp < Math.floor(Date.now() / 1000)) return null;
+    if (!Number.isFinite(data.exp)) return null;
+    if (data.exp <= Math.floor(Date.now() / 1000)) {
+      req.sessionFailure = "SESSION_EXPIRED";
+      return null;
+    }
+    req.sessionFailure = "SESSION_INVALID";
     data.comunidades = Array.isArray(data.comunidades) ? data.comunidades : [];
     data.comunidades_asignadas = Array.isArray(data.comunidades_asignadas) ? data.comunidades_asignadas : data.comunidades;
     data.alcance_comunidades = data.alcance_comunidades || "todas";
@@ -7397,6 +7403,9 @@ function homePage() {
     .historyItem.decision { border-left-color:#b45309; background:#fffbeb; }
     .historyItem.risk { border-left-color:#b91c1c; background:#fff5f5; }
     .historyComment { font-size:14px; }
+    .entityDescription { min-width:0; }
+    .entityDescriptionText { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; margin:8px 0; }
+    .entityDescriptionText.isCompact { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:4; overflow:hidden; }
     .historyNext { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:8px; }
     .attachmentGrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:9px; }
     .attachmentCard { border:1px solid #e2e8f0; border-radius:8px; padding:10px; background:white; display:grid; gap:8px; min-width:0; }
@@ -8619,6 +8628,11 @@ function homePage() {
           </div>
         </div>
         <div class="modalBody">
+          <section class="entityDescription" aria-labelledby="entityDescriptionHeading">
+            <h2 id="entityDescriptionHeading">Descripción general</h2>
+            <p id="entityDescriptionText" class="entityDescriptionText isCompact"></p>
+            <button id="entityDescriptionToggle" class="ghost hidden" type="button" aria-expanded="false" aria-controls="entityDescriptionText">Leer más</button>
+          </section>
           <section class="entityBrief" id="entityBrief"></section>
           <section id="commitmentSection"><h2>Compromisos y decisiones</h2><div id="commitmentList"></div></section>
           <section id="requestSection"><div class="toolbar"><h2>Solicitudes al presidente</h2><button id="newPresidentRequest">Solicitar decision al presidente</button></div>
@@ -9001,11 +9015,19 @@ function homePage() {
         headers,
         credentials: "include",
       });
-      const data = await response.json();
+      let data;
+      try { data = await response.json(); }
+      catch { const error = new Error("Error tecnico del servidor. Vuelve a intentarlo mas tarde."); error.status = response.status; throw error; }
       if (!response.ok) {
+        const authMessages = {
+          INVALID_CREDENTIALS: "Usuario o contrasena incorrectos.",
+          SESSION_EXPIRED: "Sesion caducada. Vuelve a entrar con tu usuario.",
+          SESSION_MISSING: "No se ha recibido tu sesion. Vuelve a entrar con tu usuario.",
+          SESSION_INVALID: "La sesion ya no es valida. Vuelve a entrar con tu usuario.",
+        };
         const message = response.status === 401
-          ? "Sesion caducada o no enviada por el navegador. Vuelve a entrar con tu usuario."
-          : (data.error || "Error de servidor");
+          ? (authMessages[data.code] || (path === "/api/login" ? authMessages.INVALID_CREDENTIALS : authMessages.SESSION_INVALID))
+          : response.status >= 500 ? "Error tecnico del servidor. Vuelve a intentarlo mas tarde." : (data.error || "Error de servidor");
         const error = new Error(message);
         error.status = response.status;
         throw error;
@@ -9464,6 +9486,15 @@ function homePage() {
       generateReport(selectedEntity.type, selectedEntity.id).catch(error=>alert(error.message));
     }
 
+    function updateDescriptionToggle() {
+      const description = $("entityDescriptionText");
+      if (description.getClientRects().length && description.classList.contains("isCompact")) {
+        $("entityDescriptionToggle").classList.toggle("hidden", description.scrollHeight <= description.clientHeight + 1);
+      }
+    }
+
+    new ResizeObserver(updateDescriptionToggle).observe($("entityDescriptionText"));
+
     async function openEntity(type, id, focusRecord = false) {
       $("recordMessage").textContent = "";
       if (state.usuario?.rol !== "Presidente") await loadOptions();
@@ -9473,6 +9504,19 @@ function homePage() {
       }
       selectedEntity = { type, id, item: detail.item, commitments: detail.commitments || [], requests:detail.requests || [], attachments:detail.attachments || [] };
       const item = detail.item;
+      const description = $("entityDescriptionText");
+      const descriptionToggle = $("entityDescriptionToggle");
+      description.textContent = item.descripcion || "Sin descripcion general registrada.";
+      description.classList.add("isCompact");
+      descriptionToggle.classList.add("hidden");
+      descriptionToggle.setAttribute("aria-expanded", "false");
+      descriptionToggle.textContent = "Leer más";
+      descriptionToggle.onclick = () => {
+        const expanded = descriptionToggle.getAttribute("aria-expanded") !== "true";
+        description.classList.toggle("isCompact", !expanded);
+        descriptionToggle.setAttribute("aria-expanded", String(expanded));
+        descriptionToggle.textContent = expanded ? "Leer menos" : "Leer más";
+      };
       $("modalTitle").textContent = itemTitle(item, type);
       $("modalSubtitle").textContent = (type === "project" ? "Proyecto" : "Tarea") + " - " + safe(item.comunidad);
       $("detailGrid").innerHTML =
@@ -9551,6 +9595,7 @@ function homePage() {
       renderAttachments(detail.attachments || []);
       renderEntityReports(detail.reports || [], reportsAllowed);
       $("entityModal").classList.remove("hidden");
+      requestAnimationFrame(updateDescriptionToggle);
       if (writable) {
         const opened = selectedEntity;
         api('/api/ai/followup-draft?type=' + encodeURIComponent(type) + '&id=' + encodeURIComponent(id)).then(result => {
@@ -14151,11 +14196,7 @@ function homePage() {
         refreshFilterOptions();
         render();
       } catch (error) {
-        if (error.status === 401) {
-          showLogin("Introduce tus credenciales.");
-        } else {
-          showLogin(error.message);
-        }
+        showLogin(error.message);
       }
     }
 
@@ -14401,10 +14442,18 @@ function homePage() {
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (url.pathname.startsWith("/api/") && !["/api/login", "/api/auth/users", "/api/auth/first-access"].includes(url.pathname)) {
+    req.authenticating = true;
     req.validatedSession = await refreshSession(req);
+    req.authenticating = false;
     if (!req.validatedSession) {
       clearSessionCookie(res);
-      return sendJson(res, 401, { ok: false, authenticated: false, error: "No autenticado. Vuelve a iniciar sesion." });
+      const code = req.sessionFailure || "SESSION_INVALID";
+      const messages = {
+        SESSION_MISSING: "No se ha recibido tu sesion. Vuelve a entrar con tu usuario.",
+        SESSION_EXPIRED: "Sesion caducada. Vuelve a entrar con tu usuario.",
+        SESSION_INVALID: "La sesion ya no es valida. Vuelve a entrar con tu usuario.",
+      };
+      return sendJson(res, 401, { ok: false, authenticated: false, code, error: messages[code] });
     }
     if (req.validatedSession.rol === "Presidente" && !new Set([
       "/api/me", "/api/logout", "/api/session/community-scope", "/api/security/access",
@@ -14427,17 +14476,18 @@ async function handle(req, res) {
     const body = await readBody(req);
     const usuario = String(body.usuario || "").trim();
     const password = String(body.password || "");
+    req.authenticating = true;
     const auth = await queryUserForLogin(usuario);
     const user = auth.user;
     if (!user || !user.activo || user.bloqueado) {
-      return sendJson(res, 401, { ok: false, error: "Usuario no disponible." });
+      return sendJson(res, 401, { ok: false, code: "INVALID_CREDENTIALS", error: "Usuario o contrasena incorrectos." });
     }
     if (!user.password_configurada || user.requiere_cambio_password) {
-      return sendJson(res, 401, { ok: false, error: "Usa Primer acceso o contrasena reseteada para crear tu contrasena." });
+      return sendJson(res, 401, { ok: false, code: "INVALID_CREDENTIALS", error: "Usuario o contrasena incorrectos." });
     }
     if (!verifyPassword(password, user.password_hash)) {
       await accessEvent(user, "Contrasena incorrecta web", req);
-      return sendJson(res, 401, { ok: false, error: "Contrasena incorrecta." });
+      return sendJson(res, 401, { ok: false, code: "INVALID_CREDENTIALS", error: "Usuario o contrasena incorrectos." });
     }
     const { user: current } = await runAccessCommand({ action: "profile", id_usuario: user.id_usuario });
     const publicUser = {
@@ -15300,7 +15350,9 @@ finally:
 }
 
 const server = http.createServer((req, res) => {
-  handle(req, res).catch((error) => sendError(res, error));
+  handle(req, res).catch((error) => req.authenticating
+    ? sendJson(res, 500, { ok: false, code: "AUTH_UNAVAILABLE", error: "Error tecnico del servidor. Vuelve a intentarlo mas tarde." })
+    : sendError(res, error));
 });
 
 await runAccessCommand({ action: "migrate" });

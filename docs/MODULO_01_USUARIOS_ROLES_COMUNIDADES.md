@@ -448,3 +448,13 @@ Este modulo se considerara estable cuando:
 - Seguridad y Presidente no puedan acceder a modulos no permitidos;
 - haya pruebas tecnicas de acceso por rol;
 - se documente la matriz final de permisos.
+
+## Correccion puntual de mensajes: 11/09/2026
+
+- Checkpoint previo: `fix-login-details-pre-20260911` (`0d97aba`).
+- El cliente sustituia cualquier HTTP 401 por un aviso unico de sesion. Ahora distingue credenciales incorrectas, sesion ausente, caducada y no valida mediante codigos de respuesta.
+- Usuario inexistente, bloqueado/no disponible y contrasena incorrecta reciben el mismo mensaje de credenciales. Se conserva el flujo independiente de Primer acceso.
+- Caducidad solo se identifica despues de verificar la firma. Revocacion y permisos conservan su validacion en servidor. Los fallos tecnicos de autenticacion devuelven 500 generico, sin detalles internos.
+- `verify-operational-release.mjs`: 21 bloques superados sobre copia aislada; incluye autenticacion, permisos, tareas/proyectos y modulo 04.
+- `verify-login-description-ui.mjs`: pruebas HTTP de fallo tecnico real en almacenamiento aislado y mensajes en navegador a 1440/390 px, incluido servidor con respuesta no JSON.
+- Sin migracion ni cambio de datos de produccion. Cambios locales, no publicados: la peticion conjunta contiene una contradiccion funcional en el modulo 04 pendiente de ratificacion.

@@ -125,6 +125,15 @@ Las cinco reglas anteriores fueron confirmadas por el usuario mediante respuesta
 - No se ha modificado UNO Marbella, su servicio ni sus datos.
 - Siguiente modulo: 03, Trabajo Hoy/mapa/dashboard; empezar con preguntas, sin nueva implementacion automatica.
 
+## Correccion puntual de ficha: 11/09/2026
+
+- Checkpoint previo `fix-login-details-pre-20260911` (`0d97aba`). La API ya entregaba `descripcion`, pero no se representaba en la cabecera de consulta.
+- Se muestra Descripcion general al inicio de la ficha de tareas y proyectos. Hasta cuatro lineas visibles; solo si el texto desborda se ofrece Leer mas / Leer menos, conservando el texto completo sin resumen generado.
+- El control se adapta a cambios de ancho/orientacion y expone su estado de expansion para accesibilidad. Seguimientos, comentarios, historicos y proximos pasos no cambian ni se compactan.
+- Validacion: `verify-login-description-ui.mjs`, escritorio 1440 px y movil 390 px, descripcion corta/larga, expansion, cambio de ancho y texto operativo integro; regresion `verify-operational-release.mjs` (21 bloques).
+- Sin migracion ni cambios de dominio. No publicado todavia.
+- Pendiente de decision del usuario: [modulo 04](MODULO_04_NOTIFICACIONES_PRESIDENCIA.md) exige una solicitud explicita y prohibe generarla por seleccionar Presidente. Se ha solicitado confirmar la sustitucion de ese acuerdo por la automatizacion propuesta; no se ha cambiado silenciosamente ni se ha creado una logica paralela.
+
 ### Recuperacion
 
 Antes de revertir, detener solo `organizador-web.service`, crear otro respaldo del estado mas reciente y comprobar si existen entradas posteriores a esta entrega. Restaurar codigo y base como un conjunto coherente desde el respaldo anterior, verificando los hashes y la integridad SQLite; despues arrancar y ejecutar la verificacion de solo lectura. No restaurar una base antigua sobre trabajo posterior sin reconciliarlo con el usuario. `data/` y `backups/` no se borran en las actualizaciones.
