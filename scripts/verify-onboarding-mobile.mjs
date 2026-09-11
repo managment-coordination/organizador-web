@@ -52,7 +52,8 @@ try {
     await page.locator('.masterOnboardingMap').first().waitFor();
     assert.equal(await page.locator('.masterOnboardingMap').first().inputValue(),'codigo_propiedad');
     // A name must not silently become an owner code. Missing mappings remain explicit.
-    assert.equal(await page.locator('.masterOnboardingMap').nth(1).inputValue(),'');
+    assert.equal(await page.locator('.masterOnboardingMap').nth(1).inputValue(),'nombre_propietario');
+    await page.locator('.masterOnboardingMap').nth(1).selectOption('');
     await page.locator('.masterOnboardingMap').nth(2).selectOption('descripcion');
     await page.locator('#masterOnboardingPreview').click();
     await page.locator('#masterOnboardingMessage[role="alert"]').waitFor();
@@ -74,6 +75,62 @@ try {
     await page.locator('#masterOnboardingFile').setInputFiles({name:'exportacion.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer});
     await page.locator('#masterOnboardingUpload').click();
     await page.locator('#masterOnboardingResult').waitFor();
+    const community=Number(await page.locator('#masterCommunity').inputValue());
+    async function command(name,payload){
+      const response=await context.request.post(base+'/api/erp/command',{data:{command:name,id_comunidad:community,payload,expected_version:null,idempotency_key:crypto.randomUUID(),reason:'Synthetic name-import UI test',origin:'test',evidence:null}});
+      const result=await response.json();assert.equal(response.status(),200,JSON.stringify(result));return result.entity;
+    }
+    const suffix=width+'-'+Date.now();
+    const primary=await command('erp1.owner.save',{nombre:'Propietario prueba '+suffix});
+    const ambiguous=await command('erp1.owner.save',{nombre:'Homonimo prueba '+suffix});
+    await command('erp1.owner.save',{nombre:ambiguous.nombre});
+    const group=await command('erp1.group.save',{codigo:'NAMES-'+suffix,nombre:'General prueba '+suffix,estado:'activo',base:'porcentaje',suma_esperada_decimal:'100',efectiva_desde:'2026-01-01'});
+    await page.locator('[data-master-section="setup"]').click();
+    await page.locator('#masterOnboardingUpload').waitFor();
+    const namesBook=new ExcelJS.Workbook(),namesSheet=namesBook.addWorksheet('Hoja1');
+    namesSheet.addRow(['PROPIEDAD','PROPIETARIO','COEFICIENTE']);
+    for(let i=0;i<40;i++)namesSheet.addRow(['NAM-'+suffix+'-'+i,i===38?'Nombre mal transcrito '+suffix:i===39?ambiguous.nombre:primary.nombre.toUpperCase(),'2,5']);
+    const namesBuffer=Buffer.from(await namesBook.xlsx.writeBuffer());
+    await page.locator('#masterOnboardingFile').setInputFiles({name:'listado-nombres.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:namesBuffer});
+    await page.locator('#masterOnboardingUpload').click();
+    await page.locator('.masterOnboardingMap').nth(2).waitFor();
+    await page.locator('.masterOnboardingMap').nth(2).selectOption('coeficiente_grupo:'+group.id_grupo);
+    await page.locator('#masterOnboardingPreview').click();
+    await page.locator('[data-owner-row="40"]').waitFor();
+    assert.equal(await page.locator('#masterOnboardingConfirm').count(),0);
+    const missing=page.locator('[data-owner-row="40"]');
+    await missing.locator('input').fill(primary.nombre);
+    await missing.locator('button').click();
+    await missing.locator('option[value="'+primary.id_propietario+'"]').waitFor({state:'attached'});
+    await missing.locator('select').selectOption(String(primary.id_propietario));
+    await page.locator('[data-owner-row="41"] select').selectOption(String(ambiguous.id_propietario));
+    await page.locator('#masterOnboardingRecheck').click();
+    await page.locator('#masterOnboardingConfirm').waitFor();
+    assert.equal(await page.locator('.onboardingReviewTable tbody tr').count(),40);
+    const reviewBounds=await page.locator('.onboardingReviewTable,.masterPane').evaluateAll(ns=>ns.map(n=>({left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right})));
+    assert.ok(reviewBounds.every(b=>b.left>=-1&&b.right<=width+1),'Name review clipped');
+    await page.screenshot({path:path.join(output,`${width}-names-reviewed.png`)});
+    page.once('dialog',dialog=>dialog.accept());
+    const [confirmedResponse]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/erp/command')),page.locator('#masterOnboardingConfirm').click()]);
+    const confirmed=await confirmedResponse.json();assert.equal(confirmedResponse.status(),200,JSON.stringify(confirmed));
+    assert.equal(confirmed.entity.creadas,40);assert.equal(confirmed.entity.participaciones_configuradas,40);
+    await page.getByText(/Importacion completada:/).waitFor();
+    console.log(JSON.stringify({width,namesImport:40,coefficients:40,manualChoices:2}));
+    if(width===390){
+      const pagedBook=new ExcelJS.Workbook(),pagedSheet=pagedBook.addWorksheet('Hoja1');
+      pagedSheet.addRow(['PROPIEDAD','PROPIETARIO']);
+      for(let i=0;i<51;i++)pagedSheet.addRow(['PAGE-'+suffix+'-'+i,i===50?'No identificado':primary.nombre]);
+      await page.locator('#masterOnboardingFile').setInputFiles({name:'lista-larga.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',buffer:Buffer.from(await pagedBook.xlsx.writeBuffer())});
+      await page.locator('#masterOnboardingUpload').click();await page.locator('#masterOnboardingPreview').waitFor();
+      await page.locator('#masterOnboardingPreview').click();await page.locator('#onboardingOnlyIssues').waitFor();
+      assert.equal(await page.locator('.onboardingReviewTable tbody tr').count(),1);
+      await page.locator('#onboardingOnlyIssues').uncheck();await page.locator('[data-onboarding-page="1"]').waitFor();
+      await page.locator('[data-onboarding-page="1"]').click();
+      await page.locator('[data-owner-row="52"]').waitFor();
+      assert.equal(await page.locator('.onboardingReviewTable tbody tr').count(),1);
+      assert.equal(await page.locator('#masterOnboardingConfirm').count(),0);
+      console.log(JSON.stringify({pagination:true,unresolvedRow52Accessible:true}));
+    }
     if(width===390 && process.env.VERIFY_UPLOAD_FILE){
       const sourceFile=process.env.VERIFY_UPLOAD_FILE;
       const community=await page.locator('#masterCommunity').inputValue();

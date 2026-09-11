@@ -210,6 +210,7 @@ const onboardingFields = {
   ],
   propiedades: [
     ["codigo_propiedad", "Codigo de propiedad"], ["codigo_propietario", "Codigo de propietario"],
+    ["nombre_propietario", "Nombre de propietario existente"],
     ["tipo_propiedad", "Tipo de propiedad"], ["porcentaje_titularidad", "Porcentaje de titularidad"],
     ["fecha_efectiva", "Fecha efectiva"], ["bloque", "Bloque"], ["portal", "Portal"],
     ["planta", "Planta"], ["puerta", "Puerta"], ["descripcion", "Descripcion / direccion"],
@@ -221,6 +222,7 @@ function suggestOnboardingField(header, kind) {
   const key = excelKey(header);
   const aliases = {
     codigo_propietario:["codigo propietario","codigo de propietario","codigo titular","id propietario","cod propietario","codigo netfincas"],
+    nombre_propietario:["propietario","titular","nombre propietario","nombre del propietario","nombre de propietario existente"],
     nombre:["nombre","propietario","titular","nombre propietario","nombre razon social","razon social"], tipo_persona:["tipo persona","tipo de persona","persona"],
     nif:["nif","cif","dni","identificacion"], email:["email","correo","correo electronico"],
     telefono:["telefono","telefono principal","movil"], telefono_alternativo:["telefono alternativo","telefono 2","movil 2"],
@@ -278,6 +280,7 @@ async function onboardingTemplate(kind) {
   const help=workbook.addWorksheet("Instrucciones");
   help.addRows([["Uso"],["Mantenga una fila por propietario o propiedad. Los codigos deben ser estables y unicos dentro de la comunidad."],["Puede eliminar columnas que no necesite. Antes de guardar, la aplicacion mostrara mapeo, vista previa e incidencias."],["Para copropiedad, repita el codigo de propiedad con distinto codigo de propietario e indique porcentajes que sumen 100."],["En Propiedades, relacione cada columna de coeficiente o pertenencia con el grupo exacto durante el mapeo. No se asocian grupos por parecido de nombre."]]);
   help.getColumn(1).width=110; help.getRow(1).font={bold:true};
+  if(kind==="propiedades")help.addRow(["Puede relacionar al propietario existente mediante codigo o nombre. Los nombres se buscan solo en la comunidad actual; revise las coincidencias y resuelva las dudas antes de confirmar. No se crean propietarios desde este paso."]);
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
@@ -8489,6 +8492,12 @@ function homePage() {
     .onboardingMap { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:8px; margin:10px 0; }
     .onboardingMap label { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; padding:9px; background:#f5f6f5; }
     .onboardingSample { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+    .onboardingReviewTable { table-layout:fixed; }
+    .onboardingPreview,#masterOnboardingResult,#masterOnboardingMessage { scroll-margin-top:90px; }
+    .onboardingReviewTable td { overflow-wrap:anywhere; }
+    .onboardingOwnerPicker { margin-top:6px; }
+    .onboardingOwnerPicker input,.onboardingOwnerPicker select { margin:5px 0; }
+    .onboardingPaging { display:flex; align-items:center; justify-content:space-between; gap:6px; margin:10px 0; }
     #masterOnboardingMessage { margin:10px 0; padding:10px; border-left:3px solid var(--teal); background:#f1f6f4; overflow-wrap:anywhere; }
     #masterOnboardingMessage.dangerText { border-color:#b33232; background:#fff0ee; }
     .onboardingPreview { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
@@ -8704,6 +8713,11 @@ function homePage() {
       .masterPane,.budgetPane { padding:10px; }
       .masterSection { margin-top:10px; padding-top:9px; }
       .onboardingMap label { grid-template-columns:1fr; gap:4px; }
+      .onboardingReviewTable,.onboardingReviewTable tbody,.onboardingReviewTable tr,.onboardingReviewTable td { display:block; width:100%; }
+      .onboardingReviewTable thead { display:none; }
+      .onboardingReviewTable tr { border-bottom:2px solid var(--line); padding:8px 0; }
+      .onboardingReviewTable td { border:0; padding:6px 0; }
+      .onboardingReviewTable td::before { content:attr(data-label); display:block; font-size:12px; font-weight:700; color:var(--muted); margin-bottom:4px; }
       .groupMethodGrid { grid-template-columns:1fr; }
       .segmented { width:100%; }
       .segmented button { flex:1; }
@@ -11893,15 +11907,39 @@ function homePage() {
     function masterInfo(text){return '<button type="button" class="infoDot" title="'+html(text)+'" aria-label="'+html(text)+'">i</button>';}
 
     function masterOnboardingOptions(kind,selected=''){
-      const base=kind==='propietarios'?[['codigo_propietario','Codigo de propietario'],['nombre','Nombre / razon social'],['tipo_persona','Tipo de persona'],['nif','NIF / identificacion'],['email','Email'],['telefono','Telefono'],['telefono_alternativo','Telefono alternativo'],['direccion','Direccion'],['cp','Codigo postal'],['poblacion','Poblacion'],['provincia','Provincia'],['idioma','Idioma']]:[['codigo_propiedad','Codigo de propiedad'],['codigo_propietario','Codigo de propietario'],['tipo_propiedad','Tipo de propiedad'],['porcentaje_titularidad','Porcentaje de titularidad'],['fecha_efectiva','Fecha efectiva'],['bloque','Bloque'],['portal','Portal'],['planta','Planta'],['puerta','Puerta'],['descripcion','Descripcion / direccion'],['referencia_registral','Referencia registral'],['referencia_catastral','Referencia catastral']];
+      const base=kind==='propietarios'?[['codigo_propietario','Codigo de propietario'],['nombre','Nombre / razon social'],['tipo_persona','Tipo de persona'],['nif','NIF / identificacion'],['email','Email'],['telefono','Telefono'],['telefono_alternativo','Telefono alternativo'],['direccion','Direccion'],['cp','Codigo postal'],['poblacion','Poblacion'],['provincia','Provincia'],['idioma','Idioma']]:[['codigo_propiedad','Codigo de propiedad'],['codigo_propietario','Codigo de propietario'],['nombre_propietario','Nombre de propietario existente'],['tipo_propiedad','Tipo de propiedad'],['porcentaje_titularidad','Porcentaje de titularidad'],['fecha_efectiva','Fecha efectiva'],['bloque','Bloque'],['portal','Portal'],['planta','Planta'],['puerta','Puerta'],['descripcion','Descripcion / direccion'],['referencia_registral','Referencia registral'],['referencia_catastral','Referencia catastral']];
       const groups=kind==='propiedades'?(masterData.groups||[]).flatMap(group=>[['coeficiente_grupo:'+group.id_grupo,'Coeficiente / peso · '+group.nombre],['miembro_grupo:'+group.id_grupo,'Solo pertenencia · '+group.nombre]]):[];
       return '<option value="">No importar</option>'+base.concat(groups).map(row=>'<option value="'+html(row[0])+'"'+(selected===row[0]?' selected':'')+'>'+html(row[1])+'</option>').join('');
     }
 
+    function masterOnboardingOwnerOption(owner,selected){
+      const label=[owner.nombre,owner.codigo_netfincas,owner.nif].filter(Boolean).join(' · ');
+      return '<option value="'+owner.id_propietario+'"'+(String(owner.id_propietario)===String(selected)?' selected':'')+'>'+html(label)+'</option>';
+    }
+    function masterOnboardingOwnerReview(row){
+      const flow=masterData.onboarding,v=row.datos.vinculacion_propietario||{},key=String(row.numero_fila);
+      const selected=flow.ownerChoices?.[key]||v.id_propietario||'';
+      const candidates=[...(v.id_propietario?[v]:v.candidatos||[])];
+      const chosen=flow.ownerLabels?.[key];if(chosen&&!candidates.some(o=>o.id_propietario===chosen.id_propietario))candidates.push(chosen);
+      return '<span class="onboardingSample">Excel: '+html(row.datos.nombre_propietario||row.datos.codigo_propietario||'')+'</span><br>'+
+        (v.id_propietario?'<strong>'+html(v.nombre)+'</strong><br><span class="onboardingSample">'+html(v.metodo==='seleccion_manual'?'Seleccionado para revision':'Coincidencia unica propuesta')+'</span>':'<strong>Seleccion pendiente</strong>')+
+        '<details class="onboardingOwnerPicker" data-owner-row="'+key+'"'+(!v.id_propietario?' open':'')+'><summary>'+(v.id_propietario?'Cambiar propietario propuesto':'Seleccionar propietario existente')+'</summary><label>Buscar por nombre o NIF<input class="onboardingOwnerSearch" type="search"></label><button type="button" class="onboardingOwnerSearchButton">Buscar</button><p class="onboardingOwnerSearchStatus muted" role="status"></p><label>Propietario<select class="onboardingOwnerSelect"><option value="">Selecciona un propietario</option>'+candidates.map(o=>masterOnboardingOwnerOption(o,selected)).join('')+'</select></label></details>';
+    }
     function masterOnboardingPreviewHtml(){
-      const preview=masterData.onboarding.preview;if(!preview)return '';
-      const rows=(preview.filas||[]).slice(0,100).map(row=>'<tr><td>'+row.numero_fila+'</td><td>'+html(row.datos.codigo_propietario||row.datos.codigo_propiedad||'')+'</td><td>'+html(row.datos.nombre||row.datos.codigo_propietario||'')+'</td><td>'+(row.incidencias?.length?'<span class="dangerText">'+row.incidencias.map(html).join('<br>')+'</span>':html(row.decision))+'</td></tr>').join('');
-      return '<section class="onboardingPreview"><div class="masterGroupSummary"><div class="masterGroupMetric"><span>Filas</span><strong>'+preview.total_filas+'</strong></div><div class="masterGroupMetric"><span>Preparadas</span><strong>'+preview.filas_validas+'</strong></div><div class="masterGroupMetric"><span>Incidencias</span><strong class="'+(preview.incidencias?'masterSumWarning':'masterSumOk')+'">'+preview.incidencias+'</strong></div></div>'+(preview.incidencias?'<div class="masterQualityNotice"><strong>Requiere revision</strong><p>No se guardara nada hasta corregir el archivo o el mapeo y repetir la vista previa.</p></div>':'<div class="masterSumOk"><strong>Vista previa correcta. Ningun dato se ha guardado todavia.</strong></div>')+'<div class="budgetTableWrap"><table class="masterDataTable"><thead><tr><th>Fila</th><th>Codigo</th><th>Nombre / relacion</th><th>Resultado</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(preview.puede_confirmar?'<button class="green" id="masterOnboardingConfirm">Confirmar importacion</button>':'')+'</section>';
+      const flow=masterData.onboarding,preview=flow.preview;if(!preview)return '';
+      if(preview.estado==='confirmada')return '<section class="onboardingPreview"><strong>Este archivo ya fue importado. No se crearan duplicados.</strong></section>';
+      const visible=(preview.filas||[]).filter(row=>!preview.incidencias||!flow.reviewOnlyIssues||row.incidencias?.length);
+      const page=Math.min(flow.reviewPage||0,Math.max(0,Math.ceil(visible.length/50)-1));
+      const rows=visible.slice(page*50,page*50+50).map(row=>{
+        const coefficients=Object.entries(row.datos).filter(([key])=>key.startsWith('coeficiente_grupo:')).map(([key,value])=>html((masterData.groups||[]).find(g=>String(g.id_grupo)===key.split(':')[1])?.nombre||'Grupo')+': '+html(value)).join('<br>');
+        return '<tr><td data-label="Propiedad / codigo">'+html(row.datos.codigo_propiedad||row.datos.codigo_propietario||'')+'<br><span class="onboardingSample">Fila '+row.numero_fila+'</span></td><td data-label="Propietario">'+(preview.tipo==='propiedades'?masterOnboardingOwnerReview(row):html(row.datos.nombre))+'</td><td data-label="Coeficientes">'+(coefficients||'—')+'</td><td data-label="Resultado">'+(row.incidencias?.length?'<span class="dangerText">'+row.incidencias.map(html).join('<br>')+'</span>':html(row.decision))+'</td></tr>';
+      }).join('');
+      return '<section class="onboardingPreview"><div class="masterGroupSummary"><div class="masterGroupMetric"><span>Filas</span><strong>'+preview.total_filas+'</strong></div><div class="masterGroupMetric"><span>Preparadas</span><strong>'+preview.filas_validas+'</strong></div><div class="masterGroupMetric"><span>Incidencias</span><strong>'+preview.incidencias+'</strong></div></div>'+
+        '<p class="masterQualityNotice" id="onboardingReviewStatus">'+(flow.choicesDirty?'Hay selecciones pendientes de revisar.':preview.incidencias?'Resuelve las incidencias y actualiza la vista previa.':'Revisa propiedades, propietarios y coeficientes. Todavia no se ha importado ningun dato maestro.')+'</p>'+
+        '<div class="toolbar"><button id="masterOnboardingRecheck" type="button">Actualizar vista previa</button> '+(preview.puede_confirmar&&!flow.choicesDirty?'<button class="green" id="masterOnboardingConfirm">Confirmar importacion</button>':'')+'</div>'+
+        (preview.incidencias?'<label><input id="onboardingOnlyIssues" type="checkbox" style="width:auto;min-height:0"'+(flow.reviewOnlyIssues?' checked':'')+'> Solo filas con incidencias</label>':'')+
+        '<table class="masterDataTable onboardingReviewTable"><thead><tr><th>Propiedad / codigo</th><th>Propietario</th><th>Coeficientes</th><th>Resultado</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+        '<div class="onboardingPaging"><button data-onboarding-page="'+(page-1)+'"'+(!page?' disabled':'')+'>Anterior</button><span>'+ (page+1)+' / '+Math.max(1,Math.ceil(visible.length/50))+'</span><button data-onboarding-page="'+(page+1)+'"'+((page+1)*50>=visible.length?' disabled':'')+'>Siguiente</button></div></section>';
     }
 
     function masterOnboardingHtml(){
@@ -11919,7 +11957,7 @@ function homePage() {
         '<button class="green" id="masterOnboardingUpload"'+(flow.busy?' disabled':'')+'>'+(flow.busy?'Analizando...':'Analizar columnas')+'</button><div id="masterOnboardingMessage" class="'+(flow.error?'dangerText':'')+'" role="'+(flow.error?'alert':'status')+'" aria-live="polite" tabindex="-1">'+html(flow.message||'Admite plantillas y archivos propios .xlsx o .csv.')+'</div>'+
         (upload?'<section class="masterSection" id="masterOnboardingResult" tabindex="-1"><div class="contentHead"><div><h3>Relacionar columnas</h3><p class="muted">'+html(upload.filename)+' · '+upload.row_count+' filas · '+upload.headers.length+' columnas</p></div>'+masterInfo('Relaciona cada columna con su dato. No importar omite esa columna; los ejemplos permiten comprobar el contenido.')+'</div>'+
         (kind==='propietarios'&&propertyFile?'<div class="masterQualityNotice">Este archivo tambien contiene propiedades. Para importar sus coeficientes, utiliza el paso Propiedades, una vez registrados los propietarios. <button id="masterOnboardingAsProperties" type="button">Analizar como propiedades</button></div>':'')+
-        '<p class="muted">'+(kind==='propietarios'?'Obligatorios: codigo de propietario y nombre.':'Obligatorios: codigo de propiedad y codigo de propietario existente. El nombre no sustituye al codigo; los coeficientes deben vincularse a su grupo.')+'</p>'+
+        '<p class="muted">'+(kind==='propietarios'?'Obligatorios: codigo de propietario y nombre.':'Obligatorios: propiedad y nombre o codigo del propietario existente. Revisa la vinculacion propuesta. Relaciona cada coeficiente con su grupo de reparto.')+'</p>'+
         (upload.sheets.length>1?'<label>Hoja<select id="masterOnboardingSheet">'+upload.sheets.map(name=>'<option'+(name===upload.sheet?' selected':'')+'>'+html(name)+'</option>').join('')+'</select></label>':'')+
         '<div class="onboardingMap">'+mapping+'</div>'+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+html(flow.effectiveDate||new Date().toISOString().slice(0,10))+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+
         '<button class="green" id="masterOnboardingPreview">Revisar antes de guardar</button>'+masterOnboardingPreviewHtml()+'</section>':'')+
@@ -12203,7 +12241,7 @@ function homePage() {
       const flow=masterData.onboarding,communityId=masterData.communityId;
       if(flow.busy)return;
       const file=$('cards').querySelector('#masterOnboardingFile')?.files?.[0]||flow.file;
-      flow.error=false;flow.preview=null;flow.upload=null;flow.mapping={};flow.reviewToken=null;
+      flow.error=false;flow.preview=null;flow.upload=null;flow.mapping={};flow.reviewToken=null;flow.ownerChoices={};flow.ownerLabels={};flow.choicesDirty=false;flow.reviewPage=0;
       const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),60000);
       try{
         if(!file)throw new Error('Selecciona un archivo .xlsx o .csv.');
@@ -12226,16 +12264,16 @@ function homePage() {
       flow.mapping=mapeo;flow.effectiveDate=root.querySelector('#masterOnboardingDate')?.value||new Date().toISOString().slice(0,10);flow.error=false;
       flow.message='Preparando vista previa...';const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=true;
       try{
-        const body=await api('/api/erp/onboarding/preview',{method:'POST',body:JSON.stringify({id_comunidad:communityId,tipo:flow.kind,token:upload.token,filename:upload.filename,sheet:root.querySelector('#masterOnboardingSheet')?.value||upload.sheet,mapeo,opciones:{fecha_efectiva:flow.effectiveDate}})});
+        const body=await api('/api/erp/onboarding/preview',{method:'POST',body:JSON.stringify({id_comunidad:communityId,tipo:flow.kind,token:upload.token,filename:upload.filename,sheet:root.querySelector('#masterOnboardingSheet')?.value||upload.sheet,mapeo,opciones:{fecha_efectiva:flow.effectiveDate,propietarios_por_fila:flow.ownerChoices||{}}})});
         if(flow.reviewToken!==reviewToken)return;
-        flow.preview=body.entity;flow.error=!!body.entity.incidencias;flow.message=body.entity.incidencias?'Hay incidencias que deben corregirse.':'Vista previa preparada para confirmar.';
+        flow.preview=body.entity;flow.choicesDirty=false;flow.reviewOnlyIssues=!!body.entity.incidencias;flow.reviewPage=0;flow.error=!!body.entity.incidencias;flow.message=body.entity.incidencias?'Hay incidencias que deben corregirse.':body.entity.estado==='confirmada'?'Este archivo ya fue importado.':'Vista previa preparada para confirmar.';
       }catch(error){if(flow.reviewToken!==reviewToken)return;flow.preview=null;flow.error=true;flow.message=error.message;}
       if(masterData.onboarding!==flow||masterData.communityId!==communityId||currentView!=='master-data')return;
-      render();$('cards').querySelector(flow.error?'#masterOnboardingMessage':'.onboardingPreview')?.scrollIntoView({block:'start'});
+      render();$('cards').querySelector(flow.preview?'.onboardingPreview':'#masterOnboardingMessage')?.scrollIntoView({block:'start'});
     }
 
     async function masterConfirmOnboarding(){
-      const preview=masterData.onboarding.preview;if(!preview||!preview.puede_confirmar)return;if(!confirm('Confirmar la importacion revisada?'))return;
+      const preview=masterData.onboarding.preview;if(!preview||!preview.puede_confirmar||masterData.onboarding.choicesDirty)return;if(!confirm('Confirmar la importacion revisada?'))return;
       try{const result=await erpCommand('erp1.onboarding.confirm',{id_importacion:preview.id_importacion},preview.version,{type:'onboarding_importacion',id:String(preview.id_importacion)});const label=result.entity?.tipo==='propietarios'?result.entity.creados+' creados y '+result.entity.actualizados+' actualizados':result.entity.creadas+' creadas y '+result.entity.actualizadas+' actualizadas';masterData.onboarding={kind:masterData.onboarding.kind,upload:null,preview:null,message:'Importacion completada: '+label+'.'};await loadMasterData();}catch(error){masterData.onboarding.message=error.message;render();}
     }
 
@@ -12245,14 +12283,34 @@ function homePage() {
       root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
       root.querySelectorAll('[data-onboarding-kind]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding={kind:button.dataset.onboardingKind,upload:null,preview:null,message:''};render();}));
       root.querySelector('#masterOnboardingUpload')?.addEventListener('click',()=>masterUploadOnboarding());
-      root.querySelector('#masterOnboardingFile')?.addEventListener('change',event=>{masterData.onboarding.file=event.target.files?.[0]||null;masterData.onboarding.upload=null;masterData.onboarding.preview=null;masterData.onboarding.reviewToken=null;masterData.onboarding.mapping={};masterData.onboarding.error=false;masterData.onboarding.message='';render();});
+      root.querySelector('#masterOnboardingFile')?.addEventListener('change',event=>{masterData.onboarding.file=event.target.files?.[0]||null;masterData.onboarding.upload=null;masterData.onboarding.preview=null;masterData.onboarding.reviewToken=null;masterData.onboarding.mapping={};masterData.onboarding.ownerChoices={};masterData.onboarding.ownerLabels={};masterData.onboarding.error=false;masterData.onboarding.message='';render();});
       if(root.querySelector('#masterOnboardingFile')&&masterData.onboarding.file){try{const transfer=new DataTransfer();transfer.items.add(masterData.onboarding.file);root.querySelector('#masterOnboardingFile').files=transfer.files;}catch{ /* The retained File remains available on browsers without DataTransfer construction. */ }}
       root.querySelector('#masterOnboardingAsProperties')?.addEventListener('click',()=>{masterData.onboarding={kind:'propiedades',file:masterData.onboarding.file};masterUploadOnboarding();});
       const invalidateOnboardingPreview=()=>{masterData.onboarding.preview=null;masterData.onboarding.reviewToken=null;root.querySelector('.onboardingPreview')?.remove();const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=false;};
-      root.querySelectorAll('.masterOnboardingMap').forEach(field=>field.addEventListener('change',()=>{masterData.onboarding.mapping={...masterData.onboarding.mapping,[field.dataset.header]:field.value};invalidateOnboardingPreview();}));
+      root.querySelectorAll('.masterOnboardingMap').forEach(field=>field.addEventListener('change',()=>{masterData.onboarding.mapping={...masterData.onboarding.mapping,[field.dataset.header]:field.value};masterData.onboarding.ownerChoices={};masterData.onboarding.ownerLabels={};invalidateOnboardingPreview();}));
       root.querySelector('#masterOnboardingDate')?.addEventListener('change',event=>{masterData.onboarding.effectiveDate=event.target.value;invalidateOnboardingPreview();});
       root.querySelector('#masterOnboardingSheet')?.addEventListener('change',event=>masterUploadOnboarding(event.target.value));
       root.querySelector('#masterOnboardingPreview')?.addEventListener('click',masterPreviewOnboarding);
+      root.querySelector('#masterOnboardingRecheck')?.addEventListener('click',masterPreviewOnboarding);
+      root.querySelector('#onboardingOnlyIssues')?.addEventListener('change',event=>{masterData.onboarding.reviewOnlyIssues=event.target.checked;masterData.onboarding.reviewPage=0;render();$('cards').querySelector('.onboardingPreview')?.scrollIntoView({block:'start'});});
+      root.querySelectorAll('[data-onboarding-page]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding.reviewPage=Number(button.dataset.onboardingPage);render();$('cards').querySelector('.onboardingPreview')?.scrollIntoView({block:'start'});}));
+      root.querySelectorAll('.onboardingOwnerPicker').forEach(picker=>{
+        const flow=masterData.onboarding,key=picker.dataset.ownerRow,select=picker.querySelector('select');
+        const resolved=flow.preview.filas.find(row=>String(row.numero_fila)===key)?.datos.vinculacion_propietario||{};
+        let owners=[...(resolved.id_propietario?[resolved]:resolved.candidatos||[]),...(flow.ownerLabels?.[key]?[flow.ownerLabels[key]]:[])];
+        picker.querySelector('.onboardingOwnerSearchButton').addEventListener('click',async()=>{
+          const button=picker.querySelector('button'),status=picker.querySelector('.onboardingOwnerSearchStatus'),search=picker.querySelector('input').value.trim();
+          if(!search){status.textContent='Escribe un nombre o NIF.';return;}
+          button.disabled=true;status.textContent='Buscando...';
+          try{const result=await erpQuery('erp1.owner.list',{search,estado:'activo',limit:30});if(masterData.onboarding!==flow)return;owners=(result.items||[]).filter(o=>o.activo);select.innerHTML='<option value="">Selecciona un propietario</option>'+owners.map(o=>masterOnboardingOwnerOption(o,'')).join('');status.textContent=owners.length?(result.total>30?'Hay mas resultados. Afina la busqueda.':owners.length+' propietarios encontrados.'):'No hay coincidencias. Prueba otro nombre o NIF.';}
+          catch(error){status.textContent=error.message;}finally{button.disabled=false;}
+        });
+        select.addEventListener('change',()=>{
+          flow.ownerChoices={...flow.ownerChoices};flow.ownerLabels={...flow.ownerLabels};
+          if(select.value){flow.ownerChoices[key]=select.value;flow.ownerLabels[key]=owners.find(o=>String(o.id_propietario)===select.value);}else{delete flow.ownerChoices[key];delete flow.ownerLabels[key];}
+          flow.choicesDirty=true;flow.reviewToken=null;root.querySelector('#masterOnboardingConfirm')?.remove();root.querySelector('#masterOnboardingPreview').disabled=false;root.querySelector('#onboardingReviewStatus').textContent='Hay selecciones pendientes. Pulsa Actualizar vista previa antes de confirmar.';
+        });
+      });
       root.querySelector('#masterOnboardingConfirm')?.addEventListener('click',masterConfirmOnboarding);
       root.querySelectorAll('[data-tenant-choice]').forEach(button=>button.addEventListener('click',async()=>{const form=root.querySelector('#masterTenantForm');if(button.dataset.tenantChoice==='yes'){form?.classList.remove('hidden');root.querySelectorAll('[data-tenant-choice]').forEach(item=>item.classList.toggle('active',item===button));return;}if(masterData.billing?.tenant){if(!confirm('Finalizar el inquilino actual desde hoy?'))return;try{await erpCommand('erp2.occupancy.save',{id_propiedad:masterData.property.id_propiedad,has_tenant:false,date_start:new Date().toISOString().slice(0,10)});await selectMasterProperty(masterData.property.id_propiedad);}catch(error){alert(error.message);}}else form?.classList.add('hidden');}));
       root.querySelectorAll('[data-master-property]').forEach(button=>button.addEventListener('click',()=>{masterData.ownershipEditing=false;masterData.proposal=null;selectMasterProperty(button.dataset.masterProperty).catch(error=>alert(error.message));}));
@@ -15317,9 +15375,10 @@ finally:
     const buffer=fs.readFileSync(stored);const parsed=await readOnboardingWorkbook(buffer,body.filename||token,body.sheet||"");
     const mapping=body.mapeo&&typeof body.mapeo==="object"?body.mapeo:{};const destinations=new Set();
     for(const destination of Object.values(mapping)){if(!destination)continue;if(destinations.has(destination))return sendJson(res,400,{ok:false,error:"Dos columnas no pueden alimentar el mismo campo."});destinations.add(destination);}
-    const required=kind==="propietarios"?["codigo_propietario","nombre"]:["codigo_propiedad","codigo_propietario"];
+    const required=kind==="propietarios"?["codigo_propietario","nombre"]:["codigo_propiedad"];
     const missing=required.filter(field=>!destinations.has(field));
     if(missing.length)return sendJson(res,400,{ok:false,error:"Relaciona las columnas obligatorias antes de continuar: "+missing.map(field=>onboardingFields[kind].find(row=>row[0]===field)?.[1]||field).join(", ")+"."});
+    if(kind==="propiedades"&&!destinations.has("codigo_propietario")&&!destinations.has("nombre_propietario"))return sendJson(res,400,{ok:false,error:"Relaciona Nombre de propietario existente o Codigo de propietario antes de continuar."});
     const rows=parsed.rows.map(source=>{const target={};for(const [header,destination] of Object.entries(mapping)){const value=source.values[header];if(!destination||value==="")continue;if(destination.startsWith("miembro_grupo:")){const normalizedValue=excelKey(value);if(["no","0","false","falso"].includes(normalizedValue))continue;}target[destination]=value;}return target;}).filter(row=>Object.keys(row).length);
     const result=await runErpContract(session,"command",{command:"erp1.onboarding.preview",id_comunidad:communityId,payload:{tipo:kind,hash_archivo:token.slice(0,64),nombre_archivo:body.filename||token,ruta_privada:path.relative(dataDir,stored),hoja:parsed.sheet,cabeceras:parsed.headers,mapeo:mapping,opciones:body.opciones||{},filas:rows},idempotency_key:crypto.randomUUID(),expected_version:null,reason:"Configuracion inicial revisada desde Excel",origin:"importer",evidence:{type:"onboarding_file",id:token.slice(0,64)}});
     return sendJson(res,200,result);

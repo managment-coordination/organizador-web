@@ -4,6 +4,7 @@ from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 import json
 import uuid
+import unicodedata
 
 from .errors import ConflictError, ContractError, NotFoundError
 from .master_service import MasterDataService, _dict, _rows
@@ -18,8 +19,13 @@ OWNER_FIELDS = {
 PROPERTY_FIELDS = {
     "codigo_propiedad", "tipo_propiedad", "bloque", "portal", "planta", "puerta",
     "descripcion", "referencia_registral", "referencia_catastral", "codigo_propietario",
-    "porcentaje_titularidad", "fecha_efectiva",
+    "porcentaje_titularidad", "fecha_efectiva", "nombre_propietario",
 }
+
+
+def owner_name_key(value):
+    raw = unicodedata.normalize("NFD", _clean(value))
+    return " ".join("".join(c for c in raw if not unicodedata.combining(c)).casefold().split())
 
 
 def _clean(value):
@@ -148,6 +154,16 @@ class OnboardingService(MasterDataService):
                 summary = self._apply_owners(conn, env.community_id, parsed, actor, import_id)
             else:
                 options = json.loads(source["opciones_json"] or "{}")
+                reviewed = self._prepare_rows(conn, env.community_id, "propiedades",
+                    [json.loads(row["original_json"]) for row in rows], options)
+                if any(row["incidencias"] for row in reviewed):
+                    raise ConflictError("Los datos han cambiado o tienen incidencias. Repite la vista previa antes de confirmar.")
+                for previous, current in zip(parsed, reviewed):
+                    old_owner = previous["datos"].get("vinculacion_propietario", {})
+                    new_owner = current["datos"]["vinculacion_propietario"]
+                    if old_owner and any(old_owner.get(key) != new_owner.get(key) for key in ("id_propietario", "nombre", "version")):
+                        raise ConflictError("Un propietario ha cambiado desde la revision. Repite la vista previa.")
+                    previous["datos"] = current["datos"]
                 summary = self._apply_properties(conn, env.community_id, parsed, options, actor, import_id)
             now = utc_now()
             conn.execute("""UPDATE erp_onboarding_importaciones SET estado='confirmada',confirmada_en=?,
@@ -164,8 +180,19 @@ class OnboardingService(MasterDataService):
         seen = set()
         property_owners = defaultdict(set)
         property_percentages = defaultdict(Decimal)
+        owners = _rows(conn.execute("SELECT id_propietario,nombre,codigo_netfincas,nif,version FROM cf_propietarios WHERE id_comunidad=? AND activo=1", (community_id,))) if kind == "propiedades" else []
+        by_name, by_owner_code = defaultdict(list), defaultdict(list)
+        by_id = {str(owner["id_propietario"]): owner for owner in owners}
+        for owner in owners:
+            by_name[owner_name_key(owner["nombre"])].append(owner)
+            if _clean(owner["codigo_netfincas"]):
+                by_owner_code[_clean(owner["codigo_netfincas"]).upper()].append(owner)
+        choices = options.get("propietarios_por_fila") or {}
+        if not isinstance(choices, dict):
+            raise ContractError("Las selecciones de propietarios no son validas.")
         for index, original in enumerate(rows, start=2):
             data = {str(k): _clean(v) for k, v in (original or {}).items() if _clean(v)}
+            data.pop("vinculacion_propietario", None)
             issues = []
             try:
                 if kind == "propietarios":
@@ -186,22 +213,35 @@ class OnboardingService(MasterDataService):
                 else:
                     code = data.get("codigo_propiedad", "")
                     owner_code = data.get("codigo_propietario", "")
+                    owner_name = data.get("nombre_propietario", "")
+                    candidates = by_owner_code.get(owner_code.upper(), []) if owner_code else by_name.get(owner_name_key(owner_name), []) if owner_name else []
+                    selected = choices.get(str(index))
+                    owner = by_id.get(str(selected)) if selected else candidates[0] if len(candidates) == 1 else None
+                    method = "seleccion_manual" if selected else "codigo" if owner_code else "nombre_exacto"
+                    if selected and not owner:
+                        issues.append("El propietario seleccionado no esta activo en esta comunidad.")
+                    elif selected and owner_code and owner not in candidates:
+                        issues.append("El propietario seleccionado no coincide con el codigo del archivo. Revisa el mapeo.")
+                    elif not owner:
+                        issues.append("Varios propietarios coinciden; selecciona uno." if len(candidates)>1 else "No se encuentra el propietario; busca y selecciona uno existente.")
+                    elif owner_code and owner_name and not selected and owner_name_key(owner_name) != owner_name_key(owner["nombre"]):
+                        issues.append("El codigo y el nombre del propietario no coinciden. Revisa la vinculacion.")
+                    data["vinculacion_propietario"] = {**(owner or {}), "metodo":method,
+                        "candidatos":candidates if not owner else []}
                     if not code: issues.append("Falta el codigo de propiedad.")
-                    if not owner_code: issues.append("Falta el codigo de propietario relacionado.")
-                    pair = (normalized(code), normalized(owner_code))
+                    if not owner_code and not owner_name: issues.append("Falta el nombre o codigo de propietario relacionado.")
+                    pair = (normalized(code), str(owner["id_propietario"]) if owner else owner_code or owner_name_key(owner_name))
                     if pair in seen: issues.append("Propiedad y propietario duplicados en el archivo.")
                     seen.add(pair)
                     existing = conn.execute("SELECT * FROM cf_propiedades WHERE id_comunidad=? AND codigo_normalizado=?", (community_id,normalized(code))).fetchone() if code else None
-                    owner = conn.execute("SELECT * FROM cf_propietarios WHERE id_comunidad=? AND upper(trim(codigo_netfincas))=upper(trim(?))", (community_id,owner_code)).fetchone() if owner_code else None
-                    if owner_code and not owner: issues.append("No existe un propietario con ese codigo en esta comunidad.")
                     type_value = data.get("tipo_propiedad") or options.get("tipo_propiedad_predeterminado") or "vivienda"
                     property_type = conn.execute("SELECT * FROM erp_tipos_propiedad WHERE id_comunidad=? AND (upper(codigo)=upper(?) OR upper(nombre)=upper(?))", (community_id,type_value,type_value)).fetchone()
                     if not property_type: issues.append("El tipo de propiedad no existe en esta comunidad.")
                     data["tipo_id"] = str(property_type["id_tipo_propiedad"]) if property_type else ""
                     pct = _decimal(data.get("porcentaje_titularidad") or "100", "porcentaje de titularidad", required=True)
                     data["porcentaje_titularidad"] = pct
-                    if code and owner_code:
-                        property_owners[normalized(code)].add(normalized(owner_code))
+                    if code and owner:
+                        property_owners[normalized(code)].add(str(owner["id_propietario"]))
                         property_percentages[normalized(code)] += Decimal(pct)
                     for key, value in list(data.items()):
                         if key.startswith("coeficiente_grupo:"):
@@ -336,7 +376,7 @@ class OnboardingService(MasterDataService):
             owners=[]
             for row in grouped:
                 data=row["datos"]
-                owner=conn.execute("SELECT * FROM cf_propietarios WHERE id_comunidad=? AND upper(trim(codigo_netfincas))=upper(trim(?))",(community_id,data["codigo_propietario"])).fetchone()
+                owner=self._require_entity(conn,"cf_propietarios","id_propietario",data["vinculacion_propietario"]["id_propietario"],community_id)
                 owners.append((owner,data["porcentaje_titularidad"],data.get("fecha_efectiva") or effective))
             active=_rows(conn.execute("SELECT * FROM cf_propietario_propiedad WHERE id_comunidad=? AND id_propiedad=? AND activo=1",(community_id,property_id)))
             if not active:

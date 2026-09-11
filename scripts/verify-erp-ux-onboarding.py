@@ -118,6 +118,68 @@ bad = command(session, "erp1.onboarding.preview", community_id, {
 assert bad["incidencias"] == 1 and not bad["puede_confirmar"]
 checks.append("coincidencias dudosas e importes incoherentes quedan bloqueados")
 
+def name_preview(rows, choices=None, digest=None):
+    return command(session, "erp1.onboarding.preview", community_id, {
+        "tipo":"propiedades", "hash_archivo":digest or uuid.uuid4().hex*2,
+        "nombre_archivo":"nombres.xlsx", "ruta_privada":"test/nombres.xlsx", "hoja":"Hoja1",
+        "cabeceras":["Propiedad","Propietario"],
+        "mapeo":{"Propiedad":"codigo_propiedad","Propietario":"nombre_propietario"},
+        "opciones":{"fecha_efectiva":"2026-01-01","propietarios_por_fila":choices or {}}, "filas":rows,
+    })["entity"]
+
+named = command(session, "erp1.owner.save", community_id, {"nombre":"Persona Jose Alvarez UX", "estado":"activo"})["entity"]
+named_id=named["id_propietario"]
+before_owner_count=conn.execute("SELECT COUNT(*) FROM cf_propietarios").fetchone()[0]
+name_group=command(session,"erp1.group.save",community_id,{"codigo":"NAME-GENERAL","nombre":"General por nombres UX","estado":"activo","base":"porcentaje","suma_esperada_decimal":"100","efectiva_desde":"2026-01-01"})["entity"]
+name_rows=[{"codigo_propiedad":f"NAME-P{i:02}","nombre_propietario":"  PERSONA   Jos\u00e9 ALVAREZ ux  ",f"coeficiente_grupo:{name_group['id_grupo']}":"2,5"} for i in range(40)]
+name_digest=uuid.uuid4().hex*2
+matched=name_preview(name_rows,digest=name_digest)
+assert matched["puede_confirmar"] and matched["filas_validas"]==40
+assert all(row["datos"]["vinculacion_propietario"]["id_propietario"]==named_id for row in matched["filas"])
+result=command(session,"erp1.onboarding.confirm",community_id,{"id_importacion":matched["id_importacion"]},matched["version"])["entity"]
+assert result["creadas"]==40 and result["titularidades_creadas"]==40
+assert result["participaciones_configuradas"]==40
+assert conn.execute("SELECT COUNT(*) FROM cf_propietarios").fetchone()[0]==before_owner_count
+assert name_preview(name_rows,digest=name_digest)["reimportacion"]
+checks.append("40 propiedades por nombre normalizado, propietario sin codigo, sin nuevos propietarios y reimportacion idempotente")
+
+homonym=command(session,"erp1.owner.save",community_id,{"nombre":"Persona Jos\u00e9 Alvarez UX","estado":"activo"})["entity"]
+ambiguous_rows=[{"codigo_propiedad":"NAME-AMB","nombre_propietario":"Persona Jose Alvarez UX"}]
+ambiguous=name_preview(ambiguous_rows)
+assert not ambiguous["puede_confirmar"]
+assert len(ambiguous["filas"][0]["datos"]["vinculacion_propietario"]["candidatos"])==2
+resolved=name_preview(ambiguous_rows,{"2":named_id})
+assert resolved["puede_confirmar"]
+assert resolved["filas"][0]["datos"]["vinculacion_propietario"]["metodo"]=="seleccion_manual"
+assert not name_preview([{"codigo_propiedad":"NAME-TYPO","nombre_propietario":"Persona Jsoe Alvarez UX"}])["puede_confirmar"]
+manual=name_preview([{"codigo_propiedad":"NAME-TYPO","nombre_propietario":"Persona Jsoe Alvarez UX"}],{"2":named_id})
+assert manual["puede_confirmar"]
+assert not name_preview(ambiguous_rows,{"2":999999999})["puede_confirmar"]
+inactive=command(session,"erp1.owner.save",community_id,{"nombre":"Inactivo prueba UX","estado":"inactivo"})["entity"]
+assert not name_preview([{"codigo_propiedad":"NAME-INACTIVE","nombre_propietario":inactive["nombre"]}],{"2":inactive["id_propietario"]})["puede_confirmar"]
+assert not name_preview([{"codigo_propiedad":"NAME-MISMATCH","codigo_propietario":"UX-001","nombre_propietario":"Persona UX Dos"}])["puede_confirmar"]
+checks.append("homonimos y parecido no vinculan automaticamente; seleccion manual explicita auditada")
+
+other=conn.execute("SELECT id_comunidad FROM comunidades WHERE id_comunidad<>? LIMIT 1",(community_id,)).fetchone()
+if other:
+    other_session={**session,"comunidades":[{"id_comunidad":other[0],"puede_ver":1,"puede_actualizar":1}]}
+    foreign=command(other_session,"erp1.owner.save",other[0],{"nombre":"Persona exclusiva otra comunidad UX"})["entity"]
+    cross=[{"codigo_propiedad":"NAME-CROSS","nombre_propietario":foreign["nombre"]}]
+    assert not name_preview(cross)["puede_confirmar"]
+    assert not name_preview(cross,{"2":foreign["id_propietario"]})["puede_confirmar"]
+checks.append("busqueda y seleccion de propietarios aisladas por comunidad")
+
+before_properties=conn.execute("SELECT COUNT(*) FROM cf_propiedades").fetchone()[0]
+conn.execute("UPDATE cf_propietarios SET version=version+1 WHERE id_propietario=?",(named_id,));conn.commit()
+try:
+    command(session,"erp1.onboarding.confirm",community_id,{"id_importacion":resolved["id_importacion"]},resolved["version"])
+    raise AssertionError("Se confirmo un propietario cambiado desde la revision")
+except ConflictError:
+    pass
+assert conn.execute("SELECT COUNT(*) FROM cf_propiedades").fetchone()[0]==before_properties
+assert not name_preview([{"codigo_propiedad":"UX-P01","nombre_propietario":"Persona UX Dos"}])["puede_confirmar"]
+checks.append("revision obsoleta bloqueada sin escrituras parciales y titularidad existente no sustituida")
+
 readonly = {"id_usuario": int(user[0]), "nombre": str(user[1]), "rol": "Usuario",
             "comunidades": [{"id_comunidad": community_id, "puede_ver": 1, "puede_actualizar": 0}]}
 try:
