@@ -15,6 +15,8 @@ from threading import Barrier
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'server'))
+if (ROOT/'server/_python_packages').is_dir():
+    sys.path.insert(0,str(ROOT/'server/_python_packages'))
 
 from access_control import profile
 from erp_core.contracts import CommandEnvelope, QueryEnvelope
