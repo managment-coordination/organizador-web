@@ -75,12 +75,14 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 - Objetivo: preparar cobros bancarios controlados y trazables, no dar por cobrado un fichero emitido.
 - Dependencias: 0, 1 y 3.
-- Componentes: cuentas de comunidad y pagador separadas, mandatos versionados, referencia acreedor, lotes, exportacion XML, estados, rechazos/devoluciones y cancelaciones.
-- Reutiliza: datos de remesa en recibos solo como referencia; no se ha encontrado un registro completo de mandatos en el esquema inspeccionado.
-- Estado inicial: PENDIENTE. Implantacion certificada: 0%.
-- Aceptacion: validacion del formato requerido por el banco, totales y duplicados; confirmacion antes de exportar; trazabilidad recibo-linea-fichero; permisos de datos bancarios; simulacion/rechazo sin falsear cobros.
-- Riesgos: formato aceptado depende del banco; titular, pagador y firmante de mandato no son sinonimos.
-- Decisiones pendientes: banco, modalidad y requisitos vigentes al implementar. No se promete conectividad bancaria ni gratuidad de agregadores.
+- Contrato: [ERP 4 - Domiciliaciones, mandatos SEPA y remesas](ERP_04_DOMICILIACIONES_SEPA_REMESAS.md), v1.0, 11/09/2026. Diseno funcional/tecnico/UX **100%, cerrado** con las catorce decisiones ratificadas. Modalidad inicial CORE EUR, dominio separado del adaptador bancario; referencia inicial pain.008.001.08 y perfiles versionados.
+- Componentes: cuentas de pagador y tesoreria separadas, domiciliaciones temporales, acreedor, mandatos/RUM/evidencia, prenotificacion, seleccion masiva, reservas exclusivas, ficheros inmutables, presentaciones, resultados, cancelaciones y reintentos confirmados. IBAN/evidencias protegidos, ACL especifica, auditoria sin secretos.
+- Reutiliza: ERP 0 transacciones/idempotencia/auditoria/outbox/permisos; ERP 1 sujetos y propiedades; ERP 2 pagador/destinatario/preferencia temporal; ERP 3 recibos, saldos, cobros, imputaciones, devoluciones y gastos. Datos legacy de remesa solo como referencia. El registro de cuentas de tesoreria previsto en maestros y las guardias de reserva requieren implementacion, no se presuponen existentes.
+- Estado de implementacion: **PENDIENTE, listo para implementar con autorizacion posterior**. Implantacion certificada: **0%**. Aceptacion funcional: pendiente. Cierre de diseno no concede puntos de implantacion.
+- Hitos futuros: ERP 4A contrato/migracion validada (25); 4B servicios deterministas (25); 4C recorrido integrado (25); 4D aceptacion/regresion/restauracion/publicacion (25). [Matriz y evidencias exigidas](ERP_04_DOMICILIACIONES_SEPA_REMESAS.md#15-casos-de-aceptacion-obligatorios).
+- Aceptacion: formato validado con PSP, totales y duplicados; reserva exclusiva y cancelacion segura; exportar/presentar no cobra; resultados idempotentes con ERP 3 y preparados para ERP 5; permisos de datos bancarios, cifrado y restauracion; UX masiva/contextual de escritorio y movil.
+- Riesgos: evidencia legacy insuficiente, configuracion/formato del PSP, resultados incompletos, presentacion externa de copias descargadas, cambios de mandato en curso y custodia de claves. No se promete conectividad bancaria ni gratuidad de agregadores.
+- Decisiones funcionales bloqueantes: **ninguna dentro del contrato cerrado**. Configuracion previa al uso real: banco/contrato CORE, acreedor/cuenta, formato/cortes/calendario, mandatos acreditados, prenotificacion/acuerdos, capacidades de usuarios, HTTPS/claves y prueba de fichero. Son requisitos de implantacion por comunidad, no un diseno bancario pendiente.
 
 ## ERP 5 - Banco y conciliacion
 
@@ -147,4 +149,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
-ERP 0/1/2/3 completados. ERP 3: **100% certificado y publicado**, con [cierre y restauracion documentados](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION.md#cierre-certificado). Siguiente fase disponible: ERP 4, solo con nueva autorizacion del usuario. Mantener los contratos y la configuracion explicita por comunidad; no iniciar ERP 4/5/6 automaticamente.
+ERP 0/1/2/3 completados. ERP 3: **100% certificado y publicado**, con [cierre y restauracion documentados](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION.md#cierre-certificado). ERP 4 tiene [diseno cerrado al 100%](ERP_04_DOMICILIACIONES_SEPA_REMESAS.md), implementacion **0%** y ninguna decision funcional material pendiente. Siguiente entrega: implementar ERP 4A conforme al contrato, solo con nueva autorizacion del usuario. La configuracion bancaria por comunidad se acredita antes del uso real. No iniciar ERP 4/5/6 automaticamente.
