@@ -35,7 +35,8 @@ subprocess.run(['python3',str(stage/'scripts/prepare-erp3-python.py')],cwd=stage
 source_fixture=stage/'verification-source.db'
 with sqlite3.connect('file:'+str(APP/'data/organizador_tareas.db')+'?mode=ro',uri=True) as source:
     with sqlite3.connect(source_fixture) as target:source.backup(target)
-env = {**os.environ, 'VERIFY_SOURCE_DB':str(source_fixture), 'PYTHON_BIN':'python3'}
+scratch=stage/'verification-temp';scratch.mkdir(mode=0o700)
+env = {**os.environ, 'VERIFY_SOURCE_DB':str(source_fixture), 'PYTHON_BIN':'python3', 'TMPDIR':str(scratch)}
 subprocess.run(['python3',str(stage/'scripts/verify-erp1-master-data.py'),
     str(source_fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp-ux-onboarding.py'),
@@ -62,9 +63,9 @@ if not args.publish:
 def checkpoint(current=False):
     command=['python3',str(stage/'scripts/erp0-backup.py'),'--app',str(APP),'--output-root',str(APP/'backups')]
     if current and args.code_commit:command += ['--code-commit',args.code_commit]
-    result=json.loads(subprocess.check_output(command,text=True))
+    result=json.loads(subprocess.check_output(command,text=True,env=env))
     restored=json.loads(subprocess.check_output(['python3',str(stage/'scripts/verify-erp0-backup.py'),result['backup'],
-        '--keep','--runtime-node-modules',str(stage/'server/node_modules')],text=True))
+        '--keep','--runtime-node-modules',str(stage/'server/node_modules')],text=True,env=env))
     assert restored['runtime_accessible']
     return {'backup':result['backup'],'restore':restored}
 
