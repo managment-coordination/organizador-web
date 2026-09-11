@@ -1,6 +1,6 @@
 # ERP 3 - Implementacion de recibos, cobros y deuda
 
-Fecha: 11/09/2026. Estado: PRUEBAS. **Implantacion certificada: 75%. No publicado.** Hitos 1-3 acreditados: contrato/migraciones, servicios y recorrido integrado. Diseno cerrado: 100%. Falta el hito de aceptacion final del paquete Ubuntu, restauracion productiva y publicacion. La seccion "Candidato de cierre" contiene el estado vigente; las anteriores conservan la cronologia.
+Fecha: 11/09/2026. Estado: **COMPLETADO. Implantacion certificada: 100%. Publicado en Ubuntu.** Cuatro hitos acreditados: contrato/migraciones, servicios, recorrido integrado y aceptacion/restauracion/publicacion. Diseno cerrado: 100%. La seccion "Cierre certificado" contiene el estado vigente; las anteriores conservan los checkpoints y sus porcentajes historicos. No se inicia ERP 4.
 
 Contrato obligatorio: [ERP 3 ratificado](ERP_03_RECIBOS_COBROS_DEUDA.md). [Roadmap](ERP_COMUNIDADES_ROADMAP.md). Sin cambios en las seis decisiones ni avance ERP 4/5/6.
 
@@ -170,3 +170,27 @@ Hitos 1/2/3: 25 puntos cada uno, **75%**. Hito 4 no concedido hasta paquete exac
 `deploy-operational-release.py` prepara dependencias locales verificadas y copias consistentes; ejecuta ERP 1/onboarding/2A/2B/2/3 y regresion HTTP. Publicacion requiere backup ERP 0 restaurado con HTTP aislado, historicos iguales y FK/integridad. Comprueba /health y denegacion sin sesion; repite pruebas sobre copias con codigo instalado y realiza backup posterior/restauracion. Servicio y rutas limitados a organizador-web/8771. No toca UNO Marbella.
 
 No requiere decisiones funcionales nuevas. Activar dinero real sigue exigiendo permisos, obligados y cobertura/corte acreditados por comunidad. No se activan automaticamente datos observados ni se concede acceso financiero a usuarios reales. No se ha implementado ERP 4.
+
+## Cierre certificado
+
+**ERP 3: COMPLETADO, 100% (25 + 25 + 25 + 25), 11/09/2026.** Los pendientes del candidato quedan cerrados mediante las evidencias siguientes. No se ha redisenado ERP 3 ni adelantado ERP 4.
+
+- Codigo instalado: `aaadb1b03b0903f14d828c23624f5aa327765edc`; checkpoint de aceptacion `erp3-acceptance-20260911` en `f87311e`, mas correcciones de empaquetado/pruebas `8cdd1be` y `aaadb1b`. Checkpoint final: `erp3-completed-20260911`, que incorpora esta ficha de cierre sin cambiar el codigo desplegado.
+- Paquete: `backups/erp3-release-disk-20260911.tar`. Instalacion aislada de dependencias Python verificadas por SHA-256, sin pip/globales; scripts de aceptacion utilizan esa misma dependencia. Los temporales y restauraciones se ubican en disco dentro del stage, no en tmpfs. Los intentos previos fallaron antes de tocar produccion por asercion antigua, ruta de dependencia del test y E/S de tmpfs; resueltos y repetidos satisfactoriamente.
+- Stage final: `/home/coordinador/apps/organizador-web/backups/stage-operational-20260911-150642`. ERP 1, onboarding, ERP 2A/2B/2 completo, 42/42 fundamentos ERP 3, emision 40/16, activacion historica, compatibilidad de 16.289 observaciones y regresion HTTP ERP 0/operativa superados. Datos de prueba exclusivamente en copias.
+- Las 42 pruebas cubren la matriz anterior; quedan confirmados tambien sus casos literales de devolucion total, cobro desconocido y N:M. Inquilino como destinatario y propietario como pagador, y caso inverso, comprobados en la emision real del fixture, con obligado separado.
+- Backup productivo previo: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-151106`. Restauracion aislada `verification-temp/organizador-erp0-restore-koil5z96` dentro del stage: 137 tablas, checksums/recuentos/integridad y HTTP correctos. El commit antiguo no estaba identificado en Ubuntu (`unknown`); el archivo completo preserva el codigo anterior y no se le atribuye falsamente el commit nuevo.
+- Backup productivo posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-151433`. Restauracion `verification-temp/organizador-erp0-restore-d6j87lbc`: 166 tablas, checksums/recuentos, integridad, cero FKs invalidas y arranque HTTP aislado correcto. Comparacion adicional: **121 tablas ERP/CF identicas** entre backup y restauracion. Pruebas persistidas en `erp3-publication-proof.json` y `erp3-restore-financial-proof.json` dentro de este backup. No confundir estos backups reales con los fixtures sinteticos anteriores.
+- Publicacion y smoke: servicio `organizador-web.service` activo, puerto 8771; `/health` correcto; consulta financiera sin sesion rechazada con 401; esquema 12, integridad `ok`, cero errores FK. Hashes de recibos/deuda/maestros/asambleas anteriores iguales durante la migracion. Comprobacion directa: 16.289 recibos legacy, cero recibos nativos y cero hechos economicos reales generados por la publicacion.
+- Regresion posterior con **codigo instalado**: HTTP ERP 0/operativa en `verification-temp/organizador-release-vDFWgB` y 42/42 fundamentos en `verification-temp/organizador-erp3-foundations-wsim7_8y`; ambos dentro del stage final y correctos. Las operaciones sinteticas no se ejecutaron sobre la base productiva.
+- Navegador Tailscale real 1440/390 y salud por LAN/Tailscale correctos: `%TEMP%/erp3-live-smoke-Ewy8dK`. Esta prueba productiva verifica acceso/login sin usar credenciales reales; los recorridos financieros autenticados completos se verificaron en copias. Ultima prueba de perfil financiero y exportacion >2 MiB: `%TEMP%/organizador-erp3-roles-AVMDdO`, correcta, capturas inspeccionadas. El recorrido W final sigue siendo `organizador-erp3-web-16c2hO`.
+
+### Limites operativos conservados
+
+No hay bloqueo funcional pendiente de ERP 3. La puesta en servicio economica de cada comunidad requiere configurar expresamente permisos, obligados, politica de gastos y cobertura/corte con evidencia; el cierre tecnico no inventa esas decisiones ni valida automaticamente Netfincas. Los saldos observados siguen identificados como tales. No hay imputacion automatica, traslado automatico de deuda, SEPA ni asientos nuevos.
+
+Limites de proteccion: exportacion 20.000 filas/12 MiB; lote de imputacion 100 cobros/500 aplicaciones; activacion historica revisable hasta 500 correspondencias por cobertura. Las operaciones mayores deben delimitarse antes de confirmar; no se truncan silenciosamente. Las dependencias Node heredadas muestran avisos de obsolescencia; su mantenimiento queda separado de esta fase, sin alterar paquetes de otros modulos durante el cierre.
+
+Restauracion: detener exclusivamente este servicio, verificar manifiesto/checksums, preservar operaciones posteriores y restaurar codigo/configuracion/documentos/base compatibles. No restaurar automaticamente una base anterior si ya contiene trabajo real posterior. Git no sustituye SQLite ni documentos.
+
+ERP 4 puede comenzar como siguiente fase autorizada, reutilizando contratos de pagador, cobro, devolucion y hechos economicos; **no se ha comenzado**.
