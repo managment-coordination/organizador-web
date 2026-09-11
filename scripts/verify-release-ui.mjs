@@ -51,6 +51,9 @@ try {
     for(const view of ['home','tasks','projects','master-data','budgets','admin','ai']){
       if(viewport.width<600){
         await page.locator('#mobileMenuToggle').click();
+        for(const group of await page.locator(`#mobileDrawerNav [data-mobile-view="${view}"]`).locator('xpath=ancestor::details').all()){
+          if(!await group.evaluate(el=>el.open))await group.locator(':scope > summary').click();
+        }
         await page.locator(`#mobileDrawerNav [data-mobile-view="${view}"]`).click();
       }else{
         const tab=page.locator(`#tabs [data-view="${view}"]`);

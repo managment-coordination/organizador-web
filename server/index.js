@@ -7608,7 +7608,7 @@ function homePage() {
     .navGroup summary { cursor:pointer; font-weight:800; color:#1f2937; padding:8px 9px; list-style:none; }
     .navGroup summary::-webkit-details-marker { display:none; }
     .navGroup summary::after { content:"+"; float:right; font-weight:900; }
-    .navGroup[open] summary::after { content:"-"; }
+    .navGroup[open] > summary::after { content:"-"; }
     .navGroupBody { display:grid; gap:7px; margin-top:5px; }
     .filters { display:grid; gap:9px; margin-top:12px; }
     input, select { border:1px solid #cbd5e1; border-radius:6px; padding:10px 11px; font:14px Segoe UI, Arial, sans-serif; width:100%; min-height:40px; background:white; color:var(--ink); }
@@ -8224,6 +8224,12 @@ function homePage() {
     }
     .navGroup summary { color:rgba(255,255,255,.82); }
     .navGroupBody .tab { background:transparent; }
+    .tabs > .navGroup { border:0; background:transparent; padding:0; }
+    .navGroup .navGroup { border:0; border-left:1px solid rgba(255,255,255,.18); border-radius:0; padding:0 0 0 5px; background:transparent; }
+    .navGroup > summary { min-height:44px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+    .navGroupBody { min-width:0; gap:3px; }
+    .tab span:first-child, .mobileDrawerItem span:first-child { min-width:0; overflow-wrap:anywhere; }
+    .navigationTrail { color:var(--muted); font-size:12px; padding:0 0 8px; overflow-wrap:anywhere; }
     .filters { margin-top:16px; padding-top:12px; border-top:1px solid rgba(255,255,255,.13); gap:7px; }
     .sidebar label { color:rgba(255,255,255,.67); }
     .sidebar input, .sidebar select {
@@ -8778,36 +8784,56 @@ function homePage() {
       <div class="grid counts" id="counts"></div>
       <div class="workbench">
         <section class="sidebar">
-          <h2>Vista</h2>
+          <h2>Navegacion</h2>
           <div class="mobileNav">
             <button class="ghost hidden" id="mobileFiltersToggle" type="button">Filtros</button>
             <button class="ghost" id="mobileReload" type="button">Actualizar</button>
           </div>
-          <div class="tabs">
+          <nav class="tabs" aria-label="Navegacion principal">
             <button class="tab active" id="homeTab" data-view="home"><span>Inicio</span><span>Resumen</span></button>
+            <details class="navGroup" data-nav-group="tasks">
+              <summary>Tareas</summary>
+              <div class="navGroupBody">
             <button class="tab" id="mapTab" data-view="map"><span>Trabajo Hoy</span><span id="mapTabCount">0</span></button>
             <button class="tab" id="taskTab" data-view="tasks"><span>Tareas</span><span id="taskTabCount">0</span></button>
             <button class="tab" id="projectTab" data-view="projects"><span>Proyectos</span><span id="projectTabCount">0</span></button>
-            <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
-            <button class="tab hidden" id="securityTab" data-view="security"><span>Seguridad</span><span class="tabBadge" id="securityTabCount">0</span></button>
-            <div class="navDivider"></div>
             <button class="tab hidden" id="workTab" data-view="work"><span>Acciones</span><span class="tabBadge" id="workTabCount">0</span></button>
             <button class="tab hidden" id="reviewTab" data-view="review"><span>Revision</span><span class="tabBadge" id="reviewTabCount">0</span></button>
-            <details class="navGroup">
-              <summary>Herramientas</summary>
+            <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
+            <details class="navGroup" data-nav-group="work-documents">
+              <summary>Documentacion</summary>
               <div class="navGroupBody">
-                <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
                 <button class="tab" id="documentsTab" data-view="documents"><span>Documentos</span><span id="documentsTabCount">0</span></button>
-                <button class="tab hidden" id="masterDataTab" data-view="master-data"><span>Datos maestros</span><span>ERP</span></button>
-                <button class="tab hidden" id="budgetTab" data-view="budgets"><span>Presupuestos</span><span>ERP</span></button>
-                <button class="tab" id="reportsTab" data-view="reports"><span>Informes</span><span id="reportsTabCount">0</span></button>
-                <button class="tab" id="importTab" data-view="imports"><span>Importar</span><span>Revisar</span></button>
-                <button class="tab" id="notificationTab" data-view="notifications"><span>Notificaciones</span><span class="tabBadge alert" id="notificationTabCount">0</span></button>
-                <button class="tab" id="aiTab" data-view="ai"><span>IA</span><span id="aiTabStatus">OK</span></button>
-                <button class="tab hidden" id="adminTab" data-view="admin"><span>Administracion</span><span>Usuarios</span></button>
+                <button class="tab" id="reportsTab" data-view="reports"><span>Informes de trabajo</span><span id="reportsTabCount">0</span></button>
               </div>
             </details>
-          </div>
+            <details class="navGroup" data-nav-group="work-ai">
+              <summary>IA y reuniones</summary>
+              <div class="navGroupBody">
+                <button class="tab" id="aiTab" data-view="ai"><span>Centro IA</span><span id="aiTabStatus">OK</span></button>
+                <button class="tab" id="importTab" data-view="imports"><span>Importar textos y archivos</span><span>Revisar</span></button>
+              </div>
+            </details>
+            <button class="tab hidden" id="securityTab" data-view="security"><span>Seguridad</span><span class="tabBadge" id="securityTabCount">0</span></button>
+              </div>
+            </details>
+            <details class="navGroup" data-nav-group="management">
+              <summary>Gestion</summary>
+              <div class="navGroupBody">
+                <details class="navGroup" data-nav-group="files">
+                  <summary>Ficheros</summary>
+                  <div class="navGroupBody">
+                    <button class="tab hidden" id="masterDataTab" data-view="master-data"><span>Datos de la comunidad</span></button>
+                    <button class="tab hidden" id="budgetTab" data-view="budgets"><span>Presupuestos</span></button>
+                  </div>
+                </details>
+                <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
+              </div>
+            </details>
+            <div class="navDivider"></div>
+            <button class="tab" id="globalSearchTab" data-view="global-search"><span>Buscar</span><span id="globalSearchTabCount">Todo</span></button>
+            <button class="tab hidden" id="adminTab" data-view="admin"><span>Configuracion global</span><span>Usuarios</span></button>
+          </nav>
           <div class="filters" id="listFilters">
             <div>
               <label>Busqueda</label>
@@ -8832,6 +8858,7 @@ function homePage() {
           </div>
         </section>
         <section class="workspaceContent">
+          <div id="navigationTrail" class="navigationTrail" aria-label="Ubicacion actual"></div>
           <div class="contentHead">
             <div>
               <h2 id="contentTitle">Proyectos</h2>
@@ -10156,8 +10183,14 @@ function homePage() {
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "masterDataTab", "budgetTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", "master-data":"masterDataTab", budgets:"budgetTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
-      const navGroup = document.querySelector(".navGroup");
-      if (navGroup && target && navGroup.contains($(target))) navGroup.open = true;
+      document.querySelectorAll('.tabs [data-nav-group]').forEach(group=>{
+        group.classList.toggle('hidden', !group.querySelector('.tab:not(.hidden)'));
+        group.open=Boolean(target && group.contains($(target)));
+      });
+      const trail=[];
+      if(target){let parent=$(target).parentElement;while(parent && !parent.classList.contains('tabs')){if(parent.matches('[data-nav-group]'))trail.unshift(parent.querySelector(':scope > summary').textContent);parent=parent.parentElement;}trail.push($(target).querySelector('span').textContent);}
+      $('navigationTrail').textContent=trail.join(' / ');
+      $('navigationTrail').classList.toggle('hidden', view==='home'||(state.usuario||{}).rol==='Seguridad');
       $("appView").dataset.view = view;
       syncMobileNavigation();
     }
@@ -10165,16 +10198,15 @@ function homePage() {
     function syncMobileNavigation() {
       const drawer = $("mobileDrawerNav");
       if (!drawer) return;
-      const visibleTabs = [...document.querySelectorAll(".tabs .tab:not(.hidden)")];
-      drawer.innerHTML = visibleTabs.map(tab => {
-        const view = tab.dataset.view;
-        const spans = [...tab.querySelectorAll("span")];
-        const label = safe(spans[0]?.textContent) || view;
-        const count = safe(spans[spans.length - 1]?.textContent);
-        const divider = ["map", "global-search"].includes(view) ? '<div class="mobileDrawerDivider" aria-hidden="true"></div>' : "";
-        const showBadge = /^\\d+$/.test(count) || view === "ai";
-        return divider + '<button class="mobileDrawerItem' + (view === currentView ? " active" : "") + '" type="button" data-mobile-view="' + html(view) + '"' + (view === currentView ? ' aria-current="page"' : "") + '><span>' + html(label) + '</span>' + (showBadge ? '<span class="mobileDrawerBadge">' + html(count) + '</span>' : "") + '</button>';
-      }).join("");
+      const tree=document.querySelector('.tabs').cloneNode(true);
+      tree.querySelectorAll('.hidden').forEach(node=>node.remove());
+      tree.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
+      tree.querySelectorAll('.tab').forEach(tab=>{
+        tab.dataset.mobileView=tab.dataset.view;delete tab.dataset.view;
+        tab.classList.remove('tab');tab.classList.add('mobileDrawerItem');
+        if(tab.classList.contains('active'))tab.setAttribute('aria-current','page');
+      });
+      drawer.replaceChildren(...tree.childNodes);
       const filtersAvailable = ["tasks", "projects"].includes(currentView);
       $("mobileFiltersToggle").classList.toggle("hidden", !filtersAvailable);
       if (!filtersAvailable) {
@@ -14390,6 +14422,11 @@ function homePage() {
       const button = event.target.closest("button[data-mobile-view]");
       if (button) switchView(button.dataset.mobileView);
     });
+    $('mobileDrawerNav').addEventListener('toggle',event=>{
+      const group=event.target;if(!group.matches('[data-nav-group]'))return;
+      const source=document.querySelector('.tabs [data-nav-group="'+group.dataset.navGroup+'"]');
+      if(source)source.open=group.open;
+    },true);
     document.addEventListener("keydown", event => { if (event.key === "Escape") closeMobileDrawer(); });
     $("mobileFiltersToggle").addEventListener("click", () => {
       const filters = $("listFilters");
