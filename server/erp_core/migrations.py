@@ -1568,6 +1568,9 @@ MIGRATIONS = (
 from .receivables_schema import STATEMENTS as RECEIVABLES_STATEMENTS
 
 MIGRATIONS += (Migration(7, "erp3_receivables", RECEIVABLES_STATEMENTS),)
+from .receivables_extensions_schema import STATEMENTS as RECEIVABLES_EXTENSION_STATEMENTS
+
+MIGRATIONS += (Migration(8, "erp3_coverage_regularization_links", RECEIVABLES_EXTENSION_STATEMENTS),)
 
 
 def _bootstrap(conn):

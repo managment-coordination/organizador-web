@@ -14,10 +14,14 @@ from .errors import ContractError, ConflictError, NotFoundError
 from .outbox import enqueue
 from .repository import CommandRepository, FoundationRepository
 from .receivables_contracts import CAPABILITIES, CONTRACT_VERSION, cents, day, fingerprint, identity, known_time, require_fields, subject, text
-from .receivables_projection import collection_balance, receipt_balance, validate_timeline
+from .receivables_projection import collection_balance, receipt_balance, validate_timeline, original_responsibility
+from .receivables_adjustments import AdjustmentOperations
+from .receivables_regularization import RegularizationOperations
+from .receivables_history import HistoryOperations
+from .receivables_queries import ReceivablesQueries
 
 
-class ReceivablesService:
+class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries):
     def __init__(self, database_path):
         self.database_path = database_path
 
@@ -59,6 +63,7 @@ class ReceivablesService:
         try:
             with write_transaction(conn):
                 actor,_=self._session(conn,session,env.community_id,capability)
+                self._validate_evidence(conn,session,env)
                 commands=CommandRepository(conn)
                 replay=commands.replay_or_start(env,actor)
                 if replay is not None:return replay
@@ -108,6 +113,26 @@ class ReceivablesService:
     def _evidence(env,required=False):
         if required and env.evidence is None:raise ContractError('La operacion requiere documento o evidencia.')
         return None if env.evidence is None else {'type':env.evidence.entity_type,'id':env.evidence.entity_id}
+
+    @staticmethod
+    def _validate_evidence(conn,session,env):
+        if env.evidence is None:return
+        evidence=env.evidence
+        # An external reference is an explicit attestation, not a verified app document.
+        if evidence.entity_type=='external_reference':
+            text(evidence.entity_id,'Referencia externa documentada',maximum=200)
+            if not env.reason:raise ContractError('Describe la procedencia de la evidencia externa.')
+            return
+        tables={'attachment':('anexos_registros','id_anexo'),'assembly_document':('asamblea_documentos','id_documento_asamblea'),
+                'imported_document':('documentos_importados','id_documento')}
+        if evidence.entity_type not in tables:raise ContractError('Tipo de evidencia no admitido. Vincula un documento o declara su referencia externa.')
+        current=profile(conn,Actor.from_session(session).user_id)
+        if not permission(current,env.community_id,'puede_ver_documentos'):raise PermissionError('No tienes permiso para consultar la evidencia documental.')
+        table,key=tables[evidence.entity_type]
+        row=conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? AND {key}=?',(env.community_id,identity(evidence.entity_id))).fetchone()
+        if row is None:raise NotFoundError('La evidencia documental no existe en esta comunidad.')
+        if evidence.entity_type=='attachment' and current['rol']=='Presidente' and row['id_tarea']:
+            raise PermissionError('El documento de tarea no esta disponible para este perfil.')
 
     def _event(self,conn,actor,env,event_type,effective_on,payload,suffix='0'):
         now=known_time(None)
@@ -195,6 +220,7 @@ class ReceivablesService:
             for key in p['period_keys']:
                 period=periods[key];amount=values[key]
                 concept='ordinario' if plan['tipo']=='ordinario' else 'derrama:'+str(plan['origen_id'])
+                self._require_coverage(conn,community_id,concept,period['fecha_inicio'],period['fecha_fin'])
                 configs=list(conn.execute('''SELECT * FROM erp_obligacion_config_versiones WHERE id_comunidad=? AND id_propiedad=?
                     AND concept_key IN (?, '*') AND effective_from<=? AND (effective_until IS NULL OR effective_until>?)
                     ORDER BY CASE WHEN concept_key=? THEN 0 ELSE 1 END,effective_from DESC,version DESC''',(community_id,pid,concept,issue,issue,concept)))
@@ -304,7 +330,7 @@ class ReceivablesService:
         if not isinstance(lines,list) or not 1<=len(lines)<=500:raise ContractError('Selecciona entre 1 y 500 aplicaciones.')
         total=0;seen=set();result=[]
         for line in lines:
-            require_fields(line,('receipt_id','amount_cents'))
+            require_fields(line,('receipt_id','amount_cents'),('responsibility_subjects',))
             receipt=self._entity(conn,'erp_recibos',community_id,line['receipt_id'])
             if receipt['id'] in seen:raise ContractError('Recibo duplicado en la propuesta.')
             seen.add(receipt['id']);amount=cents(line['amount_cents'],positive=True)
@@ -313,7 +339,8 @@ class ReceivablesService:
             if amount>int(rb['pending_cents']):raise ConflictError('La aplicacion supera el pendiente.')
             total=cents(total+amount)
             result.append({'receipt_id':receipt['id'],'number':receipt['number'],'version':receipt['version'],
-                           'amount_cents':str(amount),'before_cents':rb['pending_cents'],'after_cents':str(int(rb['pending_cents'])-amount)})
+                           'amount_cents':str(amount),'before_cents':rb['pending_cents'],'after_cents':str(int(rb['pending_cents'])-amount),
+                           'responsibility_subjects':self._choose_responsibility(conn,community_id,receipt['id'],effective,amount,line.get('responsibility_subjects'))})
         if total>int(balance['available_cents']):raise ConflictError('La aplicacion supera los fondos disponibles.')
         return {'collection_id':collection['id'],'collection_version':collection['version'],'effective_on':effective,
                 'before_cents':balance['available_cents'],'after_cents':str(int(balance['available_cents'])-total),'allocations':result}
@@ -340,8 +367,8 @@ class ReceivablesService:
             event,now=self._event(conn,actor,e,'erp3.collection.allocated',preview['effective_on'],preview)
             for line in preview['allocations']:
                 conn.execute('''INSERT INTO erp_imputaciones
-                    (id_comunidad,collection_id,receipt_id,event_id,amount_cents,effective_on,registered_at)
-                    VALUES (?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],line['receipt_id'],event,int(line['amount_cents']),preview['effective_on'],now))
+                    (id_comunidad,collection_id,receipt_id,event_id,amount_cents,effective_on,registered_at,responsibility_json)
+                    VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],line['receipt_id'],event,int(line['amount_cents']),preview['effective_on'],now,canonical_json(line['responsibility_subjects'])))
                 conn.execute('UPDATE erp_recibos SET version=version+1 WHERE id=? AND id_comunidad=?',(line['receipt_id'],e.community_id))
             conn.execute('UPDATE erp_cobros SET version=version+1 WHERE id=? AND id_comunidad=?',(preview['collection_id'],e.community_id))
             validate_timeline(conn,e.community_id,[l['receipt_id'] for l in preview['allocations']],[preview['collection_id']])
@@ -380,7 +407,8 @@ class ReceivablesService:
                 r=self._entity(conn,'erp_recibos',community_id,a['receipt_id'])
                 rb=receipt_balance(conn,community_id,r['id'],effective)
                 details.append({'allocation_id':a['id'],'receipt_id':r['id'],'receipt_version':r['version'],'amount_cents':str(amount),
-                                'pending_before':rb['pending_cents'],'pending_after':str(int(rb['pending_cents'])+amount)})
+                                'pending_before':rb['pending_cents'],'pending_after':str(int(rb['pending_cents'])+amount),
+                                'responsibility_subjects':json.loads(a['responsibility_json']) if a['responsibility_json'] else original_responsibility(conn,community_id,r['id'])})
                 total=cents(total+amount)
             if total<=0:raise ContractError('La devolucion debe ser positiva.')
             external_key=text(p['external_key'],'Referencia',maximum=200)
@@ -389,7 +417,7 @@ class ReceivablesService:
             return {'operation':operation,'collection_id':c['id'],'collection_version':c['version'],'effective_on':effective,
                     'amount_cents':str(total),'free_cents':str(free),'details':details,'external_key':external_key,
                     'available_before':before['available_cents'],'available_after':str(int(before['available_cents'])-free)}
-        require_fields(p,('receipt_id','effective_on'),('amount_cents','classification'))
+        require_fields(p,('receipt_id','effective_on'),('amount_cents','classification','release_allocations','responsibility_subjects'))
         r=self._entity(conn,'erp_recibos',community_id,p['receipt_id'])
         effective=self._date_open(conn,community_id,p['effective_on'])
         balance=receipt_balance(conn,community_id,r['id'],effective)
@@ -401,15 +429,24 @@ class ReceivablesService:
             amount=int(r['amount_cents'])
         elif operation=='credit':
             amount=cents(p.get('amount_cents'),positive=True)
-            if amount>int(balance['pending_cents']):
-                raise ConflictError('El abono supera el pendiente. Libera explicitamente los fondos aplicados antes de abonar.')
+            releases=self._reversal_lines(conn,community_id,p.get('release_allocations',[]),effective)
+            if any(x['receipt_id']!=r['id'] for x in releases):
+                raise ContractError('Solo pueden liberarse imputaciones del recibo abonado.')
+            released=sum(int(x['amount_cents']) for x in releases)
+            if released!=max(0,amount-int(balance['pending_cents'])):
+                raise ConflictError('Selecciona las imputaciones que liberan exactamente la parte ya pagada del abono.')
+            if amount>int(balance['pending_cents'])+int(balance['paid_cents']):
+                raise ConflictError('El abono supera la obligacion disponible para rectificar.')
+            responsibility=self._choose_responsibility(conn,community_id,r['id'],effective,amount,p.get('responsibility_subjects'),releases)
         elif operation=='uncollectible':
             classification=p.get('classification')
             if classification not in ('incobrable','en_gestion'):raise ContractError('Clasificacion no valida.')
             amount=0
         else:raise ContractError('Operacion correctora desconocida.')
         return {'operation':operation,'receipt_id':r['id'],'receipt_version':r['version'],'effective_on':effective,
-                'amount_cents':str(amount),'pending_before':balance['pending_cents'],'pending_after':str(int(balance['pending_cents'])-amount),
+                'amount_cents':str(amount),'pending_before':balance['pending_cents'],'pending_after':str(int(balance['pending_cents'])-amount+(released if operation=='credit' else 0)),
+                'release_allocations':releases if operation=='credit' else [],
+                'responsibility_subjects':responsibility if operation=='credit' else original_responsibility(conn,community_id,r['id']),
                 'classification':p.get('classification')}
 
     def _prepare_correction(self,session,env,operation,capability):
@@ -439,15 +476,17 @@ class ReceivablesService:
             if operation=='return':
                 collections=[preview['collection_id']]
                 for item in preview['details']:
-                    conn.execute('''INSERT INTO erp_imputaciones (id_comunidad,collection_id,receipt_id,event_id,reverses_id,amount_cents,effective_on,registered_at)
-                        VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],item['receipt_id'],event,item['allocation_id'],int(item['amount_cents']),preview['effective_on'],now))
+                    self._insert_reversal(conn,e.community_id,event,now,preview['effective_on'],{**item,'collection_id':preview['collection_id']})
                     receipts.append(item['receipt_id'])
                 conn.execute('''INSERT INTO erp_devoluciones (id_comunidad,collection_id,event_id,amount_cents,free_cents,details_json,effective_on,registered_at,external_key)
                     VALUES (?,?,?,?,?,?,?,?,?)''',(e.community_id,preview['collection_id'],event,int(preview['amount_cents']),int(preview['free_cents']),canonical_json(preview['details']),preview['effective_on'],now,preview['external_key']))
             elif operation in ('credit','void'):
                 receipts=[preview['receipt_id']]
-                conn.execute('''INSERT INTO erp_rectificaciones (id_comunidad,receipt_id,event_id,kind,amount_cents,effective_on,registered_at)
-                    VALUES (?,?,?,?,?,?,?)''',(e.community_id,preview['receipt_id'],event,operation,int(preview['amount_cents']),preview['effective_on'],now))
+                for item in preview.get('release_allocations',[]):
+                    self._insert_reversal(conn,e.community_id,event,now,preview['effective_on'],item)
+                    collections.append(item['collection_id'])
+                conn.execute('''INSERT INTO erp_rectificaciones (id_comunidad,receipt_id,event_id,kind,amount_cents,effective_on,registered_at,responsibility_json)
+                    VALUES (?,?,?,?,?,?,?,?)''',(e.community_id,preview['receipt_id'],event,operation,int(preview['amount_cents']),preview['effective_on'],now,canonical_json(preview['responsibility_subjects'])))
             else:
                 receipts=[preview['receipt_id']]
                 conn.execute('INSERT INTO erp_recibo_gestion_eventos (id_comunidad,receipt_id,event_id,classification,effective_on,registered_at) VALUES (?,?,?,?,?,?)',
