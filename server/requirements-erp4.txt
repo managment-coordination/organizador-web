@@ -1,0 +1,4 @@
+# Install inside an application-specific virtual environment, never globally.
+cryptography==46.0.7
+lxml==6.1.3
+python-stdnum==2.2

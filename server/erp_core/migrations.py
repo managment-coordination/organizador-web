@@ -1584,6 +1584,18 @@ from .receivables_activation_schema import STATEMENTS as RECEIVABLES_ACTIVATION_
 
 MIGRATIONS += (Migration(12, "erp3_historical_coverage_activation", RECEIVABLES_ACTIVATION_STATEMENTS),)
 
+from .banking_schema import STATEMENTS as BANKING_STATEMENTS
+
+MIGRATIONS += (Migration(13, "erp4_banking_foundations", BANKING_STATEMENTS),)
+
+from .banking_guards_schema import STATEMENTS as BANKING_GUARDS_STATEMENTS
+
+MIGRATIONS += (Migration(14, "erp4_economic_reservation_guards", BANKING_GUARDS_STATEMENTS),)
+
+from .banking_scope_schema import STATEMENTS as BANKING_SCOPE_STATEMENTS
+
+MIGRATIONS += (Migration(15, "erp4_mandate_scope_integrity", BANKING_SCOPE_STATEMENTS),)
+
 
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (

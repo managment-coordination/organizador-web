@@ -498,6 +498,9 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
         balance=receipt_balance(conn,community_id,r['id'],effective)
         if operation=='void':
             if balance['state']=='anulado':raise ConflictError('El recibo ya esta anulado.')
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='erp_remesa_reservas'").fetchone():
+                if conn.execute("SELECT 1 FROM erp_remesa_reservas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(community_id,r['id'])).fetchone():
+                    raise ConflictError('El recibo tiene una reserva bancaria activa. Revisa su remesa antes de anular.')
             for table in ('erp_imputaciones','erp_rectificaciones','erp_credito_aplicaciones','erp_reasignaciones_obligacion','erp_apertura_movimientos'):
                 if conn.execute(f'SELECT 1 FROM {table} WHERE id_comunidad=? AND receipt_id=?',(community_id,r['id'])).fetchone():
                     raise ConflictError('Existen movimientos posteriores; utiliza una rectificacion, no anulacion simple.')
