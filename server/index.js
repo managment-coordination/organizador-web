@@ -6806,8 +6806,8 @@ function writeEntityRecord(session, type, id, payload, pc) {
   const script = pythonScript`
 import json
 import sqlite3
-from work_domain import validate_change, synchronize, add_commitment
-from presidency_domain import notify_mentions
+from work_domain import validate_change, synchronize, add_commitment, confirmation
+from presidency_domain import notify_mentions, from_followup
 from ai_drafts import before_confirm, applied
 import ai_meetings as meetings
 from datetime import datetime, date
@@ -6818,6 +6818,7 @@ entity_type = ${JSON.stringify(type)}
 entity_id = int(${JSON.stringify(id)})
 data = ${JSON.stringify(payload || {})}
 pc = ${JSON.stringify(pc || "web")}
+session['pc'] = pc
 user = str(session.get("nombre") or "")
 role = str(session.get("rol") or "")
 allowed_ids = [int(c.get("id_comunidad")) for c in session.get("comunidades", []) if c.get("id_comunidad")]
@@ -6873,6 +6874,10 @@ try:
     conn.execute("BEGIN IMMEDIATE")
     with conn:
         draft_id = str(data.get('draft_id') or '')
+        previous_confirmation = confirmation(conn,session,entity_type,entity_id,data)
+        if previous_confirmation:
+            print(json.dumps(previous_confirmation))
+            raise SystemExit(0)
         previous_meeting = meetings.before_apply(conn,session,entity_type,entity_id,data)
         if previous_meeting:
             print(json.dumps(previous_meeting))
@@ -6986,10 +6991,13 @@ try:
             notify_mentions(conn,session,dict(project),data)
             synchronize(conn, {'nombre':user,'pc':pc}, 'project',dict(project),data)
             audit(conn, "Seguimiento de proyecto web", "proyecto", entity_id, f"{project['estado_general']} -> {estado_nuevo}")
+        request = from_followup(conn,session,entity_type,entity_id,record_id)
+        result = {'ok':True,'record_id':record_id,'request_id':request['id_solicitud'] if request else None}
+        confirmation(conn,session,entity_type,entity_id,data,record_id)
         if draft_id:
-            applied(conn,session,draft_id,{'ok':True,'record_id':record_id},data,pc)
-        meetings.applied(conn,session,data,{'ok':True,'record_id':record_id},pc)
-    print(json.dumps({"ok": True, "record_id": record_id}, ensure_ascii=False))
+            applied(conn,session,draft_id,result,data,pc)
+        meetings.applied(conn,session,data,result,pc)
+    print(json.dumps(result, ensure_ascii=False))
 finally:
     conn.close()
 `;
@@ -9902,6 +9910,15 @@ function homePage() {
         motivo_reapertura: $('recordReopenReason').value
       };
     }
+    function recordConfirmationKey(holder, type, id, payload) {
+      const {confirmation_key, ...values} = payload;
+      const fingerprint = JSON.stringify([type,id,values]);
+      if (!holder.confirmation || holder.confirmation.fingerprint !== fingerprint) {
+        holder.confirmation = {fingerprint,key:crypto.randomUUID ? crypto.randomUUID() : Date.now()+'-'+Math.random().toString(36).slice(2)};
+      }
+      return holder.confirmation.key;
+    }
+    let recordConfirmation = {};
     async function saveRecord() {
       if (!selectedEntity || $("saveRecord").disabled) return;
       const payload = recordFormPayload();
@@ -9915,21 +9932,24 @@ function homePage() {
       }
       const summary = "Se guardara un seguimiento y se actualizara la ficha.\\n\\nEstado: " + payload.estado_nuevo + "\\nResponsable: " + payload.responsable_nuevo + "\\nProximo responsable: " + payload.responsable_proximo_paso;
       if (!confirm(summary)) return;
+      payload.confirmation_key = recordConfirmationKey(recordConfirmation,selectedEntity.type,selectedEntity.id,payload);
       $("saveRecord").disabled = true;
       $("recordMessage").textContent = "Guardando...";
       try {
         const reviewedType = selectedEntity.type;
         const reviewedId = selectedEntity.id;
-        await api("/api/entity/record", {
+        const saved = await api("/api/entity/record", {
           method: "POST",
           body: JSON.stringify({ type: selectedEntity.type, id: selectedEntity.id, payload })
         });
         if (currentView === "review") {
           (reviewedType === "task" ? reviewProgress.tasks : reviewProgress.projects).add(Number(reviewedId));
         }
-        $("recordMessage").textContent = "Seguimiento guardado.";
+        $("recordMessage").textContent = "Actualizando ficha...";
         await loadOverview();
         await openEntity(reviewedType, reviewedId, false);
+        recordConfirmation = {};
+        $("recordMessage").textContent = saved.request_id ? "Seguimiento guardado y solicitud enviada al presidente." : "Seguimiento guardado.";
       } catch (error) {
         $("recordMessage").innerHTML = '<span class="dangerText">' + html(error.message) + '</span>';
       } finally {
@@ -14020,6 +14040,7 @@ function homePage() {
           if (entry.item.action === "seguimiento_proyecto" || entry.item.action === "seguimiento_tarea") {
             const type = entry.item.action === "seguimiento_tarea" ? "task" : "project";
             if (!entry.item.entity_id) throw new Error("Selecciona el elemento existente.");
+            entry.item.payload.confirmation_key = recordConfirmationKey(entry.proposal,type,entry.item.entity_id,entry.item.payload);
             result = await api("/api/entity/record", { method: "POST", body: JSON.stringify({ type, id: entry.item.entity_id, payload: entry.item.payload }) });
           } else {
             const type = entry.item.action === "crear_tarea" ? "task" : "project";
@@ -14090,6 +14111,7 @@ function homePage() {
           const type = action === "seguimiento_tarea" ? "task" : "project";
           const id = $("aiEntity").value;
           if (!id) throw new Error("Selecciona el elemento existente.");
+          payload.confirmation_key = recordConfirmationKey(aiProposal,type,id,payload);
           result = await api("/api/entity/record", { method: "POST", body: JSON.stringify({ type, id, payload }) });
         } else {
           const type = action === "crear_tarea" ? "task" : "project";

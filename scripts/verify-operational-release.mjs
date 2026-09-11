@@ -139,9 +139,8 @@ try {
   await request(`/api/entity/detail?type=project&id=${project}`,other.cookie,undefined,403);
   results.push('Independent tasks, JSON booleans/nulls, per-community read/write access');
   const write = (payload)=>request('/api/entity/record',worker.cookie,{type:'project',id:project,payload});
-  await write({comentario:'Request a decision',proximo_paso:'Confirm the estimate',responsable_proximo_paso:president.name,estado_nuevo:'En curso',motivo_bloqueo:''});
-  assert.ok(!(await request('/api/workflow',president.cookie)).value.president_requests.some(r=>r.id_proyecto===project));
-  await request('/api/president/request',worker.cookie,{action:'create',type:'project',id:project,decision:'Confirm the estimate',contexto:'Budget supplied for review'});
+  const autoDecision=(await write({comentario:'Request a decision',proximo_paso:'Confirm the estimate',responsable_proximo_paso:president.name,estado_nuevo:'En curso',motivo_bloqueo:'',confirmation_key:'named-president-record'})).value;
+  assert.ok((await request('/api/workflow',president.cookie)).value.president_requests.some(r=>r.id_solicitud===autoDecision.request_id));
   const workflow=(await request('/api/workflow',president.cookie)).value;
   const decision=workflow.president_requests.find(row=>Number(row.id_proyecto)===project);
   assert.ok(decision,'Named president did not receive request');
@@ -157,6 +156,51 @@ try {
   assert.equal(detail.item.responsable_principal,worker.name);
   assert.ok(detail.history.some(row=>row.comentario.includes('Approved with estimate review')));
   results.push('Presidency routing, mandatory comment, one decision, return responsibility and audit');
+  for(const kind of ['task','project']){
+    const id=await create(worker.cookie,kind,communityA,'Automatic request '+kind);
+    const data={type:kind,id,payload:{comentario:'Inspection supplied for review',proximo_paso:'Approve the proposed repair',responsable_proximo_paso:'Presidente',confirmation_key:'auto-followup-'+kind}};
+    await request('/api/entity/record',other.cookie,data,403);
+    await request('/api/entity/record',read.cookie,data,403);
+    const normal=(await request('/api/entity/record',worker.cookie,{...data,payload:{...data.payload,responsable_proximo_paso:worker.name,confirmation_key:'normal-'+kind}})).value;
+    assert.equal(normal.request_id,null);
+    const saved=(await request('/api/entity/record',worker.cookie,data)).value;
+    assert.ok(saved.request_id);
+    assert.deepEqual((await request('/api/entity/record',worker.cookie,data)).value,saved);
+    await request('/api/entity/record',worker.cookie,{...data,payload:{...data.payload,comentario:'Different confirmed content'}},400);
+    const current=(await request(`/api/entity/detail?type=${kind}&id=${id}`,worker.cookie)).value;
+    assert.equal(current.requests.length,1);
+    const linked=current.requests[0];
+    assert.equal(linked[kind==='task'?'id_registro_tarea':'id_registro_proyecto'],saved.record_id);
+    assert.equal(linked[kind==='task'?'id_tarea':'id_proyecto'],id);
+    assert.equal(linked.id_comunidad,communityA);
+    assert.equal(linked.id_usuario_solicitante,worker.id);
+    assert.equal(linked.id_usuario_presidente,president.id);
+    assert.equal(linked.proximo_paso_solicitado,'Approve the proposed repair');
+    assert.equal(linked.detalle,'Inspection supplied for review');
+    const reused=JSON.parse(pythonRun(`import sqlite3,json,sys
+from presidency_domain import from_followup
+c=sqlite3.connect(sys.argv[1]); c.row_factory=sqlite3.Row
+with c:
+ r=from_followup(c,json.loads(sys.argv[2]),sys.argv[3],int(sys.argv[4]),int(sys.argv[5]))
+print(json.dumps(r))
+`,[database,JSON.stringify((await request('/api/me',worker.cookie)).value.usuario),kind,String(id),String(saved.record_id)]));
+    assert.equal(reused.id_solicitud,saved.request_id);
+    assert.equal((await request(`/api/entity/detail?type=${kind}&id=${id}`,worker.cookie)).value.requests.length,1);
+    const before=pythonRun("import sqlite3,sys,json; c=sqlite3.connect(sys.argv[1]); print(json.dumps([c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ['registros','registros_proyectos','solicitudes_presidente','auditoria','notificaciones']]))",[database]);
+    pythonRun("import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute(\"CREATE TRIGGER fixture_notify_fail BEFORE INSERT ON notificaciones WHEN NEW.tipo='Solicitud presidente' BEGIN SELECT RAISE(ABORT,'fixture notification failure'); END\"); c.commit()",[database]);
+    try {await request('/api/entity/record',worker.cookie,{...data,payload:{...data.payload,confirmation_key:'rollback-'+kind}},500);}
+    finally {pythonRun("import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('DROP TRIGGER fixture_notify_fail'); c.commit()",[database]);}
+    assert.equal(pythonRun("import sqlite3,sys,json; c=sqlite3.connect(sys.argv[1]); print(json.dumps([c.execute('SELECT COUNT(*) FROM '+t).fetchone()[0] for t in ['registros','registros_proyectos','solicitudes_presidente','auditoria','notificaciones']]))",[database]),before);
+    await request('/api/entity/record',worker.cookie,{...data,payload:{...data.payload,responsable_proximo_paso:presidentB.name,confirmation_key:'wrong-president-'+kind}},403);
+    const fallback={...data,payload:{...data.payload,proximo_paso:'',confirmation_key:'concurrent-'+kind}};
+    const [first,second]=await Promise.all([request('/api/entity/record',worker.cookie,fallback),request('/api/entity/record',worker.cookie,fallback)]);
+    assert.deepEqual(first.value,second.value);
+    const last=(await request(`/api/entity/detail?type=${kind}&id=${id}`,worker.cookie)).value;
+    assert.equal(last.requests.length,2);
+    assert.equal(last.requests[0].proximo_paso_solicitado,data.payload.comentario);
+    assert.ok(Number(pythonRun("import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); print(c.execute(\"SELECT COUNT(*) FROM auditoria WHERE entidad='solicitud_presidente' AND id_entidad=?\",(int(sys.argv[2]),)).fetchone()[0])",[database,String(first.value.request_id)]))>0);
+  }
+  results.push('Automatic presidency task/project followups: final owner, origin link, exact replay, existing-request reuse, audit, wrong-community protection and full rollback on notification failure');
   const upload=await fetch(base+`/api/entity/attachment?type=task&id=${task}`,{method:'POST',headers:{Cookie:worker.cookie,'X-File-Name':'evidence.txt','Content-Type':'text/plain'},body:'Verification attachment, independently from follow-up.'});
   assert.equal(upload.status,200,await upload.clone().text());
   const attached=(await request(`/api/entity/detail?type=task&id=${task}`,worker.cookie)).value.attachments.at(0);
@@ -336,7 +380,7 @@ with c:
     const decisions=(await request(`/api/entity/detail?type=${kind}&id=${decision.id}`,worker.cookie)).value.commitments;
     assert.ok(!decisions.some(r=>r.kind==='decision'));
   }
-  results.push('Module02: atomic historical creation, explicit undated evidence; president selection does not send a request');
+  results.push('Module02: atomic historical creation, explicit undated evidence; creating an entity is not a confirmed presidency followup');
   const requestData={action:'create',type:'task',id:task,decision:'Approve the repair',contexto:'Estimate and inspection attached',fecha_objetivo:'2026-10-01',adjuntos:[attached.id_anexo]};
   await request('/api/president/request',read.cookie,requestData,403);
   await request('/api/president/request',other.cookie,requestData,403);

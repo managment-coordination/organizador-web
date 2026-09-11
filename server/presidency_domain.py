@@ -1,10 +1,11 @@
-"""Explicit, versioned decision requests with a durable clarification thread."""
+"""Versioned decision requests, explicit or linked to a confirmed followup."""
 import json
 from access_control import columns, require_permission, president_for, permission
 from work_domain import clean, stamp, entity, history, validate_date, CLOSED
 
 
 def migrate(conn):
+    migrate_followup_confirmation(conn)
     if conn.execute("SELECT 1 FROM web_migrations WHERE version='presidency_v2'").fetchone():
         return
     with conn:
@@ -139,7 +140,7 @@ def checked_attachments(conn,session,item,kind,ids):
     return result
 
 
-def create(conn,session,kind,entity_id,data):
+def create(conn,session,kind,entity_id,data,source_record_id=None):
     item=entity(conn,session,kind,entity_id)
     if item['estado' if kind=='task' else 'estado_general'] in CLOSED:raise ValueError('Reabre el expediente antes de solicitar una decision.')
     question,context=clean(data.get('decision')),clean(data.get('contexto'))
@@ -149,16 +150,55 @@ def create(conn,session,kind,entity_id,data):
     attachments=checked_attachments(conn,session,item,kind,data.get('adjuntos') or [])
     cur=conn.execute('''INSERT INTO solicitudes_presidente(id_comunidad,tipo_origen,id_tarea,id_proyecto,titulo,detalle,
         solicitante,ultimo_comentario,proximo_paso_solicitado,responsable_original,responsable_retorno,estado,
-        fecha_creacion,usuario_creacion,pc_creacion,id_usuario_presidente,id_usuario_solicitante,fecha_objetivo)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?,?,?,?,?)''',
+        fecha_creacion,usuario_creacion,pc_creacion,id_usuario_presidente,id_usuario_solicitante,fecha_objetivo,
+        id_registro_tarea,id_registro_proyecto)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'Pendiente',?,?,?,?,?,?,?,?)''',
         (item['id_comunidad'],'tarea' if kind=='task' else 'proyecto',entity_id if kind=='task' else None,
          entity_id if kind=='project' else None,question,context,session['nombre'],context,question,
          item['responsable' if kind=='task' else 'responsable_principal'],session['nombre'],stamp(),session['nombre'],
-         session.get('pc','web'),president['id_usuario'],session['id_usuario'],clean(data.get('fecha_objetivo'))))
+         session.get('pc','web'),president['id_usuario'],session['id_usuario'],clean(data.get('fecha_objetivo')),
+         source_record_id if kind=='task' else None,source_record_id if kind=='project' else None))
     r=request_row(conn,cur.lastrowid)
     append(conn,session,r,'Solicitud',question+'\n'+context,attachments)
     notify(conn,president['id_usuario'],'Solicitud presidente',question,context,item,r['id_solicitud'])
     return view(conn,session,r['id_solicitud'])
+
+
+def migrate_followup_confirmation(conn):
+    if conn.execute("SELECT 1 FROM web_migrations WHERE version='presidency_followup_v1'").fetchone():return
+    with conn:
+        for table in ('registros','registros_proyectos'):
+            for name,sql_type in [('confirmation_key','TEXT'),('confirmation_hash','TEXT'),
+                                  ('id_usuario_confirmacion','INTEGER REFERENCES usuarios(id_usuario)')]:
+                if name not in columns(conn,table):conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {sql_type}')
+            conn.execute(f'''CREATE UNIQUE INDEX IF NOT EXISTS idx_{table}_confirmation
+                ON {table}(id_usuario_confirmacion,confirmation_key) WHERE confirmation_key IS NOT NULL''')
+        conn.execute("INSERT INTO web_migrations VALUES ('presidency_followup_v1',?)",(stamp(),))
+
+
+def from_followup(conn,session,kind,entity_id,record_id):
+    """Called inside the followup transaction; an existing decision is never rewritten."""
+    item=entity(conn,session,kind,entity_id)
+    table,field,link=('registros','id_tarea','id_registro_tarea') if kind=='task' else ('registros_proyectos','id_proyecto','id_registro_proyecto')
+    record_key='id_registro' if kind=='task' else 'id_registro_proyecto'
+    record=conn.execute(f'SELECT * FROM {table} WHERE {record_key}=? AND {field}=? AND id_comunidad=?',
+        (record_id,entity_id,item['id_comunidad'])).fetchone()
+    if not record:raise ValueError('El seguimiento no pertenece a este expediente.')
+    owner=clean(record['responsable_proximo_paso'])
+    generic=owner.lower() in {'presidente','presidencia'}
+    named=None if generic else conn.execute("SELECT id_usuario FROM usuarios WHERE nombre=? AND rol='Presidente' AND activo=1",(owner,)).fetchone()
+    if not generic and not named:return None
+    president=president_for(conn,item['id_comunidad'])
+    if named and named['id_usuario']!=president['id_usuario']:
+        raise PermissionError('El presidente seleccionado no corresponde a esta comunidad.')
+    previous=conn.execute(f'SELECT id_solicitud FROM solicitudes_presidente WHERE {link}=? AND {field}=? AND id_comunidad=? ORDER BY id_solicitud LIMIT 1',
+        (record_id,entity_id,item['id_comunidad'])).fetchone()
+    if previous:return view(conn,session,previous['id_solicitud'])
+    return create(conn,session,kind,entity_id,{
+        'decision':clean(record['proximo_paso']) or clean(record['comentario']),
+        'contexto':clean(record['comentario']),
+        'fecha_objetivo':record['fecha_objetivo_proximo_paso'],
+    },source_record_id=record_id)
 
 
 def transition(conn,session,request_id,action,data):

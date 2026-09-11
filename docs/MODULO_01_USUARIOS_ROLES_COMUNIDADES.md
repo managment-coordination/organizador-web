@@ -457,4 +457,4 @@ Este modulo se considerara estable cuando:
 - Caducidad solo se identifica despues de verificar la firma. Revocacion y permisos conservan su validacion en servidor. Los fallos tecnicos de autenticacion devuelven 500 generico, sin detalles internos.
 - `verify-operational-release.mjs`: 21 bloques superados sobre copia aislada; incluye autenticacion, permisos, tareas/proyectos y modulo 04.
 - `verify-login-description-ui.mjs`: pruebas HTTP de fallo tecnico real en almacenamiento aislado y mensajes en navegador a 1440/390 px, incluido servidor con respuesta no JSON.
-- Sin migracion ni cambio de datos de produccion. Cambios locales, no publicados: la peticion conjunta contiene una contradiccion funcional en el modulo 04 pendiente de ratificacion.
+- El login no requiere migracion ni cambios de permisos. Ratificada la nueva regla del modulo 04, la publicacion conjunta de login, descripcion y automatizacion se registra en `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`.

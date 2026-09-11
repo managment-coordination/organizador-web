@@ -7,7 +7,8 @@ El modulo 03 se omite por decision del usuario: sin eliminar ni redisenar Trabaj
 
 ## Acuerdos funcionales
 
-- Solicitar decision es una accion explicita desde la ficha. Seleccionar al presidente como responsable no envia una solicitud, ni la IA puede hacerlo indirectamente al guardar un seguimiento.
+- Regla ratificada el 11/09/2026: al confirmar un seguimiento cuyo siguiente responsable final sea Presidente, se crea automaticamente una solicitud al presidente asignado a la comunidad. Sustituye expresamente el acuerdo anterior que exigia siempre una solicitud separada y prohibia esta automatizacion. Incluye seguimientos propuestos por IA una vez revisados y confirmados, nunca durante la edicion o el analisis.
+- La accion manual Solicitar decision sigue disponible para decisiones independientes. Crear o editar una ficha sin confirmar un seguimiento no genera una solicitud por asignar Presidente.
 - Solicitud con decision requerida, contexto, documentos vinculados del expediente y plazo opcional.
 - Presidente asignado a esa comunidad: Aprobar, Rechazar o Solicitar aclaracion; comentario obligatorio.
 - Tras respuesta, quien solicito debe aclarar o registrar la gestion realizada. Leer avisos no completa esa gestion.
@@ -38,7 +39,7 @@ El modulo 03 se omite por decision del usuario: sin eliminar ni redisenar Trabaj
 
 ## Pruebas
 
-- `verify-operational-release.mjs`: migracion, permisos, ausencia de solicitud implicita, solicitud explicita con anexos, decisiones independientes, comentario obligatorio, hilo de aclaraciones, version obsoleta, lectura sin resolucion y menciones con aislamiento.
+- `verify-operational-release.mjs`: migracion, permisos, solicitudes automaticas al confirmar seguimiento y explicitas con anexos, decisiones independientes, comentario obligatorio, hilo de aclaraciones, version obsoleta, lectura sin resolucion y menciones con aislamiento.
 - `verify-release-ui.mjs`: cinco vistas en escritorio y movil; crear solicitudes, cancelarlas, pedir aclaracion como presidente, contestarla como solicitante, aprobar y registrar gestion.
 - Evidencia visual: `C:/Users/EQUIPO/AppData/Local/Temp/organizador-ui-release-bjcOzW`.
 - Los 22 contratos de regresion existentes se mantienen; estas pruebas no certifican la calidad semantica del modelo IA externo.
@@ -62,3 +63,17 @@ El siguiente modulo es 05: Informes y documentos. Empezar por preguntas de conte
 - Prueba posterior de solo lectura con los cinco usuarios reales: 28 rutas comprobadas, incluidas solicitudes, integridad SQLite `ok`.
 - Recuperacion: conservar primero una copia de los datos mas recientes; detener solo este servicio y restaurar codigo/base coherentes desde el respaldo. No sobrescribir trabajo posterior sin reconciliarlo con el usuario. No borrar `data/` ni `backups/`.
 - Sin cambios en UNO Marbella ni en su servicio o datos.
+
+## Actualizacion puntual: 11/09/2026
+
+- Reutiliza `create`, `append`, `notify` y `view` del modulo existente. No existe una segunda tabla/logica de solicitudes.
+- Enlaces existentes `id_registro_tarea` / `id_registro_proyecto`: identifican el seguimiento que origina la solicitud, junto con expediente, comunidad, creador, fecha y destinatario.
+- Decision solicitada: proximo paso del seguimiento; si no se indica, su comentario. Contexto: comentario completo confirmado. Plazo: fecha del proximo paso, si existe. No se extrae una peticion de textos antiguos de la ficha.
+- Presidente/Presidencia son roles relativos a la comunidad, incluso si hay un usuario historico llamado Presidente en otra comunidad. Un nombre concreto de presidente debe corresponder al asignado a esa comunidad.
+- Sin presidente asignado, permisos insuficientes o error al crear la solicitud/aviso: no se guarda parcialmente el seguimiento. Se informa al usuario para corregir y confirmar de nuevo.
+- Seguimiento, solicitud, conversacion, notificacion y auditoria comparten `BEGIN IMMEDIATE`. La solicitud existente para un seguimiento se conserva, incluyendo decisiones ya emitidas; no se sobrescribe ni duplica.
+- Migracion aditiva `presidency_followup_v1`: clave, huella y usuario de confirmacion en las dos tablas de seguimientos, con indices unicos. Sin entidades nuevas, reconstruccion de solicitudes antiguas ni cambios economicos.
+- Las confirmaciones web conservan su clave durante reintentos; cambiar el contenido genera otra confirmacion. Reutilizar una clave con datos distintos se rechaza. Borradores IA y reuniones conservan ademas su idempotencia existente. Los clientes antiguos sin clave siguen siendo compatibles; deben enviarla para reintentos de una nueva insercion.
+- Checkpoint previo: `president-followup-pre-20260911` (`d326d80`, que incluye login y descripcion).
+- Backup previo: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-164501`; restauracion aislada `/tmp/organizador-erp0-restore-c66g43i0`, SQLite e inicio HTTP correctos.
+- Pruebas de servidor y navegador: tarea/proyecto, responsable final distinto, cancelar confirmacion, solicitud enlazada, reintento tras respuesta perdida, peticiones concurrentes, comentario sin proximo paso, presidente de otra comunidad, permisos, auditoria y rollback ante fallo del aviso. Escritorio 1440 px y movil 390 px, junto a login y descripcion. Evidencias de publicacion se registran tras superar el gate Ubuntu.

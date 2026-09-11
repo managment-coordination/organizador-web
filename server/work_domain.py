@@ -1,5 +1,6 @@
 """Shared rules for tasks/projects, commitments and explicit lifecycle changes."""
 import json
+import hashlib
 from datetime import date, datetime
 from access_control import columns, require_permission, president_for
 
@@ -15,6 +16,28 @@ STATES = {
 
 def clean(value):
     return str(value or '').strip()
+
+
+def confirmation(conn,session,kind,entity_id,data,record_id=None):
+    """Optional keys preserve older clients; new confirmations are retry-safe."""
+    entity(conn,session,kind,entity_id)
+    key=clean(data.get('confirmation_key'))
+    if not key:return None
+    if len(key)>128:raise ValueError('Clave de confirmacion no valida.')
+    table,field,link=('registros','id_tarea','id_registro_tarea') if kind=='task' else ('registros_proyectos','id_proyecto','id_registro_proyecto')
+    record_key='id_registro' if kind=='task' else 'id_registro_proyecto'
+    digest=hashlib.sha256(json.dumps({k:v for k,v in data.items() if k!='confirmation_key'},sort_keys=True,ensure_ascii=True,separators=(',',':')).encode()).hexdigest()
+    if record_id is not None:
+        conn.execute(f'UPDATE {table} SET confirmation_key=?,confirmation_hash=?,id_usuario_confirmacion=? WHERE {record_key}=?',
+            (key,digest,session['id_usuario'],record_id))
+        return None
+    previous=conn.execute(f'SELECT * FROM {table} WHERE id_usuario_confirmacion=? AND confirmation_key=?',(session['id_usuario'],key)).fetchone()
+    if not previous:return None
+    if previous[field]!=entity_id or previous['confirmation_hash']!=digest:
+        raise ValueError('Esta confirmacion ya se uso con otros datos. Abre un nuevo seguimiento.')
+    request=conn.execute(f'SELECT id_solicitud FROM solicitudes_presidente WHERE {link}=? AND {field}=? ORDER BY id_solicitud LIMIT 1',
+        (previous[record_key],entity_id)).fetchone()
+    return {'ok':True,'record_id':previous[record_key],'request_id':request['id_solicitud'] if request else None}
 
 def migrate(conn):
     if conn.execute("SELECT 1 FROM web_migrations WHERE version='work_module02_v1'").fetchone():

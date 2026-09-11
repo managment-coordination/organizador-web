@@ -2,7 +2,7 @@
 
 ## Estado
 
-Actualizacion posterior: el modulo 04 sustituye la solicitud implicita al asignar al presidente por una accion explicita. Ver `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`; los compromisos y el responsable general siguen siendo independientes.
+Actualizacion 11/09/2026: el modulo 04 crea una solicitud automaticamente al confirmar un seguimiento con siguiente responsable Presidente. No ocurre al editar ni por crear la ficha. Ver `MODULO_04_NOTIFICACIONES_PRESIDENCIA.md`; los compromisos y el responsable general siguen siendo independientes.
 
 Definicion funcional confirmada por el usuario el 08/09/2026: 100%. Implementacion, pruebas y publicacion en Ubuntu: 100% del alcance confirmado. El porcentaje no certifica toda la aplicacion ni sustituye la aceptacion del usuario durante el uso real.
 
@@ -131,8 +131,8 @@ Las cinco reglas anteriores fueron confirmadas por el usuario mediante respuesta
 - Se muestra Descripcion general al inicio de la ficha de tareas y proyectos. Hasta cuatro lineas visibles; solo si el texto desborda se ofrece Leer mas / Leer menos, conservando el texto completo sin resumen generado.
 - El control se adapta a cambios de ancho/orientacion y expone su estado de expansion para accesibilidad. Seguimientos, comentarios, historicos y proximos pasos no cambian ni se compactan.
 - Validacion: `verify-login-description-ui.mjs`, escritorio 1440 px y movil 390 px, descripcion corta/larga, expansion, cambio de ancho y texto operativo integro; regresion `verify-operational-release.mjs` (21 bloques).
-- Sin migracion ni cambios de dominio. No publicado todavia.
-- Pendiente de decision del usuario: [modulo 04](MODULO_04_NOTIFICACIONES_PRESIDENCIA.md) exige una solicitud explicita y prohibe generarla por seleccionar Presidente. Se ha solicitado confirmar la sustitucion de ese acuerdo por la automatizacion propuesta; no se ha cambiado silenciosamente ni se ha creado una logica paralela.
+- La descripcion no requiere migracion ni cambio de dominio. La migracion aditiva de confirmaciones, pruebas y publicacion conjunta se documentan en [modulo 04](MODULO_04_NOTIFICACIONES_PRESIDENCIA.md).
+- El usuario ha ratificado la nueva regla: confirmar seguimiento con siguiente responsable Presidente crea la solicitud vinculada, con auditoria y proteccion de reintentos. Ya no queda pendiente esa decision.
 
 ### Recuperacion
 

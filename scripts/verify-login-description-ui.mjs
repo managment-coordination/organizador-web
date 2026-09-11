@@ -103,6 +103,45 @@ try {
     assert.ok(await page.locator('#entityDescriptionText').evaluate(n=>n.scrollHeight<=n.clientHeight+1));
     await page.locator('#closeModal').click();await page.setViewportSize(viewport);
     checks.push(`${viewport.width}px: short task and long task/project; expand/collapse and resize; full histories and next steps; no clipped panels`);
+    for(const type of ['task','project']){
+      const id=await page.evaluate(async type=>{
+        const cid=state.usuario.comunidades.find(c=>c.nombre==='Verification A').id_comunidad;
+        const result=await api('/api/entity/create',{method:'POST',body:JSON.stringify({type,payload:{id_comunidad:cid,titulo:'Solicitud automatica UX '+type,descripcion:'Revisar el presupuesto de reparacion del acceso.',responsable:state.usuario.nombre}})});
+        await openEntity(type,result.id);return result.id;
+      },type);
+      await page.locator('#recordComment').fill('El proveedor ha enviado el presupuesto.');
+      await page.locator('#recordNextStep').fill('Revisar y aprobar el presupuesto de reparacion.');
+      await page.locator('#recordNextOwner').fill('Presidente');
+      assert.equal(await page.evaluate(()=>selectedEntity.requests.length),0);
+      await page.locator('#recordNextOwner').fill(rootName);
+      page.once('dialog',d=>d.accept());await page.locator('#saveRecord').click();
+      await page.getByText('Seguimiento guardado.',{exact:true}).waitFor();
+      assert.equal(await page.evaluate(()=>selectedEntity.requests.length),0);
+      await page.locator('#recordComment').fill('Se solicita la decision sobre el presupuesto recibido.');
+      await page.locator('#recordNextStep').fill('Aprobar el presupuesto de reparacion del acceso.');
+      await page.locator('#recordNextOwner').fill('Presidente');
+      page.once('dialog',d=>d.dismiss());await page.locator('#saveRecord').click();
+      assert.equal(await page.evaluate(()=>selectedEntity.requests.length),0);
+      let persisted;
+      await page.route('**/api/entity/record',async route=>{
+        const response=await route.fetch();assert.equal(response.status(),200);persisted=await response.json();
+        await route.abort('failed');
+      });
+      page.once('dialog',d=>d.accept());await page.locator('#saveRecord').click();
+      await page.locator('#recordMessage .dangerText').waitFor();
+      assert.ok(persisted.request_id);
+      await page.unroute('**/api/entity/record');
+      page.once('dialog',d=>d.accept());await page.locator('#saveRecord').click();
+      await page.getByText('Seguimiento guardado y solicitud enviada al presidente.',{exact:true}).waitFor();
+      const requests=await page.evaluate(()=>selectedEntity.requests);
+      assert.equal(requests.length,1);assert.equal(requests[0].id_solicitud,persisted.request_id);
+      assert.equal(requests[0][type==='task'?'id_registro_tarea':'id_registro_proyecto'],persisted.record_id);
+      assert.equal(requests[0][type==='task'?'id_tarea':'id_proyecto'],id);
+      await page.locator('#requestSection').scrollIntoViewIfNeeded();
+      await page.screenshot({path:path.join(output,`${viewport.width}-${type}-president.png`)});
+      await page.locator('#closeModal').click();
+    }
+    checks.push(`${viewport.width}px: task/project edit without request; changed final owner; cancelled confirmation; automatic linked request and lost-response retry without duplicates`);
     const session=(await context.cookies()).find(c=>c.name==='organizador_web_session');
     const payload=JSON.parse(Buffer.from(session.value.split('.')[0],'base64url').toString());
     const expired=Buffer.from(JSON.stringify({...payload,exp:1})).toString('base64url');
