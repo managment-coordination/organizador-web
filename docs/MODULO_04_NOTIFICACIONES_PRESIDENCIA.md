@@ -77,3 +77,14 @@ El siguiente modulo es 05: Informes y documentos. Empezar por preguntas de conte
 - Checkpoint previo: `president-followup-pre-20260911` (`d326d80`, que incluye login y descripcion).
 - Backup previo: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-164501`; restauracion aislada `/tmp/organizador-erp0-restore-c66g43i0`, SQLite e inicio HTTP correctos.
 - Pruebas de servidor y navegador: tarea/proyecto, responsable final distinto, cancelar confirmacion, solicitud enlazada, reintento tras respuesta perdida, peticiones concurrentes, comentario sin proximo paso, presidente de otra comunidad, permisos, auditoria y rollback ante fallo del aviso. Escritorio 1440 px y movil 390 px, junto a login y descripcion. Evidencias de publicacion se registran tras superar el gate Ubuntu.
+
+### Publicacion conjunta verificada
+
+- Codigo publicado: `de064928e43eabda69a1e6482dd4f56cae7bb1a7`; incluye `d326d80` (login y descripcion). GitHub actualizado. Servicio `organizador-web.service`, puerto 8771, activo.
+- Gate sobre copia: `backups/stage-operational-20260911-165606`. Regresiones ERP 0/1/2/3 superadas; 22 bloques operativos (incluidos modulos 02 y 04) antes y despues de publicar, y 42 casos del nucleo economico en ambas comprobaciones. Historial economico y asambleas conservan sus hashes.
+- Antes de publicar: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-170027`, restauracion aislada `organizador-erp0-restore-2hgva1dg`, arranque HTTP correcto. El manifiesto automatico anterior indica commit desconocido porque produccion no es un checkout Git; no se atribuye al nuevo commit.
+- Backup final: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-170342`; restauracion aislada `organizador-erp0-restore-ivn390f1`, 166 tablas, integridad y arranque HTTP correctos, sin errores FK. Ambas restauraciones estan dentro de `stage-operational-20260911-165606/verification-temp/`.
+- Evidencia automatica de despliegue en el backup final: `erp3-publication-proof.json` (nombre conservado por el procedimiento existente; esta entrega no modifica ERP 3).
+- Navegador: siete bloques verificados a 1440/390 px; evidencias locales `C:/Users/EQUIPO/AppData/Local/Temp/organizador-login-description-72DOeB`. Acceso Tailscale y login publicado verificados en ambos anchos (`organizador-live-followup-djvPlc`).
+- Smoke de solo lectura con los cinco perfiles reales: 28 rutas correctas e integridad SQLite `ok`. No se han creado seguimientos ni solicitudes de prueba en produccion. No se ha tocado UNO Marbella.
+- Las pestanas que estuvieran abiertas deben recargarse para utilizar los nuevos mensajes, descripcion y claves de confirmacion del cliente.
