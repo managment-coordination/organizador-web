@@ -154,3 +154,12 @@ Segundo checkpoint, adaptador incluido:
 ## Publicacion
 
 No realizada. Produccion conserva ERP 0-3 y su configuracion previa; comprobacion final SSH: `organizador-web.service` activo. ERP 4 no esta listo para uso bancario ni para declarar cerrado su contrato operativo hacia ERP 5. El 75% restante sigue pendiente, no bloqueado por una nueva decision del usuario. No continuar a ERP 5.
+
+## Checkpoint de resultados y transporte protegido
+
+- Codigo: `7b8904f8849a01dc033d4411a6de7fd70d82a57d`; checkpoint de continuidad `erp4-progress-results-20260911`.
+- Backup: `backups/erp4-progress-results-20260911/erp0-backup-20260911-220731`.
+- Restauracion: `%TEMP%/organizador-erp0-restore-vhgw3h7y`; clave sintetica independiente en `%TEMP%/erp4-checkpoint-custody-10yyf3pd`.
+- 201 tablas identicas, integridad/FK correctas, valores descifrados identicos y 17 pruebas del adaptador desde el codigo restaurado. Fuente sintetica con exportacion, cobro e imputacion ERP 3 y devolucion; no datos bancarios reales. Prueba mecanica `erp4-restore-proof.json` dentro del backup.
+- Continuar desde este checkpoint y la lista de pendientes exactos, no desde `686896a`. No volver a implementar XML, transaccion compartida ERP 3, resultados/reenvios ni transporte protegido ya existentes.
+- No publicar ni conceder el hito 4B hasta cerrar sus operaciones pendientes; tampoco habilitar datos bancarios reales por disponer de pruebas con claves temporales.
