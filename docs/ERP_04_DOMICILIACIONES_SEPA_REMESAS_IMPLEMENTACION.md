@@ -15,9 +15,9 @@ No se han tratado datos bancarios reales ni migrado produccion.
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
 | 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
-| 4B Servicios deterministas | Cuentas, mandatos, domiciliaciones y reservas parciales; faltan XML/resultados y servicios detallados abajo | Sin puntos |
+| 4B Servicios deterministas | Cuentas, mandatos, domiciliaciones y reservas parciales; adaptador XML puro probado, aun sin exportacion integrada/resultados economicos | Sin puntos |
 | 4C Recorrido integrado | No implementado | Sin puntos |
-| 4D Aceptacion y publicacion | No implementado; 28 pruebas del nucleo no equivalen a los 50 casos del contrato | Sin puntos |
+| 4D Aceptacion y publicacion | No implementado; las pruebas del nucleo/adaptador no equivalen a los 50 casos integrales del contrato | Sin puntos |
 
 ## Checkpoint y recuperacion previa
 
@@ -59,22 +59,33 @@ No se han tratado datos bancarios reales ni migrado produccion.
 - Reservas exclusivas transaccionales, concurrencia de dos preparaciones, rechazo de propuestas obsoletas, cancelacion local anterior a exportacion y liberacion sin tocar deuda.
 - Saldo/obligados/pagador leidos de ERP 3. Preparar/cancelar no crea cobro, devuelve dinero ni cambia deuda.
 
+### Adaptador SEPA puro, pendiente de integrar
+
+- `banking_adapter.py`: generacion CORE `pain.008.001.08` con lxml, estructura/direcciones/importe exacto, grupos por secuencia, referencias unicas y bytes reproducibles para las mismas entradas.
+- XSD oficiales ISO `pain.008.001.08` y `pain.002.001.10` incorporados sin modificacion, con URL y SHA-256 en `server/erp_core/banking_xsd/README.md`. Verificacion del checksum en ejecucion; no descarga de XSD ni resolucion de entidades en runtime.
+- Parser `pain.002.001.10` sin efectos de dominio: acuse/ACSC es tecnico, no acredita cobro; RJCT identifica rechazo, pendiente conserva incertidumbre. La expansion/correspondencia por linea y su confirmacion economica aun no estan integradas.
+- Configuracion tipada pura de calendario, corte, zona horaria, limites, paises y modo prueba/real; modo real exige declaraciones de aceptacion del perfil y revision de instrucciones externas. Falta persistencia/configuracion UX y verificacion de implantacion; esto no habilita exportacion real.
+- Validacion adicional de localidad obligatoria, mandato puntual sin dos instrucciones en el lote, datos originales para enmienda, IBAN correcto, cantidades exactas y direcciones estructuradas. No truncado silencioso.
+- Cargas limitadas a 16 MiB/32 niveles/200000 elementos; DTD/XXE rechazados, errores sin revelar datos del fichero. No log de errores XSD con valores sensibles.
+- Falta congelar en el servicio de preparacion todos los campos que exige el adaptador (secuencia, concepto y datos originales de enmienda), asi como perfil/configuracion, validacion fuera del lock, artefacto cifrado, descarga auditada e inmutabilidad de bytes en el flujo real. Los fixtures anteriores no son remesas exportables ni se completaran inventando datos.
+
 ## Pruebas ejecutadas
 
 Runtime aislado e ignorado por Git: `backups/erp4-runtime/Scripts/python.exe`.
-Dependencias fijadas en `server/requirements-erp4.txt`: cryptography 46.0.7, lxml 6.1.3 y python-stdnum 2.2. lxml esta preparado, aun no hay adaptador XML.
+Dependencias fijadas en `server/requirements-erp4.txt`: cryptography 46.0.7, lxml 6.1.3, python-stdnum 2.2 y tzdata 2026.3. Esta ultima permite comprobar zonas horarias tambien en Windows sin depender de una base del sistema ausente.
 
 | Comando (desde raiz) | Resultado | Evidencia aislada |
 | --- | --- | --- |
-| `scripts/verify-erp4-foundations.py backups/erp4-pre-20260911.db` | 28/28 correctas, 27,408 s; integridad, FK e historicos comprobados por caso | `%TEMP%/organizador-erp4-foundations-g_7t6ycw` |
+| `scripts/verify-erp4-foundations.py backups/erp4-pre-20260911.db` | 29/29 correctas, 29,484 s; integridad, FK e historicos comprobados por caso | `%TEMP%/organizador-erp4-foundations-vuxqahi_` |
+| `scripts/verify-erp4-adapter.py` | 17/17 correctas; XML/XSD, 200 lineas, suma 100 entre tres, esquema alterado, XXE, calendario, direcciones y acuse sin cobro | Fixtures en memoria, sin DB ni datos reales |
 | `scripts/verify-erp0-foundations.py` sobre copia | 11 comprobaciones correctas | `%TEMP%/organizador-erp0-foundations-kok6jtmp` |
 | `scripts/verify-erp1-master-data.py` sobre copia | 26 comprobaciones correctas | `%TEMP%/organizador-erp1-master-data-h6n9uty5` |
 | `scripts/verify-erp2-complete.py` sobre copia | Recorrido completo correcto, incluido 40/16 | `%TEMP%/organizador-erp2-complete-mx_spe76` |
-| `scripts/verify-erp3-foundations.py` sobre copia | 42/42 correctas | `%TEMP%/organizador-erp3-foundations-f4hq7nvm` |
+| `scripts/verify-erp3-foundations.py` sobre copia | 42/42 correctas, repetidas despues del adaptador en 29,318 s | `%TEMP%/organizador-erp3-foundations-6ppq5zki` |
 
-Los 28 casos cubren cifrado/manipulacion/AAD, restauracion con clave correcta/incorrecta, rotacion KEK/HMAC, ausencia de privilegios implicitos, aislamiento, idempotencia, cuenta compartida, mandato revocado, cambios historicos, alta masiva atomica, reservas concurrentes, cancelacion y guardas ERP 3. Incluyen el pagador real de ERP 3 con campos de presentacion adicionales al tipo/ID.
+Los 29 casos del nucleo cubren cifrado/manipulacion/AAD, restauracion con clave correcta/incorrecta, rotacion KEK/HMAC, ausencia de privilegios implicitos, aislamiento, idempotencia, cuenta compartida, mandato revocado, cambios historicos, alta masiva atomica, reservas concurrentes, cancelacion y guardas ERP 3. Incluyen el pagador real de ERP 3 con campos de presentacion adicionales al tipo/ID y rechazo del mandato puntual repetido en un mismo lote.
 
-No se han ejecutado aun los 50 casos completos del contrato, XSD, interfaz escritorio/movil ni smoke test ERP 4 en Ubuntu. No contabilizarlos como realizados.
+No se han ejecutado aun los 50 casos completos del contrato, interfaz escritorio/movil ni smoke test ERP 4 en Ubuntu. La validacion XSD sintetica no equivale a la aceptacion de ficheros por el banco. No contabilizar como realizados los recorridos integrados pendientes.
 
 ## Mejoras autonomas implementadas
 
@@ -82,13 +93,15 @@ No se han ejecutado aun los 50 casos completos del contrato, XSD, interfaz escri
 - Problema: rotar HMAC podia convertir un reintento en comando nuevo. Solucion: busqueda en indices retenidos y reutilizacion de la identidad anterior. Prueba 28.
 - Problema: anulacion legacy podia eludir una reserva bancaria. Solucion: guarda en propuesta ERP 3 y trigger transaccional, sin cambiar el saldo ni las reglas de anulacion. Pruebas 25-26 y regresion ERP 3.
 - Problema: comparar objetos de pagador completos dependia del nombre mostrado. Solucion: identidad por tipo/ID, conservando el resto en el snapshot. Fixture ERP 3 con nombre y reserva correcta.
+- Problema: validar solo XSD permitia omitir localidad y repetir un mandato puntual en instrucciones distintas. Solucion: guardas semanticas del adaptador y del lote. Pruebas de adapter 05/17 y dominio 29.
+- Problema: conversion automatica de saltos de linea podia invalidar hashes de XSD al publicar en Ubuntu. Solucion: `.gitattributes` conserva bytes originales solo para estos esquemas; la prueba de restauracion ejecuta tambien el adaptador archivado.
 
 ## Pendientes exactos de continuacion
 
 Continuar desde estos servicios, sin reiniciar migraciones ni repetir el diseno:
 
 1. Completar servicios 4B: cambio historico de domiciliacion y configuracion, alcance por concepto/pagador, perfiles bancarios y puertas de activacion, enmiendas completas, prenotificaciones/acuerdos excepcionales, consulta/importacion observada, ciclo de inactividad/mandato puntual y revisiones de propuestas.
-2. Implementar adaptador CORE `pain.008.001.08`, validacion XSD oficial y reglas del perfil, sumas/referencias, artefacto cifrado inmutable y descarga auditada. No usar namespaces TVS de pruebas como namespace de fichero bancario productivo.
+2. Integrar el adaptador CORE ya existente (no reescribirlo): persistir perfiles versionados, completar snapshots de secuencia/concepto/enmienda, preparar/validar fuera del lock y confirmar huella/version, artefacto cifrado inmutable y descarga auditada. Los XSD oficiales ya estan fijados; no repetir su descarga. Implementar enlace/correspondencia del parser tecnico pain.002 existente sin deducir cobro desde ACSC.
 3. Presentacion/cancelacion posterior a exportacion, retirada confirmada, resultado por intento/linea y referencias externas, rechazo/devolucion/reenvio humano. Usar identidad canonica de operacion y primitivas ERP 3 en la misma transaccion; no abrir dos transacciones SQLite anidadas ni crear una deuda paralela.
 4. Completar seguridad integrada: HTTPS real del gateway, revelacion con reautenticacion, ACL de evidencias/exportaciones, provisionado/custodia y restauracion operativa en Ubuntu, rotacion y retirada controlada de indices. Claves/configuracion productivas NO aprovisionadas.
 5. Integrar dispatcher y HTTP, vistas Bancos y remesas del design system actual, enlaces de comunidad/propiedad/propietario, seleccion masiva y revision comprensible. No hay UI ERP 4 que pueda probarse aun.
@@ -107,7 +120,7 @@ Comprobacion final superada con codigo `6a6363ddc515fb5022e09af3d8a6d0c8a2283e42
 - Custodia independiente de la clave sintetica: `%TEMP%/erp4-checkpoint-custody-so6l66y3`.
 - 196 tablas con hashes identicos; integridad y FK correctas; valores descifrados identicos; claves excluidas del archivo de aplicacion.
 - Evidencia mecanica: `erp4-restore-proof.json` dentro del backup. El codigo utilizado para descifrar procede del archivo restaurado, no del working tree.
-- Checkpoint de continuidad: `erp4-progress-foundations-20260911`. Los cambios posteriores al commit de codigo son documentales; no modifican migraciones ni datos.
+- Checkpoint de fundamentos: `erp4-progress-foundations-20260911`. La ampliacion posterior del adaptador conserva las migraciones 13-15; se registra un segundo checkpoint y restauracion para ese codigo.
 - Estos fixtures y sus claves son recuperacion sintetica de prueba, no custodia bancaria productiva. No borrar la copia de clave antes de acabar la validacion; en produccion se necesitara almacenamiento independiente duradero, ACL, retencion y ensayo de perdida del servidor.
 
 ## Publicacion

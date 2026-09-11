@@ -43,6 +43,13 @@ with os.fdopen(fd, 'wb') as target, key_source.open('rb') as original:
 created = json.loads(subprocess.check_output([sys.executable, str(ROOT / 'scripts/erp0-backup.py'), '--app', str(app),
     '--output-root', str(args.output_root.resolve()), '--code-commit', commit], text=True))
 restored = json.loads(subprocess.check_output([sys.executable, str(ROOT / 'scripts/verify-erp0-backup.py'), created['backup'], '--keep'], text=True))
+adapter_test = Path(restored['restore']) / 'scripts' / 'verify-erp4-adapter.py'
+adapter_verified = False
+if adapter_test.exists():
+    validation = subprocess.run([sys.executable, str(adapter_test)], capture_output=True, text=True)
+    if validation.returncode:
+        raise SystemExit('Fallo de validacion del adaptador restaurado: ' + validation.stderr)
+    adapter_verified = True
 sys.path.insert(0, str(Path(restored['restore']) / 'server'))
 from erp_core.banking_crypto import BankVault
 from erp_core.database import connect
@@ -76,6 +83,6 @@ with tarfile.open(Path(created['backup']) / 'application-and-documents.tar.gz') 
 proof = {'ok': True, 'synthetic_only': True, 'production_bank_activation': False, 'commit': commit,
          'backup': created['backup'], 'restore': restored['restore'], 'separate_custody': str(custody),
          'tables': len(before[0]), 'all_table_hashes_identical': True, 'decrypted_values_identical': True,
-         'keys_excluded_from_application_archive': True}
+         'keys_excluded_from_application_archive': True, 'restored_adapter_tests_passed': adapter_verified}
 (Path(created['backup']) / 'erp4-restore-proof.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
 print(json.dumps(proof))

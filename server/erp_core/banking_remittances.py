@@ -57,7 +57,7 @@ class RemittanceOperations:
         ids = [identity(v) for v in ids]
         if len(ids) != len(set(ids)):
             raise ContractError('Hay recibos repetidos.')
-        lines, total = [], 0
+        lines, total, single_use = [], 0, set()
         for rid in sorted(ids):
             receipt = conn.execute('SELECT * FROM erp_recibos WHERE id_comunidad=? AND id=?', (community, rid)).fetchone()
             if not receipt:
@@ -113,6 +113,10 @@ class RemittanceOperations:
                 JOIN erp_remesa_lineas l ON l.id=r.line_id JOIN erp_mandato_versiones v ON v.id=l.mandate_version_id
                 WHERE r.id_comunidad=? AND v.mandate_id=? AND r.state IN ('activa','consumida')''', (community, mandate['id'])).fetchone()):
                 raise ConflictError('El mandato puntual ya tiene una instruccion activa o utilizada.')
+            if mandate['kind'] == 'puntual':
+                if mandate['id'] in single_use:
+                    raise ConflictError('Un mandato puntual no puede cubrir varias instrucciones del lote.')
+                single_use.add(mandate['id'])
             if not any(n['receipt_id'] == rid and n['amount_cents'] == str(amount) and n['requested_on'] == requested
                        and n['mandate_id'] == mandate['id'] for n in notice['lines']):
                 raise ContractError('La prenotificacion no coincide con importe, fecha y mandato del recibo.')

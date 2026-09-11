@@ -21,7 +21,7 @@ from erp_core.banking_crypto import BankVault
 from erp_core.banking_service import BankingService, CAPABILITIES
 from erp_core.contracts import CommandEnvelope, QueryEnvelope
 from erp_core.database import connect, write_transaction
-from erp_core.errors import ContractError, ConflictError
+from erp_core.errors import ContractError, ConflictError, NotFoundError
 from erp_core.migrations import apply_all, MIGRATIONS
 from erp_core.receivables_service import ReceivablesService
 from erp_core.receivables_projection import receipt_balance
@@ -81,7 +81,7 @@ class BankingTests(unittest.TestCase):
         self.grant('manage_accounts')
         return self.service.account_create(self.session, self.envelope('account.create', {'iban': IBAN}))['entity']
 
-    def mandate_setup(self):
+    def mandate_setup(self, kind='recurrente'):
         a = self.account()
         self.grant('configure_creditor')
         self.grant('manage_mandates')
@@ -93,7 +93,7 @@ class BankingTests(unittest.TestCase):
             'address': {'country': 'ES', 'town': 'Madrid'}, 'effective_from': '2026-01-01'}))['entity']
         owner = self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? LIMIT 1', (self.community,)).fetchone()[0]
         properties = [r[0] for r in self.conn.execute('SELECT id_propiedad FROM cf_propiedades WHERE id_comunidad=? LIMIT 3', (self.community,))]
-        payload = {'creditor_id': creditor['id'], 'kind': 'recurrente', 'account_id': a['id'],
+        payload = {'creditor_id': creditor['id'], 'kind': kind, 'account_id': a['id'],
             'debtor': {'type': 'owner', 'id': owner}, 'debtor_name': 'Pagador sintetico',
             'address': {'country': 'ES', 'town': 'Madrid'}, 'signers': [{'subject': {'type': 'owner', 'id': owner}, 'capacity': 'Titular acreditado'}],
             'signed_on': '2026-01-01', 'effective_from': '2026-01-01', 'property_ids': properties, 'rum': 'SYNTHETIC-MANDATE'}
@@ -300,7 +300,7 @@ class BankingTests(unittest.TestCase):
         account, mandate, payload = self.mandate_setup()
         payload['rum'] = 'OTHER-SYNTHETIC'
         payload['signers'][0]['subject']['id'] = 999999
-        with self.assertRaises(Exception):
+        with self.assertRaises(NotFoundError):
             self.service.mandate_create(self.session, self.envelope('mandate.create', payload))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_mandatos').fetchone()[0], 1)
 
@@ -331,8 +331,8 @@ class BankingTests(unittest.TestCase):
                 {'mandate_id': mandate['id'], 'billing_config_ids': [999999], 'effective_from': '2026-01-01'}, version=2))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_domiciliaciones').fetchone()[0], 0)
 
-    def remittance_setup(self):
-        account, mandate, payload = self.mandate_setup()
+    def remittance_setup(self, kind='recurrente'):
+        account, mandate, payload = self.mandate_setup(kind)
         self.grant('prepare')
         self.grant('present_cancel')
         self.service.mandate_transition(self.session, self.envelope('mandate.transition',
@@ -451,6 +451,11 @@ class BankingTests(unittest.TestCase):
         self.assertTrue(replay['idempotent_replay'])
         self.assertEqual(result['entity'], replay['entity'])
         self.assertEqual(service.account_create(self.session, self.envelope('account.create', {'iban': IBAN}))['entity']['id'], result['entity']['id'])
+
+    def test_29_single_use_mandate_cannot_cover_three_instructions(self):
+        with self.assertRaises(ConflictError):
+            self.remittance_setup('puntual')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_remesa_reservas').fetchone()[0], 0)
 
 
 if __name__ == '__main__':
