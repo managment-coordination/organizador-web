@@ -123,6 +123,15 @@ Comprobacion final superada con codigo `6a6363ddc515fb5022e09af3d8a6d0c8a2283e42
 - Checkpoint de fundamentos: `erp4-progress-foundations-20260911`. La ampliacion posterior del adaptador conserva las migraciones 13-15; se registra un segundo checkpoint y restauracion para ese codigo.
 - Estos fixtures y sus claves son recuperacion sintetica de prueba, no custodia bancaria productiva. No borrar la copia de clave antes de acabar la validacion; en produccion se necesitara almacenamiento independiente duradero, ACL, retencion y ensayo de perdida del servidor.
 
+Segundo checkpoint, adaptador incluido:
+
+- Codigo: `173496ef9ed06b5b3faf325917e0f45dc2a662da` (adaptador en `7003633`, correccion de empaquetado XSD en `173496e`).
+- Backup: `backups/erp4-progress-sepa-20260911/erp0-backup-20260911-205958`.
+- Restauracion: `%TEMP%/organizador-erp0-restore-x2_8h2kn`; custodia independiente: `%TEMP%/erp4-checkpoint-custody-tjfnyx5w`.
+- 196 tablas identicas, integridad/FK correctas, secretos recuperados y 17 pruebas del adaptador ejecutadas desde el codigo restaurado. Evidencia: `erp4-restore-proof.json` en el backup, `restored_adapter_tests_passed=true`.
+- Incidencia detectada y corregida: el primer archivo Git habia normalizado XSD antes de aplicar `-text`; se reindexaron exclusivamente los dos esquemas para conservar sus bytes originales y se repitio la restauracion. La copia fallida anterior no acredita cierre y no se publico.
+- **Continuar desde `erp4-progress-sepa-20260911`**, no desde el checkpoint anterior. Documentacion posterior a `173496e` no cambia codigo ni datos.
+
 ## Publicacion
 
-No realizada. Produccion conserva ERP 0-3 y su configuracion previa. ERP 4 no esta listo para uso bancario ni para declarar cerrado su contrato operativo hacia ERP 5.
+No realizada. Produccion conserva ERP 0-3 y su configuracion previa; comprobacion final SSH: `organizador-web.service` activo. ERP 4 no esta listo para uso bancario ni para declarar cerrado su contrato operativo hacia ERP 5. El 75% restante sigue pendiente, no bloqueado por una nueva decision del usuario. No continuar a ERP 5.
