@@ -45,7 +45,7 @@ economic_tables = ["erp_simulaciones", "erp_simulacion_resultados", "erp_calculo
 apply_all(conn, MIGRATIONS)
 economic_before = {table: table_hash(conn, table) for table in economic_tables}
 apply_all(conn, MIGRATIONS)
-assert conn.execute("SELECT MAX(version) FROM erp_schema_migrations").fetchone()[0] == 6
+assert [tuple(row) for row in conn.execute('SELECT version,name,checksum FROM erp_schema_migrations ORDER BY version')] == [(m.version,m.name,m.checksum) for m in MIGRATIONS]
 assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 assert not list(conn.execute("PRAGMA foreign_key_check"))
 checks.append("migracion 6 reentrante, integra y aditiva")

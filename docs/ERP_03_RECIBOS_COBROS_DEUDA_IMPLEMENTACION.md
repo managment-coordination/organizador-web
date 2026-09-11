@@ -1,6 +1,6 @@
 # ERP 3 - Implementacion de recibos, cobros y deuda
 
-Fecha: 11/09/2026. Estado: DESARROLLO. **ERP 3 no esta completado ni publicado. Implantacion certificada: 25%.** Hito 1: contrato y migraciones aditivas, compatibilidad observada, permisos y restauracion en copia verificados. Los servicios y la interfaz se han ampliado, pero no se concede el segundo hito hasta cubrir todas las operaciones y sus casos. Diseno cerrado: 100%; recorrido web integrado y probado parcialmente; aceptacion funcional completa: pendiente. La seccion "Continuacion web y correcciones" contiene el estado vigente, posterior a las evidencias iniciales.
+Fecha: 11/09/2026. Estado: PRUEBAS. **Implantacion certificada: 75%. No publicado.** Hitos 1-3 acreditados: contrato/migraciones, servicios y recorrido integrado. Diseno cerrado: 100%. Falta el hito de aceptacion final del paquete Ubuntu, restauracion productiva y publicacion. La seccion "Candidato de cierre" contiene el estado vigente; las anteriores conservan la cronologia.
 
 Contrato obligatorio: [ERP 3 ratificado](ERP_03_RECIBOS_COBROS_DEUDA.md). [Roadmap](ERP_COMUNIDADES_ROADMAP.md). Sin cambios en las seis decisiones ni avance ERP 4/5/6.
 
@@ -70,7 +70,7 @@ Las evidencias de esta seccion inicial corresponden al checkpoint de servicios; 
 - MEJORA AUTONOMA IMPLEMENTADA: total paginado independiente de la pagina; subtotal y advertencias ante cobertura incompleta; evita presentar como deuda total segura una consulta parcial o una atribucion legacy no acreditada.
 - MEJORA AUTONOMA IMPLEMENTADA: gasto de devolucion resuelve destinatario/pagador a su propia emision y ejercicio abierto correspondiente, manteniendo separados los obligados historicos del gasto y el recibo original.
 
-## Continuacion web y correcciones (estado vigente)
+## Continuacion web y correcciones (checkpoint anterior)
 
 Reanudacion desde `cf61ef7`, sin revertir `67c12a3`. Checkpoint previo `erp3-resume-web-20260911`. Codigo de avance `be1ce8bdbdc37aebd70186ce8fd06cd603518b6f`, tag `erp3-progress-web-20260911`; NO es cierre/publicacion.
 
@@ -108,3 +108,65 @@ Reanudacion desde `cf61ef7`, sin revertir `67c12a3`. Checkpoint previo `erp3-res
 Certificacion: hito 1 **25/25**; hito 2 pendiente de completar; hitos 3/4 sin certificar. **ERP 3 permanece en 25% certificado.** El incremento de codigo y pruebas no concede puntos parciales. No se declara 100%, no se publica y no se inicia ERP 4. No hay nueva decision funcional material del usuario; queda implementacion y verificacion.
 
 MEJORA UX AUTONOMA: filtros habituales colapsados, tabs adaptadas al movil, filas legibles sin desbordamiento, conservacion de valores al volver desde revision y bloqueo de doble pulsacion. MEJORA TECNICA AUTONOMA: revalidacion de emitidos al aprobar regularizacion, identidad desconocida acreditada mediante hecho separado y advertencia de limitaciones historicas tambien en el agente. Sin cambios en reglas cerradas.
+
+## Candidato de cierre
+
+Continuacion desde `erp3-progress-web-20260911`, sin revertirlo. Previo `erp3-pre-closure-20260911` en `b07635e`. Candidato de codigo `675f736dab2e88aa9c1842a528467c1034648def`, tag `erp3-candidate-20260911`; la ampliacion de pruebas y gates posterior se incorpora al checkpoint de aceptacion. No es aun publicacion.
+
+### Pendientes funcionales completados
+
+- Migracion aditiva 12: activacion historica y correspondencias de obligaciones inmutables; checksums anteriores intactos. Correspondencia completa, exacta, explicita y revisable; evidencia, hash de fuente, periodo, propiedad, emision original y saldo. No inventa cobros ni cambia calidad observada. Cambiar posteriormente la fuente bloquea su uso, no reinterpreta el pasado.
+- Regularizacion consume emitido original historico acreditado, no pendiente ni cobrado; impide reemision de la misma obligacion. Abonos agregados sin desglose suficiente bloquean la atribucion por periodo.
+- Exportaciones CSV/Excel auditadas, todas las paginas, filtros/corte/limitaciones, importes exactos en texto, neutralizacion de formulas, SHA-256 y reintento idempotente. Hasta 20.000 filas/12 MiB; no vuelca el fichero en auditoria/outbox. La respuesta idempotente conserva el archivo en el repositorio de comandos.
+- Imputacion N:M masiva: hasta 100 cobros/500 aplicaciones, transaccion unica, control acumulado por recibo/obligados, versiones, fondos disponibles, rollback total y confirmacion humana. Selectores consultan todas las paginas, no solo los primeros 50 recibos.
+- Antiguedad y consulta por persona de cobro; referencias documentales seleccionables y navegables con permisos, detalle protegido por capacidad sensible; consulta basica no revela sujetos personales.
+- UX de sustitucion de anulados, cuotas cero, reversos de abonos y aplicaciones, seleccion masiva de propiedades/obligados. Cobros vinculados a aperturas aparecen en su propiedad. Regularizaciones identificadas como lote comunitario completo, sin fingir que el filtro de ficha modifica su alcance.
+- MEJORA UX AUTONOMA: revision de emision en una fila por propiedad; paginacion movil de 10 registros, sin cambiar totales/exportaciones. Seleccion expresa del conjunto de obligados cuando existen varios.
+- MEJORA TECNICA AUTONOMA: cookie de sesion compacta (solo identificadores del ambito); mantiene autenticacion, revocacion y permisos refrescados en backend. La copia de siete comunidades excedia el limite del navegador con el formato anterior duplicado. Compatibilidad con sesiones previas conservada.
+- MEJORA TECNICA AUTONOMA: dependencias Python de Excel fijadas por version/SHA-256 y preparadas solo dentro de `server/_python_packages`; no requiere pip ni cambios globales de Ubuntu. Transporte de exportacion dimensionado para base64; resto de contratos conserva sus limites.
+
+### Evidencia de aceptacion
+
+- `verify-erp3-foundations.py`: 40 casos superados en `organizador-erp3-foundations-gsg4ymp6`; ampliados a 42 con los ejemplos literales de devolucion total/cobro desconocido y un cobro para dos recibos. Resultado final del paquete se registra en la publicacion.
+- `verify-erp3-emission.py`: `organizador-erp3-emission-3wt8f4tm`, 40/16, 46.704 centimos, cuota cero real de derrama, ajustes entre planes, emitido impagado, no prorrateo, destinatario tardio, inquilino destinatario/pagador alternativos, sustitucion y originales intactos.
+- `verify-erp3-activation.py`: `organizador-erp3-activation-vf5sdwv7`, 100 emitidos/25 cobrados/75 pendientes usa 100 como base; bloquea repeticion y cambio de fuente. Cada runner trabaja en copia propia.
+- `verify-erp3-web.mjs`: `organizador-erp3-web-16c2hO`, Playwright real 1440/390/360: carga/mapeo/reimportacion Excel, activacion, cobro, imputacion a recibo fuera de primera pagina, devolucion/reversion, exportacion, emision 40 propiedades y sustitucion; sin errores JS/desbordamiento. Capturas inspeccionadas; revision compactada tras inspeccion.
+- `verify-erp3-roles.mjs`: `organizador-erp3-roles-745vLr`, usuario financiero no root 1440/390, registro revisado, emision oculta sin permiso, comunidad ajena denegada, CSV >2 MiB y reintento con mismo hash.
+- `verify-erp3-legacy.py`: `organizador-erp3-legacy-hmb400j4`, copia consistente del historico real: 16.289 observaciones validas; subtotal/listado coinciden con comprobacion Decimal independiente, hashes originales intactos. No activa fuentes ni acredita automaticamente deuda personal.
+- ERP 0/operativa HTTP: `organizador-release-hNR19n`; revocacion, alcance, roles, documentos, reuniones y consultas sin regresion tras compactar cookie. ERP 2 completo: `organizador-erp2-complete-y0mmqs0n`; ERP 1: `organizador-erp1-master-data-hiyyyfls`. Onboarding actualizado para verificar catalogo completo de migraciones/checksums, no MAX(version)=6: `organizador-ux-onboarding-wtqlb9y_`, resultados ERP 2 identicos.
+- Backup sintetico del candidato: `C:/Users/EQUIPO/Documents/Codex/ERP3-synthetic-checkpoints/erp0-backup-20260911-165459`. Restauracion `organizador-erp0-restore-cqdfp9wx`: 166 tablas, SHA-256, FK/integridad, originales y proyecciones identicos. `runtime_accessible:false` en esta comprobacion local; la puerta Ubuntu exige ademas HTTP aislado. NO restaurar este fixture en produccion.
+
+### Matriz de los 35 casos del contrato
+
+F = `verify-erp3-foundations.py`; E = `verify-erp3-emission.py`; W = `verify-erp3-web.mjs`; R = `verify-erp3-roles.mjs`. Los nombres de metodos F siguientes omiten el prefijo `test_`. Ninguna equivalencia sustituye una comprobacion pendiente de publicacion.
+
+| Casos | Evidencia ejecutable |
+|---|---|
+| 1, 2, 3, 4, 7 | F `partial_many_collections_and_overpayment`, `paid_credit_frees_funds_atomically` |
+| 5 | F `acceptance_one_collection_multiple_receipts` |
+| 6, 8 | F `acceptance_full_return_and_unidentified_cash` |
+| 9 | F `partial_return_keeps_original` |
+| 10 | F `return_fee_policies_separate_charge` |
+| 11, 12, 13 | F `credit_void_and_atomic_failure`, `paid_credit_frees_funds_atomically`, `immutable_and_cross_community_fk`; E sustitucion |
+| 14, 26, 27 | E 40/16, transmision, emision temprana/tardia, configuracion de inquilino y sujetos congelados |
+| 15 | F `shared_obligated_group_never_splits_or_doubles_charge`, `person_is_not_inferred_from_owner_or_payer`; ERP 1 copropiedad 60/40 |
+| 16 | E materializacion, nueva propuesta sin doble reserva, ajustes de otro plan y aprobacion obsoleta; activacion historica |
+| 17, 19, 29 | F `history_staging_cutoff_identity_and_rollback`, `opening_collection_and_reversal_preserve_source`, `historical_activation_review_idempotency_and_originals`; W reimportacion |
+| 18, 25 | F `mixed_return_and_known_time_no_automatic_netting`, `credit_reversal_preserves_original_and_cutoffs`, `refund_excess_does_not_reopen_receipt` |
+| 20 | F `concurrent_confirmation_cannot_spend_twice` |
+| 21, 22 | F `read_only_user_and_no_implicit_economic_grants`, `financial_user_document_evidence_and_export_permissions`, `immutable_and_cross_community_fk`; R, regresion HTTP carga sin permiso |
+| 23 | F `idempotency_and_permissions`, `outbox_repeated_delivery_has_one_synthetic_consumer_effect` (consumidor sintetico, no ERP 6) |
+| 24 | Backup/restauracion sinteticos anteriores; backup/restauracion productivos HTTP exigidos por gate final, pendientes |
+| 28 | F `batch_allocation_many_to_many_atomic_and_replay`, `uncollectible_discard_and_period_lock_preserve_debt`, `multiple_receipts_and_stale_preview`; E |
+| 30 | W, R y capturas inspeccionadas, dimensiones 360/390/1440; documentos positivos F y regresion HTTP |
+| 31 | F `paid_credit_frees_funds_atomically`, `credit_application_reversal_does_not_create_cash`, `opening_credit_application_and_refund` |
+| 32, 33 | F `mixed_return_and_known_time_no_automatic_netting`, `uncollectible_discard_and_period_lock_preserve_debt` |
+| 34, 35 | F `exceptional_transfer_and_explicit_later_payment`, `transfer_lot_failure_rolls_back_all_lines` |
+
+### Puerta final y limites
+
+Hitos 1/2/3: 25 puntos cada uno, **75%**. Hito 4 no concedido hasta paquete exacto, Ubuntu, restauracion y smoke. El primer staging Ubuntu se detuvo correctamente por una asercion antigua de onboarding; no hubo parada, despliegue ni migracion real. Se corrige la comprobacion, no el dominio certificado.
+
+`deploy-operational-release.py` prepara dependencias locales verificadas y copias consistentes; ejecuta ERP 1/onboarding/2A/2B/2/3 y regresion HTTP. Publicacion requiere backup ERP 0 restaurado con HTTP aislado, historicos iguales y FK/integridad. Comprueba /health y denegacion sin sesion; repite pruebas sobre copias con codigo instalado y realiza backup posterior/restauracion. Servicio y rutas limitados a organizador-web/8771. No toca UNO Marbella.
+
+No requiere decisiones funcionales nuevas. Activar dinero real sigue exigiendo permisos, obligados y cobertura/corte acreditados por comunidad. No se activan automaticamente datos observados ni se concede acceso financiero a usuarios reales. No se ha implementado ERP 4.

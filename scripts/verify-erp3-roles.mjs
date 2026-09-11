@@ -44,6 +44,7 @@ try {
   await page.getByRole('button',{name:'Registrar cobro',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Preparar emision',exact:true}).count(),0);
   await page.getByRole('button',{name:'Registrar cobro',exact:true}).click();await page.locator('[name=amount]').fill('15,25');await page.locator('[name=reference]').fill('FINANCIAL-'+width);await page.locator('[name=reason]').fill('Cobro revisado por usuario financiero');
   await page.getByRole('button',{name:'Revisar',exact:true}).click();await page.locator('#finAck').check();await page.getByRole('button',{name:'Confirmar',exact:true}).click();await page.getByRole('status').filter({hasText:'Operacion confirmada'}).waitFor();
+  await page.getByRole('button',{name:'Registrar cobro',exact:true}).waitFor();
   await page.screenshot({path:path.join(output,`${width}-financial-user.png`),fullPage:false});
   const denied=await context.request.get(base+'/api/erp/query?'+new URLSearchParams({query:'erp3.receipt.list',id_comunidad:'999999',filters:'{}'}));assert.equal(denied.status(),403);
   assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1),false);

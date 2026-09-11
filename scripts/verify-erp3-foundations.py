@@ -446,6 +446,31 @@ class ERP3Tests(unittest.TestCase):
         self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-14')['pending_cents'],'10000')
         self.assertEqual(receipt_balance(self.conn,self.community,rid,'2026-01-20','2026-02-01T00:00:00Z')['pending_cents'],'10000')
 
+    def test_acceptance_full_return_and_unidentified_cash(self):
+        rid=self.receipt();cid=self.collection();self.allocate(cid,rid,10000)
+        aid=self.conn.execute('SELECT id FROM erp_imputaciones WHERE receipt_id=?',(rid,)).fetchone()[0]
+        draft=self.command('return.preview',{'collection_id':cid,'effective_on':'2026-01-20','free_cents':'0','external_key':'RETURN-ALL',
+            'reversals':[{'allocation_id':aid,'amount_cents':'10000'}]})['entity']
+        self.command('return.confirm',{'proposal_id':draft['id']},draft['version'])
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'10000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'0')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['returned_cents'],'10000')
+        unknown=self.collection(50000,'UNIDENTIFIED')
+        self.assertEqual(collection_balance(self.conn,self.community,unknown)['available_cents'],'50000')
+        row=self.conn.execute('SELECT payer_owner_id,payer_person_id FROM erp_cobros WHERE id=?',(unknown,)).fetchone()
+        self.assertEqual(tuple(row),(None,None))
+        self.assertEqual(receipt_balance(self.conn,self.community,rid)['pending_cents'],'10000')
+
+    def test_acceptance_one_collection_multiple_receipts(self):
+        a=self.receipt();b=self.receipt(15000,'SECOND');cid=self.collection(20000)
+        draft=self.command('allocation.preview',{'collection_id':cid,'effective_on':'2026-01-15','allocations':[
+            {'receipt_id':a,'amount_cents':'10000'},{'receipt_id':b,'amount_cents':'10000'}]})['entity']
+        self.command('allocation.confirm',{'proposal_id':draft['id']},draft['version'])
+        self.assertEqual(receipt_balance(self.conn,self.community,a)['pending_cents'],'0')
+        self.assertEqual(receipt_balance(self.conn,self.community,b)['pending_cents'],'5000')
+        self.assertEqual(collection_balance(self.conn,self.community,cid)['available_cents'],'0')
+        self.assertEqual(self.conn.execute('SELECT SUM(amount_cents) FROM erp_cobros').fetchone()[0],20000)
+
     def test_multiple_receipts_and_stale_preview(self):
         a=self.receipt();b=self.receipt(15000,'TEST-2');cid=self.collection(20000)
         p=self.command('allocation.preview',{'collection_id':cid,'effective_on':'2026-01-15','allocations':[

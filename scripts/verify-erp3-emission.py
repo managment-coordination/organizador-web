@@ -62,6 +62,18 @@ try:
             'expected_version':expected,'idempotency_key':str(uuid.uuid4()),'origin':'test','reason':'Cambio documentado de propiedad',
             'evidence':evidence})['entity']
     new_owner=erp_command('erp1.owner.save',{'nombre':'Nuevo titular ERP3 sintetico','tipo_persona':'fisica'})['id_propietario']
+    tenant=conn.execute("SELECT id_persona_cobro FROM erp_personas_cobro WHERE id_comunidad=? AND nombre='Inquilino ERP2'",(community,)).fetchone()[0]
+    jan=next(line for line in proposal['preview']['lines'] if line['property_id']==properties[0])
+    assert jan['recipient']['id']==owner and jan['payer']['id']==tenant and jan['payer']['type']=='person'
+    config=erp_command('erp2.billing.propose',{'id_propiedad':properties[0],'date_start':'2027-02-01',
+        'recipient_type':'inquilino','recipient_id':tenant,'payer_type':'propietario','payer_id':owner,'payment_method':'transferencia'})
+    erp_command('erp2.billing.confirm',{'id_config_recibo':config['id_config_recibo']})
+    tenant_draft=command('emission.preview',{'plan_version_id':plan['id_plan_version'],'property_ids':[properties[0]],'period_keys':[periods[1]],'issued_on':'2027-02-03'})
+    tenant_line=tenant_draft['preview']['lines'][0]
+    assert tenant_line['recipient']['type']=='person' and tenant_line['recipient']['id']==tenant
+    assert tenant_line['payer']['type']=='owner' and tenant_line['payer']['id']==owner
+    assert tenant_line['obligated'][0]['id']==owner
+    command('emission.confirm',{'proposal_id':tenant_draft['id']},1)
     selected=properties[1:3]
     july=periods[6]
     earlier=command('emission.preview',{'plan_version_id':plan['id_plan_version'],'period_keys':[july],'property_ids':[selected[0]],'issued_on':'2027-07-03'})

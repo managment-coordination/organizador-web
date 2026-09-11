@@ -32,21 +32,26 @@ with tarfile.open(args.archive) as bundle:
     bundle.extractall(stage, filter='data')
 subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
 subprocess.run(['python3',str(stage/'scripts/prepare-erp3-python.py')],cwd=stage,check=True)
-env = {**os.environ, 'VERIFY_SOURCE_DB':str(APP/'data/organizador_tareas.db'), 'PYTHON_BIN':'python3'}
+source_fixture=stage/'verification-source.db'
+with sqlite3.connect('file:'+str(APP/'data/organizador_tareas.db')+'?mode=ro',uri=True) as source:
+    with sqlite3.connect(source_fixture) as target:source.backup(target)
+env = {**os.environ, 'VERIFY_SOURCE_DB':str(source_fixture), 'PYTHON_BIN':'python3'}
 subprocess.run(['python3',str(stage/'scripts/verify-erp1-master-data.py'),
-    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+    str(source_fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp-ux-onboarding.py'),
-    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+    str(source_fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp2a-foundations.py'),
-    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+    str(source_fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['python3',str(stage/'scripts/verify-erp2b-engine.py'),
-    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+    str(source_fixture)],cwd=stage,env=env,check=True)
 erp2 = subprocess.check_output(['python3',str(stage/'scripts/verify-erp2-complete.py'),
-    str(APP/'data/organizador_tareas.db'),'--keep'],cwd=stage,env=env,text=True)
+    str(source_fixture),'--keep'],cwd=stage,env=env,text=True)
 print(erp2,flush=True)
 fixture = Path(next(line.removeprefix('workspace=') for line in erp2.splitlines() if line.startswith('workspace='))) / 'database.db'
 subprocess.run(['python3',str(stage/'scripts/verify-erp3-foundations.py'),
-    str(APP/'data/organizador_tareas.db')],cwd=stage,env=env,check=True)
+    str(source_fixture)],cwd=stage,env=env,check=True)
+subprocess.run(['python3',str(stage/'scripts/verify-erp3-legacy.py'),
+    str(source_fixture)],cwd=stage,env=env,check=True)
 for script in ('verify-erp3-emission.py','verify-erp3-activation.py'):
     subprocess.run(['python3',str(stage/'scripts'/script),str(fixture)],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-operational-release.mjs')],cwd=stage,env=env,check=True)
@@ -118,11 +123,19 @@ try:
 except urllib.error.HTTPError as error:
     assert error.code==401
 historical_signature(APP/'data/organizador_tareas.db')
-subprocess.run(['node',str(APP/'scripts/verify-operational-release.mjs')],cwd=APP,env=env,check=True)
+subprocess.run(['node',str(APP/'scripts/verify-operational-release.mjs')],cwd=APP,env={**env,'VERIFY_SOURCE_DB':str(APP/'data/organizador_tareas.db')},check=True)
 subprocess.run(['python3',str(APP/'scripts/verify-erp3-foundations.py'),str(APP/'data/organizador_tareas.db')],cwd=APP,env=env,check=True)
 subprocess.run(['systemctl','--user','stop',SERVICE],check=True)
 try:after=checkpoint(current=True)
 finally:subprocess.run(['systemctl','--user','start',SERVICE],check=True)
+for attempt in range(30):
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8771/health',timeout=3) as response:
+            assert json.load(response)['databaseConfigured']
+        break
+    except OSError:
+        if attempt==29:raise
+        time.sleep(1)
 proof={'published':True,'before':backup,'after':after,'stage':str(stage),'commit':args.code_commit,
        'historical_hashes_preserved':True,'integrity':'ok','foreign_keys':'ok','unauthenticated_finance':401}
 (Path(after['backup'])/'erp3-publication-proof.json').write_text(json.dumps(proof,indent=2))
