@@ -1596,6 +1596,10 @@ from .banking_scope_schema import STATEMENTS as BANKING_SCOPE_STATEMENTS
 
 MIGRATIONS += (Migration(15, "erp4_mandate_scope_integrity", BANKING_SCOPE_STATEMENTS),)
 
+from .banking_workflow_schema import STATEMENTS as BANKING_WORKFLOW_STATEMENTS
+
+MIGRATIONS += (Migration(16, "erp4_profiles_and_instruction_outcomes", BANKING_WORKFLOW_STATEMENTS),)
+
 
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (

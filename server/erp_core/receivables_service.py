@@ -28,6 +28,20 @@ from .receivables_exports import ExportOperations
 class ReceivablesService(AdjustmentOperations, RegularizationOperations, HistoryOperations, ReceivablesQueries, OpeningOperations, ReversalOperations, ActivationOperations, ExportOperations):
     def __init__(self, database_path):
         self.database_path = database_path
+        self._shared_connection = None
+
+    @classmethod
+    def in_transaction(cls, database_path, connection):
+        """Internal composition: reuse every ERP 3 guard inside the caller's transaction."""
+        from pathlib import Path
+        if not connection.in_transaction:
+            raise ContractError('La operacion compuesta requiere una transaccion activa.')
+        database = next((r[2] for r in connection.execute('PRAGMA database_list') if r[1] == 'main'), '')
+        if not database or Path(database).resolve() != Path(database_path).resolve():
+            raise ContractError('La conexion no corresponde a esta base de datos.')
+        instance = cls(database_path)
+        instance._shared_connection = connection
+        return instance
 
     @staticmethod
     def _wire(value):
@@ -67,28 +81,35 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
 
     def _write(self,session,env,op,capability,audit_projection=None):
         if not env.idempotency_key:raise ContractError('La operacion requiere idempotencia.')
+        if self._shared_connection is not None:
+            if not self._shared_connection.in_transaction:
+                raise ContractError('La transaccion compuesta ha finalizado.')
+            return self._execute_write(self._shared_connection,session,env,op,capability,audit_projection)
         conn=connect(self.database_path)
         try:
             with write_transaction(conn):
-                actor,_=self._session(conn,session,env.community_id,capability)
-                self._validate_evidence(conn,session,env)
-                commands=CommandRepository(conn)
-                replay=commands.replay_or_start(env,actor)
-                if replay is not None:return replay
-                result=self._wire(op(conn,actor,env))
-                audit=write_event(conn,community_id=env.community_id,actor=actor,action=env.command,
-                    entity_type='erp3_operation',entity_id=result.get('id'),before=result.get('before'),
-                    after=audit_projection(result) if audit_projection else result,reason=env.reason,origin=env.origin,request_id=env.idempotency_key,
-                    entity_version=result.get('version'),evidence=env.evidence,metadata={'contract':CONTRACT_VERSION})
-                outbox=enqueue(conn,community_id=env.community_id,event_type=env.command,
-                    aggregate_type='erp3_operation',aggregate_id=result.get('id'),
-                    payload={'audit_event_id':audit,'economic_event_ids':result.get('event_ids',[]),'contract':CONTRACT_VERSION},
-                    dedupe_key=env.idempotency_key)
-                response={'ok':True,'command':env.command,'entity':result,'audit_event_id':audit,
-                          'outbox_event_id':outbox,'idempotent_replay':False}
-                commands.complete(env,response)
-                return response
+                return self._execute_write(conn,session,env,op,capability,audit_projection)
         finally:conn.close()
+
+    def _execute_write(self,conn,session,env,op,capability,audit_projection=None):
+        actor,_=self._session(conn,session,env.community_id,capability)
+        self._validate_evidence(conn,session,env)
+        commands=CommandRepository(conn)
+        replay=commands.replay_or_start(env,actor)
+        if replay is not None:return replay
+        result=self._wire(op(conn,actor,env))
+        audit=write_event(conn,community_id=env.community_id,actor=actor,action=env.command,
+            entity_type='erp3_operation',entity_id=result.get('id'),before=result.get('before'),
+            after=audit_projection(result) if audit_projection else result,reason=env.reason,origin=env.origin,request_id=env.idempotency_key,
+            entity_version=result.get('version'),evidence=env.evidence,metadata={'contract':CONTRACT_VERSION})
+        outbox=enqueue(conn,community_id=env.community_id,event_type=env.command,
+            aggregate_type='erp3_operation',aggregate_id=result.get('id'),
+            payload={'audit_event_id':audit,'economic_event_ids':result.get('event_ids',[]),'contract':CONTRACT_VERSION},
+            dedupe_key=env.idempotency_key)
+        response={'ok':True,'command':env.command,'entity':result,'audit_event_id':audit,
+                  'outbox_event_id':outbox,'idempotent_replay':False}
+        commands.complete(env,response)
+        return response
 
     @staticmethod
     def _entity(conn,table,community_id,entity_id):

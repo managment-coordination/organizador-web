@@ -8,6 +8,7 @@ import { Readable } from "node:stream";
 import mammoth from "mammoth";
 import ExcelJS from "exceljs";
 import { receivablesImportHttp } from './receivables-http.js';
+import { createBankingHttp } from './banking-http.js';
 import { buildCollectionReport, buildEntityReport } from "./report-generator.js";
 import { DOCUMENT_CATEGORIES, reportOptions, selectReportAttachments, reportSnapshot } from './report-domain.js';
 import { buildAssemblyMinutes } from "./assembly-minutes-generator.js";
@@ -56,6 +57,37 @@ const sessionSecretPath = path.join(dataDir, "session_secret");
 const sessionSecret = loadOrCreateSessionSecret();
 const sessionCookieName = "organizador_web_session";
 const sessionMaxAgeSeconds = 8 * 60 * 60;
+const bankingHttp = createBankingHttp({
+  enabled: process.env.ERP4_BANKING_ENABLED === '1' && process.env.ERP4_HTTPS_READY === '1',
+  publicOrigin: process.env.ERP4_PUBLIC_ORIGIN || '',
+  trustLoopbackProxy: process.env.ERP4_TRUST_LOOPBACK_PROXY === '1',
+}, {
+  readSession, readBody, sendJson, runBanking: runBankingContract,
+  verifyPassword: async (session, password) => {
+    const {user} = await queryUserForLogin(session.nombre);
+    return Boolean(user && user.id_usuario === session.id_usuario && user.activo && !user.bloqueado &&
+      user.password_configurada && !user.requiere_cambio_password && verifyPassword(password, user.password_hash));
+  },
+});
+
+function runBankingContract(session, action, envelope) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(pythonBin, [path.join(__dirname, 'banking-bridge.py'), databasePath], {
+      timeout:90000,maxBuffer:34*1024*1024,env:{...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'},
+    }, (error, stdout) => {
+      let result;
+      try { result = JSON.parse(stdout); } catch { result = null; }
+      if (error || !result?.ok) {
+        const safe = ['ContractError','ConflictError','NotFoundError','PermissionError'].includes(result?.error_type);
+        const failure = new Error(safe ? result.error : 'No se pudo completar la operacion bancaria.');
+        failure.bankErrorType = safe ? result.error_type : 'BankingTechnicalError';
+        reject(failure);
+      } else resolve(result);
+    });
+    child.stdin.on('error', () => reject(new Error('No se pudo iniciar la operacion bancaria.')));
+    child.stdin.end(JSON.stringify({session,action,envelope}));
+  });
+}
 
 function loadEnv(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -14486,6 +14518,7 @@ async function handle(req, res) {
   if (req.method === "GET" && url.pathname === "/") {
     return sendHtml(res, 200, homePage());
   }
+  if (await bankingHttp(req, res, url)) return;
   if (req.method === "GET" && url.pathname === "/api/auth/users") {
     if (!fs.existsSync(databasePath)) return sendJson(res, 404, { ok: false, error: "Todavia no existe base de datos migrada." });
     return sendJson(res, 200, await queryAuthUsers());
@@ -15330,11 +15363,13 @@ finally:
       id_comunidad: Number(url.searchParams.get("id_comunidad") || 0),
       filters
     };
+    if (envelope.query.startsWith('erp4.')) return sendJson(res,403,{ok:false,error:'Utiliza el acceso bancario protegido.'});
     return sendJson(res, 200, await runErpContract(session, "query", envelope));
   }
   if (req.method === "POST" && url.pathname === "/api/erp/command") {
     const session = readSession(req);
     const body = await readBody(req, 512 * 1024);
+    if (String(body.command || '').startsWith('erp4.')) return sendJson(res,403,{ok:false,error:'Utiliza el acceso bancario protegido.'});
     return sendJson(res, 200, await runErpContract(session, "command", body));
   }
   if (req.method === "POST" && url.pathname === "/api/admin/action") {

@@ -10,6 +10,9 @@ from .audit import write_event
 from .banking_crypto import BankVault
 from .banking_mandates import MandateOperations
 from .banking_remittances import RemittanceOperations
+from .banking_files import BankingFiles
+from .banking_results import BankingResults
+from .banking_queries import BankingQueries
 from .contracts import Actor, canonical_json
 from .database import connect, write_transaction
 from .errors import ConflictError, ContractError, NotFoundError
@@ -25,10 +28,13 @@ CAPABILITIES = frozenset(('read_masked', 'manage_accounts', 'manage_mandates', '
 COMMAND_NAMES = frozenset('erp4.' + name for name in (
     'permissions.save', 'account.create', 'account.link', 'account.state', 'creditor.create',
     'mandate.create', 'mandate.amend', 'mandate.transition', 'direct_debit.confirm',
-    'notification.record', 'remittance.preview', 'remittance.prepare', 'remittance.cancel_local'))
+    'notification.record', 'remittance.preview', 'remittance.prepare', 'remittance.cancel_local',
+    'profile.configure', 'remittance.build', 'remittance.export', 'presentation.record',
+    'results.import', 'results.preview', 'results.confirm', 'results.resolve', 'retry.preview', 'retry.confirm',
+    'cancellation.request', 'cancellation.not_presented'))
 
 
-class BankingService(MandateOperations, RemittanceOperations):
+class BankingService(MandateOperations, RemittanceOperations, BankingFiles, BankingResults, BankingQueries):
     def __init__(self, database_path, *, vault=None):
         self.database_path = str(database_path)
         self.vault = vault
@@ -74,7 +80,7 @@ class BankingService(MandateOperations, RemittanceOperations):
     def _entity(conn, table, community, value):
         allowed = {'erp_cuentas_pagador', 'erp_mandatos', 'erp_acreedor_versiones', 'erp_cuentas_tesoreria',
                    'erp_mandato_versiones', 'erp_domiciliaciones', 'erp_remesas', 'erp_remesa_lineas',
-                   'erp_resultados_bancarios', 'erp_prenotificaciones'}
+                   'erp_resultados_bancarios', 'erp_prenotificaciones', 'erp_remesa_ficheros'}
         if table not in allowed:
             raise ContractError('Entidad bancaria desconocida.')
         row = conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? AND id=?', (community, identity(value))).fetchone()
@@ -148,7 +154,7 @@ class BankingService(MandateOperations, RemittanceOperations):
                 result = op(conn, actor, env, now)
                 audit = write_event(conn, community_id=env.community_id, actor=actor, action=env.command,
                                     entity_type='erp4_operation', entity_id=result.get('id'), before=None,
-                                    after=result, reason=safe.reason, origin=env.origin, request_id=safe.idempotency_key,
+                                    after={k:v for k,v in result.items() if k!='download_token'}, reason=safe.reason, origin=env.origin, request_id=safe.idempotency_key,
                                     entity_version=result.get('version'), metadata={'protected_context_id': protected})
                 outbox = enqueue(conn, community_id=env.community_id, event_type=env.command,
                                  aggregate_type='erp4_operation', aggregate_id=result.get('id'),

@@ -4,10 +4,14 @@ import calendar
 from datetime import date
 import json
 import uuid
+from dataclasses import replace
 
 from .errors import ConflictError, ContractError, NotFoundError
 from .receivables_contracts import cents, day, identity, require_fields
 from .receivables_projection import receipt_balance
+from .banking_adapter import validate_schedule
+from .migrations import utc_now
+from .contracts import EvidenceRef
 
 
 def _months_after(value, months):
@@ -17,6 +21,18 @@ def _months_after(value, months):
 
 
 class RemittanceOperations:
+    def _attempt_evidence(self, conn, session, env):
+        from .receivables_service import ReceivablesService
+        authorizations = env.payload.get('third_party_authorizations', {})
+        if not isinstance(authorizations, dict):
+            raise ContractError('Revisa las autorizaciones de pago de terceros.')
+        for item in authorizations.values():
+            require_fields(item, ('mandate_id','evidence'))
+            evidence = EvidenceRef.from_value(item['evidence'])
+            if evidence is None:
+                raise ContractError('El pago de un tercero requiere evidencia especifica.')
+            ReceivablesService(self.database_path)._validate_evidence(conn,session,replace(env,evidence=evidence))
+
     def notification_record(self, session, env):
         def op(conn, actor, e, now):
             p = require_fields(e.payload, ('sent_on', 'lines'))
@@ -39,24 +55,34 @@ class RemittanceOperations:
             return {'id': nid, 'version': 1, 'line_count': len(lines), 'state': 'enviada'}
         return self._write(session, env, 'prepare', op)
 
-    def _remittance_preview(self, conn, community, p):
-        require_fields(p, ('creditor_id', 'requested_on', 'receipt_ids', 'notification_id'), ('preview_hash',))
+    def _remittance_preview(self, conn, community, p, reserved_remittance_id=None):
+        require_fields(p, ('creditor_id', 'requested_on', 'receipt_ids', 'notification_id'), ('preview_hash','retry_of','third_party_authorizations'))
         requested = day(p['requested_on'])
         if requested < date.today().isoformat():
             raise ContractError('La fecha de cargo no puede estar en el pasado.')
         creditor = self._entity(conn, 'erp_acreedor_versiones', community, p['creditor_id'])
+        config_row, config = self._bank_profile(conn,community,creditor['id'])
+        validate_schedule(config,requested,utc_now())
         if creditor['effective_from'] > requested or (creditor['effective_until'] and creditor['effective_until'] <= requested):
             raise ContractError('El acreedor no esta vigente en la fecha de cargo.')
         notification = self._entity(conn, 'erp_prenotificaciones', community, p['notification_id'])
-        if notification['state'] != 'enviada' or (date.fromisoformat(requested) - date.fromisoformat(notification['sent_on'])).days < 14:
-            raise ContractError('La prenotificacion no cubre el plazo de cargo ordinario.')
+        if notification['state'] != 'enviada' or not notification['sent_on']:
+            raise ContractError('Falta una prenotificacion enviada.')
         notice = self.vault.get(conn, community, notification['secret_id'], 'prenotification')
         ids = p['receipt_ids']
         if not isinstance(ids, list) or not 1 <= len(ids) <= 10000:
             raise ContractError('Selecciona recibos para preparar la remesa.')
         ids = [identity(v) for v in ids]
+        if len(ids)>config['max_lines']:
+            raise ContractError('La seleccion supera el limite bancario de lineas.')
         if len(ids) != len(set(ids)):
             raise ContractError('Hay recibos repetidos.')
+        retries=p.get('retry_of',{})
+        if not isinstance(retries,dict) or any(str(identity(k)) not in {str(r) for r in ids} for k in retries):
+            raise ContractError('Las referencias de reenvio no corresponden a la seleccion.')
+        authorizations = p.get('third_party_authorizations', {})
+        if not isinstance(authorizations,dict) or any(str(identity(k)) not in {str(r) for r in ids} for k in authorizations):
+            raise ContractError('La autorizacion de pago no corresponde a los recibos seleccionados.')
         lines, total, single_use = [], 0, set()
         for rid in sorted(ids):
             receipt = conn.execute('SELECT * FROM erp_recibos WHERE id_comunidad=? AND id=?', (community, rid)).fetchone()
@@ -66,8 +92,30 @@ class RemittanceOperations:
             amount = cents(balance['pending_cents'], positive=True)
             if receipt['currency'] != 'EUR' or balance['state'] == 'anulado' or balance['management'] == 'incobrable':
                 raise ContractError('El recibo no es elegible para remesa ordinaria.')
-            if conn.execute("SELECT 1 FROM erp_remesa_reservas WHERE id_comunidad=? AND receipt_id=? AND state='activa'", (community, rid)).fetchone():
+            reservation=conn.execute('''SELECT v.remittance_id FROM erp_remesa_reservas r
+                JOIN erp_remesa_lineas l ON l.id_comunidad=r.id_comunidad AND l.id=r.line_id
+                JOIN erp_remesa_revisiones v ON v.id_comunidad=l.id_comunidad AND v.id=l.revision_id
+                WHERE r.id_comunidad=? AND r.receipt_id=? AND r.state='activa' ''',(community,rid)).fetchone()
+            if reservation and reservation['remittance_id']!=reserved_remittance_id:
                 raise ConflictError('Un recibo seleccionado ya esta reservado.')
+            previous=conn.execute('''SELECT l.id,r.state FROM erp_remesa_lineas l
+                JOIN erp_remesa_revisiones v ON v.id_comunidad=l.id_comunidad AND v.id=l.revision_id
+                JOIN erp_remesas r ON r.id_comunidad=v.id_comunidad AND r.id=v.remittance_id
+                WHERE l.id_comunidad=? AND l.receipt_id=? AND r.id!=? ORDER BY l.id DESC LIMIT 1''',
+                (community,rid,reserved_remittance_id or -1)).fetchone()
+            retry_of=None
+            if previous:
+                terminal=self._line_status(conn,community,previous['id'])
+                if terminal=='conflict' or conn.execute('''SELECT 1 FROM erp_resultado_lineas
+                    WHERE id_comunidad=? AND line_id=? AND state!='confirmada' ''',(community,previous['id'])).fetchone():
+                    raise ConflictError('El intento anterior tiene resultados pendientes o contradictorios; revisalos antes de reenviar.')
+                if previous['state']!='cancelada' and terminal not in ('rejected','returned','cancelled'):
+                    raise ConflictError('El intento anterior no tiene cierre acreditado para reenviar.')
+                if retries.get(str(rid))!=previous['id']:
+                    raise ContractError('Confirma expresamente el reenvio del intento anterior.')
+                retry_of=previous['id']
+            elif str(rid) in retries:
+                raise ContractError('No existe el intento anterior indicado.')
             payers = list(conn.execute("SELECT snapshot_json FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=? AND role='payer'", (community, rid)))
             obligated = list(conn.execute("SELECT id FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=? AND role='obligated'", (community, rid)))
             if len(payers) != 1 or not obligated:
@@ -96,9 +144,20 @@ class RemittanceOperations:
                 AND effective_from<=? ORDER BY version DESC LIMIT 1''', (community, mandate['id'], requested)).fetchone()
             if not version or (version['effective_until'] and version['effective_until'] <= requested):
                 raise ContractError('El mandato no cubre la fecha de cargo.')
+            details = self.vault.get(conn, community, version['secret_id'], 'mandate-version')
+            notice_days = details.get('prenotification_agreement', {}).get('days', 14)
+            if (date.fromisoformat(requested) - date.fromisoformat(notification['sent_on'])).days < notice_days:
+                raise ContractError('La prenotificacion no cubre el plazo aplicable a este mandato.')
             debtor = {'type': 'owner', 'id': version['debtor_owner_id']} if version['debtor_owner_id'] else {'type': 'person', 'id': version['debtor_person_id']}
             if payer != debtor:
-                raise ContractError('El pagador del recibo difiere del mandato. Requiere autorizacion especifica, no traslado de deuda.')
+                agreement=authorizations.get(str(rid))
+                if not agreement:
+                    raise ContractError('El pagador del recibo difiere del mandato. Requiere autorizacion especifica, no traslado de deuda.')
+                require_fields(agreement,('mandate_id','evidence'))
+                if identity(agreement['mandate_id'])!=mandate['id'] or EvidenceRef.from_value(agreement['evidence']) is None:
+                    raise ContractError('La autorizacion especifica no corresponde al mandato seleccionado.')
+            elif str(rid) in authorizations:
+                raise ContractError('Este recibo no necesita sustituir su pagador para el intento.')
             account = self._entity(conn, 'erp_cuentas_pagador', community, version['account_id'])
             if account['state'] != 'activa':
                 raise ContractError('La cuenta del mandato no esta activa.')
@@ -111,7 +170,9 @@ class RemittanceOperations:
                 raise ContractError('El mandato requiere revision por inactividad.')
             if mandate['kind'] == 'puntual' and (latest or conn.execute('''SELECT 1 FROM erp_remesa_reservas r
                 JOIN erp_remesa_lineas l ON l.id=r.line_id JOIN erp_mandato_versiones v ON v.id=l.mandate_version_id
-                WHERE r.id_comunidad=? AND v.mandate_id=? AND r.state IN ('activa','consumida')''', (community, mandate['id'])).fetchone()):
+                WHERE r.id_comunidad=? AND v.mandate_id=? AND r.state IN ('activa','consumida')
+                AND NOT EXISTS (SELECT 1 FROM erp_remesa_revisiones rev WHERE rev.id=l.revision_id AND rev.remittance_id=?)''',
+                (community, mandate['id'], reserved_remittance_id or -1)).fetchone()):
                 raise ConflictError('El mandato puntual ya tiene una instruccion activa o utilizada.')
             if mandate['kind'] == 'puntual':
                 if mandate['id'] in single_use:
@@ -124,9 +185,16 @@ class RemittanceOperations:
             lines.append({'receipt_id': rid, 'receipt_version': receipt['version'], 'amount_cents': str(amount),
                 'property_id': receipt['id_propiedad'], 'mandate_id': mandate['id'], 'mandate_version_id': version['id'],
                 'mandate_version': mandate['version'], 'account_id': account['id'], 'account_version': account['version'],
-                'direct_debit_version_id': direct['version_id'], 'notification_id': notification['id']})
+                'direct_debit_version_id': direct['version_id'], 'notification_id': notification['id'],
+                'sequence': 'OOFF' if mandate['kind']=='puntual' else 'FRST' if not latest and config['recurrent_sequence']=='FRST_THEN_RCUR' else 'RCUR',
+                'concept':'Recibo '+receipt['number'], 'retry_of_id':retry_of,
+                'prenotification_days':notice_days, 'third_party':payer!=debtor})
+        if total>cents(config['max_total_cents'],positive=True):
+            raise ContractError('La seleccion supera el importe permitido por el banco.')
         result = {'creditor_id': creditor['id'], 'creditor_version': creditor['version'], 'requested_on': requested,
-                  'notification_id': notification['id'], 'lines': lines, 'total_cents': str(total), 'currency': 'EUR'}
+                  'notification_id': notification['id'], 'lines': lines, 'total_cents': str(total), 'currency': 'EUR',
+                  'config_id':config_row['id'], 'config_version':config_row['version'],
+                  'third_party_authorizations':authorizations}
         result['preview_hash'] = self.vault.fingerprint(community, 'remittance-preview', result)
         return result
 
@@ -134,13 +202,16 @@ class RemittanceOperations:
         def op(conn, actor, e, now):
             from .receivables_service import ReceivablesService
             ReceivablesService._session(conn, session, e.community_id, 'read')
-            return self._remittance_preview(conn, e.community_id, e.payload)
+            self._attempt_evidence(conn,session,e)
+            preview=self._remittance_preview(conn,e.community_id,e.payload)
+            return {k:v for k,v in preview.items() if k!='third_party_authorizations'}
         return self._write(session, env, 'prepare', op)
 
     def remittance_prepare(self, session, env):
         def op(conn, actor, e, now):
             from .receivables_service import ReceivablesService
             ReceivablesService._session(conn, session, e.community_id, 'read')
+            self._attempt_evidence(conn,session,e)
             preview = self._remittance_preview(conn, e.community_id, e.payload)
             if e.payload.get('preview_hash') != preview['preview_hash']:
                 raise ConflictError('La seleccion ha cambiado o no ha sido revisada.')
@@ -151,6 +222,8 @@ class RemittanceOperations:
             revision = conn.execute('''INSERT INTO erp_remesa_revisiones
                 (id_comunidad,remittance_id,revision,secret_id,fingerprint,registered_at,actor_id) VALUES (?,?,1,?,?,?,?)''',
                 (e.community_id, rid, secret, preview['preview_hash'], now, actor.user_id)).lastrowid
+            conn.execute('''INSERT INTO erp_remesa_perfiles (id_comunidad,revision_id,config_id,registered_at,actor_id)
+                VALUES (?,?,?,?,?)''',(e.community_id,revision,preview['config_id'],now,actor.user_id))
             for line in preview['lines']:
                 # Freeze encrypted bank data now, not references to mutable masters alone.
                 mandate = self._entity(conn, 'erp_mandatos', e.community_id, line['mandate_id'])
@@ -164,11 +237,15 @@ class RemittanceOperations:
                     'signed_on': mv['signed_on'], 'kind': mandate['kind'],
                     'creditor': self.vault.get(conn, e.community_id, creditor['secret_id'], 'creditor'),
                     'creditor_account': self.vault.get(conn, e.community_id, treasury['secret_id'], 'treasury-account')}
+                if mv['supersedes_id']:
+                    previous=self._entity(conn,'erp_mandato_versiones',e.community_id,mv['supersedes_id'])
+                    old_account=self._entity(conn,'erp_cuentas_pagador',e.community_id,previous['account_id'])
+                    frozen['original_debtor_iban']=self.vault.get(conn,e.community_id,old_account['secret_id'],'payer-account')['iban']
                 secret = self.vault.put(conn, e.community_id, 'remittance-line', frozen, now)
                 lid = conn.execute('''INSERT INTO erp_remesa_lineas
-                    (id_comunidad,revision_id,receipt_id,attempt_key,amount_cents,mandate_version_id,notification_id,secret_id,registered_at,actor_id)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)''', (e.community_id, revision, line['receipt_id'], 'E' + uuid.uuid4().hex.upper(),
-                    int(line['amount_cents']), line['mandate_version_id'], line['notification_id'], secret, now, actor.user_id)).lastrowid
+                    (id_comunidad,revision_id,receipt_id,attempt_key,amount_cents,mandate_version_id,notification_id,secret_id,registered_at,actor_id,retry_of_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (e.community_id, revision, line['receipt_id'], 'E' + uuid.uuid4().hex.upper(),
+                    int(line['amount_cents']), line['mandate_version_id'], line['notification_id'], secret, now, actor.user_id,line['retry_of_id'])).lastrowid
                 conn.execute('''INSERT INTO erp_remesa_reservas
                     (id_comunidad,receipt_id,line_id,amount_cents,state,registered_at,actor_id) VALUES (?,?,?,?,'activa',?,?)''',
                     (e.community_id, line['receipt_id'], lid, int(line['amount_cents']), now, actor.user_id))
@@ -189,3 +266,11 @@ class RemittanceOperations:
             conn.execute("UPDATE erp_remesas SET state='cancelada',version=version+1 WHERE id_comunidad=? AND id=?", (e.community_id, row['id']))
             return {'id': row['id'], 'version': row['version'] + 1, 'state': 'cancelada'}
         return self._write(session, env, 'present_cancel', op)
+
+    def retry_preview(self,session,env):
+        if not env.payload.get('retry_of'):raise ContractError('Selecciona los intentos que deseas reenviar.')
+        return self.remittance_preview(session,env)
+
+    def retry_confirm(self,session,env):
+        if not env.payload.get('retry_of'):raise ContractError('El reenvio necesita confirmacion del intento anterior.')
+        return self.remittance_prepare(session,env)

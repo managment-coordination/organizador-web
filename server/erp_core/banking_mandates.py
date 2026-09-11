@@ -103,6 +103,19 @@ class MandateOperations:
             signed = previous['signed_on']
         details = {'debtor_name': name, 'address': address, 'property_ids': sorted(properties),
                    'signers': signers, 'evidence': self._evidence_value(e), 'amendment': previous is not None}
+        notice = p.get('prenotification_agreement')
+        if notice is not None:
+            require_fields(notice, ('days', 'evidence'))
+            if type(notice['days']) is not int or not 0 <= notice['days'] <= 365:
+                raise ContractError('El plazo acordado debe expresarse en dias naturales completos.')
+            evidence = require_fields(notice['evidence'], ('type', 'id'))
+            text(evidence['type'], 'Tipo de acuerdo', maximum=80)
+            text(evidence['id'], 'Referencia del acuerdo', maximum=250)
+            details['prenotification_agreement'] = notice
+        elif previous:
+            old = self.vault.get(conn, e.community_id, previous['secret_id'], 'mandate-version')
+            if old.get('prenotification_agreement'):
+                details['prenotification_agreement'] = old['prenotification_agreement']
         secret = self.vault.put(conn, e.community_id, 'mandate-version', details, now)
         version = previous['version'] + 1 if previous else 1
         row_id = conn.execute('''INSERT INTO erp_mandato_versiones
@@ -125,7 +138,7 @@ class MandateOperations:
     def mandate_create(self, session, env):
         def op(conn, actor, e, now):
             p = require_fields(e.payload, ('creditor_id', 'kind', 'account_id', 'debtor', 'debtor_name', 'address',
-                'signers', 'signed_on', 'effective_from', 'property_ids'), ('effective_until', 'rum'))
+                'signers', 'signed_on', 'effective_from', 'property_ids'), ('effective_until', 'rum', 'prenotification_agreement'))
             creditor = self._entity(conn, 'erp_acreedor_versiones', e.community_id, p['creditor_id'])
             if p['kind'] not in ('recurrente', 'puntual'):
                 raise ContractError('Tipo de mandato no valido.')
@@ -167,7 +180,7 @@ class MandateOperations:
     def mandate_amend(self, session, env):
         def op(conn, actor, e, now):
             p = require_fields(e.payload, ('id', 'account_id', 'debtor', 'debtor_name', 'address', 'signers',
-                'signed_on', 'effective_from', 'property_ids'), ('effective_until',))
+                'signed_on', 'effective_from', 'property_ids'), ('effective_until', 'prenotification_agreement'))
             mandate = self._entity(conn, 'erp_mandatos', e.community_id, p['id'])
             self._version(mandate, e.expected_version)
             if mandate['state'] not in ('activo', 'pendiente', 'suspendido'):
@@ -224,7 +237,7 @@ class MandateOperations:
 
     def direct_debit_confirm(self, session, env):
         def op(conn, actor, e, now):
-            p = require_fields(e.payload, ('billing_config_ids', 'mandate_id', 'effective_from'), ('effective_until',))
+            p = require_fields(e.payload, ('billing_config_ids', 'mandate_id', 'effective_from'), ('effective_until', 'replacements'))
             mandate = self._entity(conn, 'erp_mandatos', e.community_id, p['mandate_id'])
             self._version(mandate, e.expected_version)
             if mandate['state'] != 'activo':
@@ -242,6 +255,10 @@ class MandateOperations:
             configs = [identity(v) for v in configs]
             if len(configs) != len(set(configs)):
                 raise ContractError('No repitas una configuracion.')
+            replacements = p.get('replacements', {})
+            if not isinstance(replacements, dict):
+                raise ContractError('Revisa las domiciliaciones que deseas sustituir.')
+            used_replacements = set()
             result = []
             secret = self.vault.put(conn, e.community_id, 'direct-debit-evidence', self._evidence_value(e), now)
             for config in configs:
@@ -256,15 +273,31 @@ class MandateOperations:
                 existing = conn.execute('SELECT * FROM erp_domiciliaciones WHERE id_comunidad=? AND property_id=? AND scope=? AND concept_key=?',
                                         (e.community_id, billing['id_propiedad'], billing['alcance'], billing['concepto_clave'] or '')).fetchone()
                 if existing:
-                    # Replacement is a separate revision operation, not a blind bulk overwrite.
-                    raise ConflictError('Ya existe domiciliacion para una propiedad. Revisa su historico antes de sustituirla.')
-                did = conn.execute('''INSERT INTO erp_domiciliaciones
-                    (id_comunidad,property_id,scope,concept_key,registered_at,actor_id) VALUES (?,?,?,?,?,?)''',
-                    (e.community_id, billing['id_propiedad'], billing['alcance'], billing['concepto_clave'] or '', now, actor.user_id)).lastrowid
+                    expected = replacements.get(str(existing['id']))
+                    if type(expected) is not int or expected != existing['version']:
+                        raise ConflictError('Revisa y confirma la domiciliacion actual antes de sustituirla.')
+                    used_replacements.add(str(existing['id']))
+                    previous = conn.execute('''SELECT * FROM erp_domiciliacion_versiones
+                        WHERE id_comunidad=? AND direct_debit_id=? ORDER BY version DESC LIMIT 1''',
+                        (e.community_id, existing['id'])).fetchone()
+                    if start <= previous['effective_from']:
+                        raise ConflictError('El cambio debe ser posterior a la domiciliacion anterior.')
+                    did, next_version = existing['id'], existing['version'] + 1
+                    conn.execute('UPDATE erp_domiciliaciones SET version=version+1 WHERE id_comunidad=? AND id=?',
+                                 (e.community_id, did))
+                    self._flag_mandate(conn, e.community_id, previous['mandate_id'])
+                else:
+                    previous, next_version = None, 1
+                    did = conn.execute('''INSERT INTO erp_domiciliaciones
+                        (id_comunidad,property_id,scope,concept_key,registered_at,actor_id) VALUES (?,?,?,?,?,?)''',
+                        (e.community_id, billing['id_propiedad'], billing['alcance'], billing['concepto_clave'] or '', now, actor.user_id)).lastrowid
                 conn.execute('''INSERT INTO erp_domiciliacion_versiones
                     (id_comunidad,direct_debit_id,billing_config_id,mandate_id,effective_from,effective_until,state,version,
-                     evidence_secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,?,'activa',1,?,?,?)''',
-                    (e.community_id, did, config, mandate['id'], start, end, secret, now, actor.user_id))
+                     supersedes_id,evidence_secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,?,'activa',?,?,?,?,?)''',
+                    (e.community_id, did, config, mandate['id'], start, end, next_version,
+                     previous['id'] if previous else None, secret, now, actor.user_id))
                 result.append(did)
+            if set(replacements) != used_replacements:
+                raise ContractError('Hay sustituciones que no corresponden a la seleccion.')
             return {'id': mandate['id'], 'direct_debit_ids': result, 'count': len(result), 'version': mandate['version']}
         return self._write(session, env, 'manage_mandates', op)

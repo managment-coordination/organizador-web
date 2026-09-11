@@ -9,13 +9,13 @@ Dependencia economica: [cierre ERP 3](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION
 ## Estado verificable
 
 DESARROLLO. Diseno 100%. Implementacion **25% certificado**; aceptacion funcional completa pendiente.
-No publicado. No hay rutas, dispatcher ni interfaz ERP 4 activos.
+No publicado. Rutas bancarias dedicadas preparadas y cerradas por defecto; sin interfaz ERP 4 ni recorrido web certificado.
 No se han tratado datos bancarios reales ni migrado produccion.
 
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
 | 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
-| 4B Servicios deterministas | Cuentas, mandatos, domiciliaciones y reservas parciales; adaptador XML puro probado, aun sin exportacion integrada/resultados economicos | Sin puntos |
+| 4B Servicios deterministas | Exportacion cifrada, resultados y efectos atomicos ERP 3, reenvios y consultas incorporados; quedan operaciones de contrato y seguridad integrada por cerrar | Sin puntos |
 | 4C Recorrido integrado | No implementado | Sin puntos |
 | 4D Aceptacion y publicacion | No implementado; las pruebas del nucleo/adaptador no equivalen a los 50 casos integrales del contrato | Sin puntos |
 
@@ -28,6 +28,7 @@ No se han tratado datos bancarios reales ni migrado produccion.
 - Backup independiente: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260911-181120`.
 - Restauracion previa: `/tmp/organizador-erp0-restore-dnnmfppc`; 166 tablas, integridad correcta y runtime accesible.
 - Copia local de trabajo: `backups/erp4-pre-20260911.db`. Todos los fixtures se derivan de esta copia y permanecen aislados.
+- Continuacion desde `686896a513238b2f815da36a2d9ebe9ec5aa4b06`, checkpoint previo `erp4-pre-integration-20260911`. No se repitieron ni modificaron migraciones 13-15.
 - No se han sobrescrito backups ni checkpoints ERP 0-3. No se ha tocado Marbella UNO.
 
 ## Bloques incorporados
@@ -37,6 +38,7 @@ No se han tratado datos bancarios reales ni migrado produccion.
 - 13 `erp4_banking_foundations`: cuentas cifradas, relaciones con sujetos, tesoreria/acreedor, mandatos/versiones/firmantes/eventos, domiciliaciones/versiones, prenotificaciones, remesas/revisiones/lineas/reservas, ficheros/presentaciones/resultados, identidades de operaciones e importaciones.
 - 14 `erp4_economic_reservation_guards`: impide anulacion de recibo reservado y marca remesa para revision ante cambio de version economica. La consulta previa ERP 3 muestra el conflicto antes de confirmar; la guarda SQL protege la transaccion.
 - 15 `erp4_mandate_scope_integrity`: alcance mandato-propiedad con FK compuesta por comunidad e historico inmutable. El JSON de propiedades es evidencia, no segunda relacion rectora.
+- 16: perfiles bancarios versionados, vinculo de revision con perfil, eventos inmutables por intento, aplicaciones de resultados y tickets de descarga. Probada exclusivamente sobre copias.
 - Migraciones anteriores sin cambios de checksum. Versiones y snapshots protegidos por triggers. Reserva activa unica por comunidad/recibo y no reabrible ni borrable.
 - Varias tablas son preparacion de contrato: su existencia NO acredita servicios, XML, interfaz o procesamiento bancario.
 
@@ -59,15 +61,28 @@ No se han tratado datos bancarios reales ni migrado produccion.
 - Reservas exclusivas transaccionales, concurrencia de dos preparaciones, rechazo de propuestas obsoletas, cancelacion local anterior a exportacion y liberacion sin tocar deuda.
 - Saldo/obligados/pagador leidos de ERP 3. Preparar/cancelar no crea cobro, devuelve dinero ni cambia deuda.
 
-### Adaptador SEPA puro, pendiente de integrar
+### Adaptador SEPA y conexion con servicios
 
 - `banking_adapter.py`: generacion CORE `pain.008.001.08` con lxml, estructura/direcciones/importe exacto, grupos por secuencia, referencias unicas y bytes reproducibles para las mismas entradas.
 - XSD oficiales ISO `pain.008.001.08` y `pain.002.001.10` incorporados sin modificacion, con URL y SHA-256 en `server/erp_core/banking_xsd/README.md`. Verificacion del checksum en ejecucion; no descarga de XSD ni resolucion de entidades en runtime.
-- Parser `pain.002.001.10` sin efectos de dominio: acuse/ACSC es tecnico, no acredita cobro; RJCT identifica rechazo, pendiente conserva incertidumbre. La expansion/correspondencia por linea y su confirmacion economica aun no estan integradas.
-- Configuracion tipada pura de calendario, corte, zona horaria, limites, paises y modo prueba/real; modo real exige declaraciones de aceptacion del perfil y revision de instrucciones externas. Falta persistencia/configuracion UX y verificacion de implantacion; esto no habilita exportacion real.
+- Parser `pain.002.001.10`: acuse/ACSC es tecnico, no acredita cobro; RJCT identifica rechazo, pendiente conserva incertidumbre. El servicio expande referencias exactas de fichero/grupo/linea, conserva fuente cifrada y deja referencias desconocidas pendientes, sin casarlas por similitud.
+- Configuracion tipada persistida y versionada de calendario, corte, zona horaria, limites, paises y modo prueba/real; modo real exige declaraciones de aceptacion del perfil y revision de instrucciones externas. Falta configuracion UX y verificacion de implantacion; esto no habilita exportacion real.
 - Validacion adicional de localidad obligatoria, mandato puntual sin dos instrucciones en el lote, datos originales para enmienda, IBAN correcto, cantidades exactas y direcciones estructuradas. No truncado silencioso.
 - Cargas limitadas a 16 MiB/32 niveles/200000 elementos; DTD/XXE rechazados, errores sin revelar datos del fichero. No log de errores XSD con valores sensibles.
-- Falta congelar en el servicio de preparacion todos los campos que exige el adaptador (secuencia, concepto y datos originales de enmienda), asi como perfil/configuracion, validacion fuera del lock, artefacto cifrado, descarga auditada e inmutabilidad de bytes en el flujo real. Los fixtures anteriores no son remesas exportables ni se completaran inventando datos.
+- Preparacion congela secuencia, concepto, perfil/configuracion y datos originales de enmienda. Generacion XML fuera del lock; antes de persistir se revalidan huella y version dentro de transaccion. Artefacto cifrado e inmutable; ticket temporal ligado a usuario/version de autenticacion; descarga revalida permiso y checksum. No hay todavia ruta HTTP de descarga ni prueba de navegador de este flujo.
+
+### Resultados y ciclo por intento
+
+- `banking_files.py`: configurar perfil, generar artefacto, exportar, descargar, registrar presentacion, solicitar retirada y acreditar no presentacion. Exportar/presentar no escribe cobros. Solicitar retirada no libera reservas.
+- `banking_results.py`: staging manual/XML, revision, resolucion explicita de referencias pendientes y confirmacion. Una resolucion conserva la fuente anterior y necesita despues confirmacion del efecto; no reinterpreta resultados ya confirmados.
+- `ReceivablesService.in_transaction`: reutiliza los comandos economicos existentes dentro de la transaccion ERP 4. Valida que la conexion corresponde a la misma base y no abre/termina otra transaccion. Cobro, imputacion o devolucion, identidad bancaria, evento y reserva se confirman o revierten conjuntamente.
+- Identidad canonica protegida por HMAC; mismo hecho en otro fichero enlaza la operacion existente; misma identidad con distinto contenido bloquea. No emparejamiento por importe/nombre. Referencias insuficientes no generan fondos.
+- Cobro real permite imputacion expresamente revisada; sobrante queda disponible ERP 3. Devolucion requiere cobro identificado e importes/reversos revisados. No crea deuda paralela.
+- Reenvio requiere referencia explicita al intento cerrado, nueva preview/confirmacion y nueva referencia. Resultado pendiente/contradictorio impide reenvio; un rechazo tardio nunca libera la reserva nueva. Liquidacion posterior a cancelacion conserva fondos y marca contradiccion/revision.
+- Cambio masivo de domiciliacion exige versiones actuales y fecha posterior; crea revisiones sin reescribir anteriores. Consulta de propiedad deriva intervalos historicos. Plazo excepcional de prenotificacion exige acuerdo documentado conservado en la revision del mandato.
+- Pagador distinto del recibo requiere autorizacion explicita para cada recibo/mandato, con evidencia validada y congelada en la revision cifrada. No cambia pagador emitido, destinatario ni obligados.
+- `banking_queries.py`: vistas enmascaradas de comunidad, acreedores, mandatos, domiciliaciones por propiedad, remesas/lineas/historico y resultados. Permiso de resultados independiente. No se publican fuentes bancarias ni IBAN completos por consultas genericas.
+- `banking-http.js` / `banking-bridge.py`: transporte bancario separado; rutas genericas ERP rechazan operaciones ERP 4. HTTPS/origen/Host validados; proxy solo loopback explicitamente autorizado. Reautenticacion comprobando contrasena, limitada en intentos y ligada a sesion/comunidad durante cinco minutos; cuerpo de respuesta XML solo en descarga dedicada no cacheable. Fallos tecnicos no devuelven stderr ni trazas sensibles. Falta aceptacion HTTP real extremo a extremo en Ubuntu y ACL documental bancaria.
 
 ## Pruebas ejecutadas
 
@@ -87,6 +102,10 @@ Los 29 casos del nucleo cubren cifrado/manipulacion/AAD, restauracion con clave 
 
 No se han ejecutado aun los 50 casos completos del contrato, interfaz escritorio/movil ni smoke test ERP 4 en Ubuntu. La validacion XSD sintetica no equivale a la aceptacion de ficheros por el banco. No contabilizar como realizados los recorridos integrados pendientes.
 
+Continuacion integrada: **60/60** pruebas del nucleo correctas (67,766 s), fixture `%TEMP%/organizador-erp4-foundations-oxe7g5lr`. Incluyen exportacion sin cobro, bytes historicos, permiso/reautenticacion al descargar, presentacion, resultados duplicados, retorno ERP 3, rollback posterior a escritura economica, saldo a favor, reenvio, retirada, eventos tardios, consultas enmascaradas, historico de domiciliacion, acuerdo excepcional, tercero autorizado sin mover sujetos, resolucion revisable de referencia y rechazo de doble identidad para un mismo cobro. Caso 60 repetido tras anadir sesion sin reautenticacion, correcto en `%TEMP%/organizador-erp4-foundations-mso3_fm3`.
+
+Regresiones de esta continuacion: ERP 0 **11 comprobaciones** (`organizador-erp0-foundations-1tezfvw7`), ERP 1 **26** (`organizador-erp1-master-data-ye0flkss`), ERP 2 recorrido completo/40-16 (`organizador-erp2-complete-_dwr5ppi`), ERP 3 **42/42** en 26,793 s (`organizador-erp3-foundations-sy0dewbo`), adaptador **17/17**. `node scripts/verify-erp4-http.mjs` correcto: HTTPS, proxy no suplantable desde red externa, origen, aislamiento, reautenticacion/expiracion, sesion distinta, limite de intentos y descarga no cacheable. `node --check server/index.js` correcto. Estas pruebas HTTP usan transporte simulado, NO navegador ni infraestructura productiva. Las pruebas unitarias numeradas NO equivalen a casos A01-A50 completos.
+
 ## Mejoras autonomas implementadas
 
 - Problema: RUM/IBAN u otros datos podian llegar al registro general mediante motivo o clave aportada por el cliente. Solucion: contexto cifrado y huellas de peticion/idempotencia HMAC. Beneficio: trazabilidad sin secretos en el log. Prueba 14.
@@ -100,11 +119,11 @@ No se han ejecutado aun los 50 casos completos del contrato, interfaz escritorio
 
 Continuar desde estos servicios, sin reiniciar migraciones ni repetir el diseno:
 
-1. Completar servicios 4B: cambio historico de domiciliacion y configuracion, alcance por concepto/pagador, perfiles bancarios y puertas de activacion, enmiendas completas, prenotificaciones/acuerdos excepcionales, consulta/importacion observada, ciclo de inactividad/mandato puntual y revisiones de propuestas.
-2. Integrar el adaptador CORE ya existente (no reescribirlo): persistir perfiles versionados, completar snapshots de secuencia/concepto/enmienda, preparar/validar fuera del lock y confirmar huella/version, artefacto cifrado inmutable y descarga auditada. Los XSD oficiales ya estan fijados; no repetir su descarga. Implementar enlace/correspondencia del parser tecnico pain.002 existente sin deducir cobro desde ACSC.
-3. Presentacion/cancelacion posterior a exportacion, retirada confirmada, resultado por intento/linea y referencias externas, rechazo/devolucion/reenvio humano. Usar identidad canonica de operacion y primitivas ERP 3 en la misma transaccion; no abrir dos transacciones SQLite anidadas ni crear una deuda paralela.
+1. Completar operaciones 4B restantes: alta/importacion observada y corte de remesas externas, enmiendas de RUM/acreedor con aliases/sucesion documentada, finalizacion/suspension de domiciliacion, ciclo de inactividad/mandato puntual y revision de incidencias contradictorias. No repetir generacion/XML, resultados o reenvio ya implementados.
+2. Completar casos de resultados: cobertura integral pain.002 a nivel servicio, retorno sin cobro previo con acreditacion terminal e incidencia, inversion postliquidacion y enlace UX al gasto independiente ERP 3. Identidades/aliases futuros ERP 5 no deben duplicar cobros manuales; mantener confirmacion humana.
+3. Cerrar pruebas de todos los cambios del servicio y su integracion. Configuracion, excepciones de prenotificacion y terceros ya tienen contrato operativo en dominio; falta UX completa y puertas de implantacion. Conservar el adaptador/XSD actual.
 4. Completar seguridad integrada: HTTPS real del gateway, revelacion con reautenticacion, ACL de evidencias/exportaciones, provisionado/custodia y restauracion operativa en Ubuntu, rotacion y retirada controlada de indices. Claves/configuracion productivas NO aprovisionadas.
-5. Integrar dispatcher y HTTP, vistas Bancos y remesas del design system actual, enlaces de comunidad/propiedad/propietario, seleccion masiva y revision comprensible. No hay UI ERP 4 que pueda probarse aun.
+5. Completar/verificar extremo a extremo el transporte HTTP dedicado ya incorporado (no incorporar bancos al dispatcher general/IA), vistas Bancos y remesas del design system actual, enlaces de comunidad/propiedad/propietario, seleccion masiva y revision comprensible. No hay UI ERP 4 que pueda probarse aun. Configuracion preparada: `ERP4_PUBLIC_ORIGIN`, `ERP4_TRUST_LOOPBACK_PROXY`, ademas de los opt-in y custodia del contrato; no configurada en produccion.
 6. Completar matriz A01-A50, recorridos economicos con ERP 3, pruebas escritorio/movil, regresiones finales, checkpoint/backup/restauracion y solo entonces publicacion y smoke test Ubuntu. No publicar este estado parcial.
 
 No hay nueva decision funcional material que requiera al usuario. Configuraciones bancarias reales y seguridad de implantacion siguen siendo puertas obligatorias del contrato, no autorizacion para operar con datos reales ahora.
@@ -130,7 +149,7 @@ Segundo checkpoint, adaptador incluido:
 - Restauracion: `%TEMP%/organizador-erp0-restore-x2_8h2kn`; custodia independiente: `%TEMP%/erp4-checkpoint-custody-tjfnyx5w`.
 - 196 tablas identicas, integridad/FK correctas, secretos recuperados y 17 pruebas del adaptador ejecutadas desde el codigo restaurado. Evidencia: `erp4-restore-proof.json` en el backup, `restored_adapter_tests_passed=true`.
 - Incidencia detectada y corregida: el primer archivo Git habia normalizado XSD antes de aplicar `-text`; se reindexaron exclusivamente los dos esquemas para conservar sus bytes originales y se repitio la restauracion. La copia fallida anterior no acredita cierre y no se publico.
-- **Continuar desde `erp4-progress-sepa-20260911`**, no desde el checkpoint anterior. Documentacion posterior a `173496e` no cambia codigo ni datos.
+- Este checkpoint SEPA sigue siendo recuperable. La continuacion posterior incorpora migracion 16 y nuevos servicios; usar el ultimo checkpoint de resultados indicado abajo al retomar, no reiniciar desde este tag.
 
 ## Publicacion
 
