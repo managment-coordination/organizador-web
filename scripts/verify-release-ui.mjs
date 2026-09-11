@@ -35,6 +35,10 @@ try {
   for(const viewport of [{width:1440,height:1000},{width:390,height:844}]){
     const context=await browser.newContext({viewport});
     const page=await context.newPage();
+    async function assertPanelsContained() {
+      const outside=await page.locator('.workspaceContent,.masterShell,.masterLayout,.masterPane,.budgetShell,.budgetLayout,.budgetPane').evaluateAll(nodes=>nodes.filter(n=>n.getClientRects().length).map(n=>({class:n.className,left:n.getBoundingClientRect().left,right:n.getBoundingClientRect().right})).filter(b=>b.left < -1 || b.right > innerWidth+1));
+      assert.deepEqual(outside,[],`Clipped panels at ${viewport.width}; body overflow:hidden must not mask failures`);
+    }
     const errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(base);
@@ -58,6 +62,7 @@ try {
       assert.equal(await page.locator('#appView').getAttribute('data-view'),view);
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2);
       assert.ok(!overflow, `Horizontal overflow in ${view} at ${viewport.width}`);
+      await assertPanelsContained();
       await page.screenshot({path:path.join(output,`${viewport.width}-${view}.png`),fullPage:true});
       if(view==='master-data') {
         await page.locator('#masterCommunity').waitFor();
@@ -92,6 +97,7 @@ try {
         assert.ok(propertyTemplate.getWorksheet('Propiedades').getRow(1).values.includes('Coeficiente general'));
         assert.ok(propertyTemplate.getWorksheet('Propiedades').getRow(1).values.includes('Pertenece a grupo (Si/No)'));
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Onboarding horizontal overflow');
+        await assertPanelsContained();
         await page.screenshot({path:path.join(output,`${viewport.width}-master-onboarding.png`),fullPage:true});
         await page.locator('[data-master-section="properties"]').waitFor();
         await page.locator('[data-master-section="properties"]').click();
@@ -119,6 +125,7 @@ try {
         assert.equal(propertyEdited.entity.descripcion_direccion,'Descripcion UX editada');
         await page.locator('#masterPropertyForm [name="descripcion_direccion"][value="Descripcion UX editada"]').waitFor();
         assert.ok(await page.locator('.masterPropertyFlags').getByText('Datos validados').isVisible());
+        await assertPanelsContained();
         await page.screenshot({path:path.join(output,`${viewport.width}-master-property-edit.png`),fullPage:true});
         await page.locator('#masterSearchForm input').fill('ERP');
         await page.locator('#masterSearchForm button').click();
@@ -138,6 +145,7 @@ try {
         await page.locator(`[data-common-contact-type="email"][value="${changedEmail}"]`).waitFor();
         assert.ok(await page.locator('.masterAddContact summary').filter({hasText:'+ Añadir contacto'}).isVisible());
         assert.ok(!(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)),'Master contacts horizontal overflow');
+        await assertPanelsContained();
         await page.evaluate(()=>window.scrollTo(0,0));
         await page.screenshot({path:path.join(output,`${viewport.width}-master-contacts.png`),fullPage:true});
 

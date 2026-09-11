@@ -8383,13 +8383,21 @@ function homePage() {
     .login details { background:#f5f4f0; box-shadow:none; }
     .login summary { cursor:pointer; }
 
-    .masterShell { display:grid; gap:12px; }
+    .masterShell { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; }
+    .budgetShell { grid-template-columns:minmax(0,1fr); }
+    .masterToolbar,.masterTabs,.budgetToolbar,.budgetTabs { min-width:0; max-width:100%; }
+    .masterShell,.budgetShell,.masterLayout,.budgetLayout,.masterPane,.budgetPane,
+    .masterShell label,.budgetShell label,.masterShell details,.budgetShell details { min-width:0; max-width:100%; }
+    .masterPane,.budgetPane { overflow-wrap:anywhere; }
+    .masterShell input,.masterShell select,.budgetShell input,.budgetShell select { min-width:0; max-width:100%; }
+    .budgetTableWrap { min-width:0; max-width:100%; overflow:auto; }
     .masterToolbar { display:flex; gap:8px; align-items:end; flex-wrap:wrap; padding:12px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
     .masterToolbar > label { min-width:220px; }
     .masterTabs { display:flex; gap:6px; flex-wrap:wrap; }
     .masterTabs button { background:#eceeec; color:#353937; border-color:#d4d7d4; }
     .masterTabs button.active { background:var(--teal); color:#fff; border-color:var(--teal); }
     .masterLayout { display:grid; grid-template-columns:minmax(260px,.75fr) minmax(0,1.6fr); gap:12px; align-items:start; }
+    .onboardingLayout { grid-template-columns:minmax(0,1.6fr) minmax(240px,.65fr); }
     .masterPane { padding:14px; background:var(--surface); border:1px solid var(--line); border-radius:7px; }
     .masterList { display:grid; gap:6px; max-height:65vh; overflow:auto; }
     .masterRow { width:100%; display:grid; gap:3px; padding:10px 11px; text-align:left; background:#f5f6f5; color:var(--ink); border-color:#d9dcda; }
@@ -8478,8 +8486,11 @@ function homePage() {
     .segmented button { background:transparent; color:var(--ink); border-color:transparent; }
     .segmented button.active { background:var(--surface); color:var(--teal); border-color:#cfd6d3; }
     .onboardingKinds { margin:10px 0; }
-    .onboardingMap { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:10px 0; }
-    .onboardingMap label { display:grid; grid-template-columns:minmax(120px,1fr) minmax(180px,1.2fr); align-items:center; gap:8px; padding:7px; background:#f5f6f5; }
+    .onboardingMap { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:8px; margin:10px 0; }
+    .onboardingMap label { display:grid; grid-template-columns:minmax(0,1fr); gap:6px; padding:9px; background:#f5f6f5; }
+    .onboardingSample { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+    #masterOnboardingMessage { margin:10px 0; padding:10px; border-left:3px solid var(--teal); background:#f1f6f4; overflow-wrap:anywhere; }
+    #masterOnboardingMessage.dangerText { border-color:#b33232; background:#fff0ee; }
     .onboardingPreview { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
     .buttonLink { display:inline-flex; min-height:38px; align-items:center; padding:7px 11px; border:1px solid var(--line); border-radius:5px; background:#f5f6f5; color:var(--ink); font-weight:800; text-decoration:none; }
     .groupMethodGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; }
@@ -8501,8 +8512,8 @@ function homePage() {
       .workTodayGrid { grid-template-columns:1fr; }
       .aiQueryLayout { grid-template-columns:1fr; }
       .aiHistoryList { max-height:300px; }
-      .masterLayout { grid-template-columns:1fr; }
-      .budgetLayout { grid-template-columns:1fr; }
+      .masterLayout { grid-template-columns:minmax(0,1fr); }
+      .budgetLayout { grid-template-columns:minmax(0,1fr); }
     }
     @media (max-width:700px) {
       html, body { max-width:100%; overflow-x:hidden; }
@@ -8618,7 +8629,7 @@ function homePage() {
       .voteActions { width:100%; }
       .voteActions button { flex:1 1 62px; }
       .adminMetrics, .communityChecks { grid-template-columns:repeat(2,minmax(0,1fr)); }
-      .masterLayout, .masterFormGrid, .budgetLayout { grid-template-columns:1fr; }
+      .masterLayout, .masterFormGrid, .budgetLayout { grid-template-columns:minmax(0,1fr); }
       .budgetMetrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .budgetChapterHead,.budgetItemGrid,.budgetAssignment { grid-template-columns:1fr; }
       .budgetList { max-height:280px; }
@@ -11896,8 +11907,23 @@ function homePage() {
     function masterOnboardingHtml(){
       const flow=masterData.onboarding,kind=flow.kind||'propietarios',upload=flow.upload;
       const history=(masterData.imports||[]).map(row=>'<div class="masterRow"><strong>'+html(row.nombre_archivo)+'</strong><span>'+html(row.tipo)+' · '+html(row.estado)+' · '+row.filas_validas+' preparadas'+(row.incidencias?' · '+row.incidencias+' incidencias':'')+'</span></div>').join('');
-      const mapping=upload?upload.headers.map(header=>'<label><span>'+html(header)+'</span><select class="masterOnboardingMap" data-header="'+html(header)+'">'+masterOnboardingOptions(kind,upload.suggestions?.[header]||'')+'</select></label>').join(''):'';
-      return '<div class="masterLayout onboardingLayout"><section class="masterPane"><div class="contentHead"><div><h3>Configuracion inicial</h3><p class="muted">Importa primero propietarios y despues propiedades. Cada paso se revisa antes de guardar.</p></div>'+masterInfo('Los datos se incorporan a los maestros ERP 1 existentes. Las coincidencias dudosas nunca se fusionan automaticamente.')+'</div><div class="segmented onboardingKinds"><button data-onboarding-kind="propietarios" class="'+(kind==='propietarios'?'active':'')+'">1. Propietarios</button><button data-onboarding-kind="propiedades" class="'+(kind==='propiedades'?'active':'')+'">2. Propiedades</button></div><div class="toolbar"><a class="buttonLink" href="/api/erp/onboarding/template?tipo='+kind+'">Descargar plantilla</a></div><label>Selecciona tu Excel<input id="masterOnboardingFile" type="file" accept=".xlsx,.csv"></label><button class="green" id="masterOnboardingUpload">Analizar columnas</button><p class="muted" id="masterOnboardingMessage">'+html(flow.message||'Admite plantillas y archivos propios .xlsx o .csv.')+'</p>'+(upload?'<div class="masterSection"><div class="contentHead"><div><h3>Relacionar columnas</h3><p class="muted">'+html(upload.filename)+' · '+upload.row_count+' filas</p></div>'+masterInfo('Indica a que dato ERP corresponde cada columna. Las columnas innecesarias pueden quedar como No importar.')+'</div>'+(upload.sheets.length>1?'<label>Hoja<select id="masterOnboardingSheet">'+upload.sheets.map(name=>'<option'+(name===upload.sheet?' selected':'')+'>'+html(name)+'</option>').join('')+'</select></label>':'')+'<div class="onboardingMap">'+mapping+'</div>'+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+new Date().toISOString().slice(0,10)+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+'<button class="green" id="masterOnboardingPreview">Revisar antes de guardar</button>'+masterOnboardingPreviewHtml()+'</div>':'')+'</section><aside class="masterPane"><h3>Importaciones recientes</h3>'+(history||'<div class="empty">Todavia no hay importaciones de configuracion.</div>')+'</aside></div>';
+      const mapping=upload?upload.headers.map(header=>{
+        const examples=(upload.sample||[]).map(row=>safe(row[header])).filter(Boolean).slice(0,3);
+        return '<label><strong>'+html(header)+'</strong><span class="onboardingSample">'+html(examples.join(' / ')||'Sin valores en la muestra')+'</span><select class="masterOnboardingMap" data-header="'+html(header)+'">'+masterOnboardingOptions(kind,flow.mapping?.[header]??upload.suggestions?.[header]??'')+'</select></label>';
+      }).join(''):'';
+      const propertyFile=upload?.headers.some(header=>['propiedad','codigo propiedad','codigo de propiedad','inmueble','finca'].includes(safe(header).toLowerCase().trim()));
+      return '<div class="masterLayout onboardingLayout"><section class="masterPane"><div class="contentHead"><div><h3>Configuracion inicial</h3><p class="muted">Importa primero propietarios y despues propiedades. Cada paso se revisa antes de guardar.</p></div>'+masterInfo('Las coincidencias dudosas nunca se fusionan automaticamente.')+'</div>'+
+        '<div class="segmented onboardingKinds"><button data-onboarding-kind="propietarios" class="'+(kind==='propietarios'?'active':'')+'">1. Propietarios</button><button data-onboarding-kind="propiedades" class="'+(kind==='propiedades'?'active':'')+'">2. Propiedades</button></div>'+
+        '<div class="toolbar"><a class="buttonLink" href="/api/erp/onboarding/template?tipo='+kind+'">Descargar plantilla</a></div><label>Selecciona tu Excel<input id="masterOnboardingFile" type="file" accept=".xlsx,.csv"'+(flow.busy?' disabled':'')+'></label>'+
+        (flow.file?'<p class="onboardingSample">Archivo seleccionado: '+html(flow.file.name)+'</p>':'')+
+        '<button class="green" id="masterOnboardingUpload"'+(flow.busy?' disabled':'')+'>'+(flow.busy?'Analizando...':'Analizar columnas')+'</button><div id="masterOnboardingMessage" class="'+(flow.error?'dangerText':'')+'" role="'+(flow.error?'alert':'status')+'" aria-live="polite" tabindex="-1">'+html(flow.message||'Admite plantillas y archivos propios .xlsx o .csv.')+'</div>'+
+        (upload?'<section class="masterSection" id="masterOnboardingResult" tabindex="-1"><div class="contentHead"><div><h3>Relacionar columnas</h3><p class="muted">'+html(upload.filename)+' · '+upload.row_count+' filas · '+upload.headers.length+' columnas</p></div>'+masterInfo('Relaciona cada columna con su dato. No importar omite esa columna; los ejemplos permiten comprobar el contenido.')+'</div>'+
+        (kind==='propietarios'&&propertyFile?'<div class="masterQualityNotice">Este archivo tambien contiene propiedades. Para importar sus coeficientes, utiliza el paso Propiedades, una vez registrados los propietarios. <button id="masterOnboardingAsProperties" type="button">Analizar como propiedades</button></div>':'')+
+        '<p class="muted">'+(kind==='propietarios'?'Obligatorios: codigo de propietario y nombre.':'Obligatorios: codigo de propiedad y codigo de propietario existente. El nombre no sustituye al codigo; los coeficientes deben vincularse a su grupo.')+'</p>'+
+        (upload.sheets.length>1?'<label>Hoja<select id="masterOnboardingSheet">'+upload.sheets.map(name=>'<option'+(name===upload.sheet?' selected':'')+'>'+html(name)+'</option>').join('')+'</select></label>':'')+
+        '<div class="onboardingMap">'+mapping+'</div>'+(kind==='propiedades'?'<details class="masterPropertyControl"><summary>Opciones de la importacion</summary><label>Fecha efectiva predeterminada<input id="masterOnboardingDate" type="date" value="'+html(flow.effectiveDate||new Date().toISOString().slice(0,10))+'"></label><p class="muted">Se usa solo si el Excel no incluye una fecha. No mueve deuda ni modifica recibos o asambleas.</p></details>':'')+
+        '<button class="green" id="masterOnboardingPreview">Revisar antes de guardar</button>'+masterOnboardingPreviewHtml()+'</section>':'')+
+        '</section><aside class="masterPane"><h3>Importaciones recientes</h3>'+(history||'<div class="empty">Todavia no hay importaciones de configuracion.</div>')+'</aside></div>';
     }
 
     function masterPropertyForm(row = {}) {
@@ -12174,16 +12200,38 @@ function homePage() {
     }
 
     async function masterUploadOnboarding(sheet=''){
-      const input=$('cards').querySelector('#masterOnboardingFile');const file=input?.files?.[0]||masterData.onboarding.file;
-      if(!file){masterData.onboarding.message='Selecciona un archivo .xlsx o .csv.';render();return;}
-      masterData.onboarding.file=file;masterData.onboarding.message='Analizando columnas...';render();
-      try{const params=new URLSearchParams({id_comunidad:String(masterData.communityId),tipo:masterData.onboarding.kind});if(sheet)params.set('hoja',sheet);const response=await fetch('/api/erp/onboarding/upload?'+params.toString(),{method:'POST',body:file,credentials:'same-origin',headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type||'application/octet-stream'}});const body=await response.json();if(!response.ok)throw new Error(body.error||'No se pudo leer el Excel.');masterData.onboarding.upload=body;masterData.onboarding.preview=null;masterData.onboarding.message='Columnas detectadas. Revisa su correspondencia.';}catch(error){masterData.onboarding.message=error.message;}render();
+      const flow=masterData.onboarding,communityId=masterData.communityId;
+      if(flow.busy)return;
+      const file=$('cards').querySelector('#masterOnboardingFile')?.files?.[0]||flow.file;
+      flow.error=false;flow.preview=null;flow.upload=null;flow.mapping={};flow.reviewToken=null;
+      const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),60000);
+      try{
+        if(!file)throw new Error('Selecciona un archivo .xlsx o .csv.');
+        if(!/\\.(xlsx|csv)$/i.test(file.name))throw new Error('Este formato no es compatible. Guarda una copia como Libro de Excel (.xlsx) o CSV y vuelve a seleccionarla.');
+        if(file.size>20*1024*1024)throw new Error('El archivo supera el limite de 20 MB.');
+        flow.file=file;flow.busy=true;flow.message='Analizando columnas...';render();
+        const params=new URLSearchParams({id_comunidad:String(communityId),tipo:flow.kind});if(sheet)params.set('hoja',sheet);
+        const body=await api('/api/erp/onboarding/upload?'+params.toString(),{method:'POST',body:file,signal:controller.signal,headers:{'x-file-name':encodeURIComponent(file.name),'content-type':file.type||'application/octet-stream'}});
+        flow.upload=body;flow.mapping={...body.suggestions};flow.message=body.headers.length+' columnas y '+body.row_count+' filas detectadas. Revisa los campos antes de guardar.';
+      }catch(error){flow.error=true;flow.message=error.name==='AbortError'?'El analisis ha tardado demasiado. No se ha importado nada. Vuelve a intentarlo.':error.message;}
+      finally{clearTimeout(timeout);flow.busy=false;}
+      if(masterData.onboarding!==flow||masterData.communityId!==communityId||currentView!=='master-data')return;
+      render();const result=$('cards').querySelector(flow.error?'#masterOnboardingMessage':'#masterOnboardingResult');result?.focus({preventScroll:true});result?.scrollIntoView({block:'start'});
     }
 
     async function masterPreviewOnboarding(){
-      const root=$('cards'),upload=masterData.onboarding.upload;if(!upload)return;const mapeo={};root.querySelectorAll('.masterOnboardingMap').forEach(field=>{mapeo[field.dataset.header]=field.value;});
-      masterData.onboarding.message='Preparando vista previa...';const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=true;
-      try{const body=await api('/api/erp/onboarding/preview',{method:'POST',body:JSON.stringify({id_comunidad:masterData.communityId,tipo:masterData.onboarding.kind,token:upload.token,filename:upload.filename,sheet:root.querySelector('#masterOnboardingSheet')?.value||upload.sheet,mapeo,opciones:{fecha_efectiva:root.querySelector('#masterOnboardingDate')?.value||new Date().toISOString().slice(0,10)}})});masterData.onboarding.preview=body.entity;masterData.onboarding.message=body.entity.incidencias?'Hay incidencias que deben corregirse.':'Vista previa preparada para confirmar.';}catch(error){masterData.onboarding.message=error.message;}render();
+      const root=$('cards'),flow=masterData.onboarding,upload=flow.upload,communityId=masterData.communityId;
+      if(!upload)return;const mapeo={};root.querySelectorAll('.masterOnboardingMap').forEach(field=>{mapeo[field.dataset.header]=field.value;});
+      const reviewToken={};flow.reviewToken=reviewToken;
+      flow.mapping=mapeo;flow.effectiveDate=root.querySelector('#masterOnboardingDate')?.value||new Date().toISOString().slice(0,10);flow.error=false;
+      flow.message='Preparando vista previa...';const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=true;
+      try{
+        const body=await api('/api/erp/onboarding/preview',{method:'POST',body:JSON.stringify({id_comunidad:communityId,tipo:flow.kind,token:upload.token,filename:upload.filename,sheet:root.querySelector('#masterOnboardingSheet')?.value||upload.sheet,mapeo,opciones:{fecha_efectiva:flow.effectiveDate}})});
+        if(flow.reviewToken!==reviewToken)return;
+        flow.preview=body.entity;flow.error=!!body.entity.incidencias;flow.message=body.entity.incidencias?'Hay incidencias que deben corregirse.':'Vista previa preparada para confirmar.';
+      }catch(error){if(flow.reviewToken!==reviewToken)return;flow.preview=null;flow.error=true;flow.message=error.message;}
+      if(masterData.onboarding!==flow||masterData.communityId!==communityId||currentView!=='master-data')return;
+      render();$('cards').querySelector(flow.error?'#masterOnboardingMessage':'.onboardingPreview')?.scrollIntoView({block:'start'});
     }
 
     async function masterConfirmOnboarding(){
@@ -12193,10 +12241,16 @@ function homePage() {
 
     function bindMasterDataPanel() {
       const root=$('cards');
-      root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
+      root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.onboarding={kind:masterData.onboarding.kind,upload:null,preview:null,message:''};masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
       root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
       root.querySelectorAll('[data-onboarding-kind]').forEach(button=>button.addEventListener('click',()=>{masterData.onboarding={kind:button.dataset.onboardingKind,upload:null,preview:null,message:''};render();}));
       root.querySelector('#masterOnboardingUpload')?.addEventListener('click',()=>masterUploadOnboarding());
+      root.querySelector('#masterOnboardingFile')?.addEventListener('change',event=>{masterData.onboarding.file=event.target.files?.[0]||null;masterData.onboarding.upload=null;masterData.onboarding.preview=null;masterData.onboarding.reviewToken=null;masterData.onboarding.mapping={};masterData.onboarding.error=false;masterData.onboarding.message='';render();});
+      if(root.querySelector('#masterOnboardingFile')&&masterData.onboarding.file){try{const transfer=new DataTransfer();transfer.items.add(masterData.onboarding.file);root.querySelector('#masterOnboardingFile').files=transfer.files;}catch{ /* The retained File remains available on browsers without DataTransfer construction. */ }}
+      root.querySelector('#masterOnboardingAsProperties')?.addEventListener('click',()=>{masterData.onboarding={kind:'propiedades',file:masterData.onboarding.file};masterUploadOnboarding();});
+      const invalidateOnboardingPreview=()=>{masterData.onboarding.preview=null;masterData.onboarding.reviewToken=null;root.querySelector('.onboardingPreview')?.remove();const button=root.querySelector('#masterOnboardingPreview');if(button)button.disabled=false;};
+      root.querySelectorAll('.masterOnboardingMap').forEach(field=>field.addEventListener('change',()=>{masterData.onboarding.mapping={...masterData.onboarding.mapping,[field.dataset.header]:field.value};invalidateOnboardingPreview();}));
+      root.querySelector('#masterOnboardingDate')?.addEventListener('change',event=>{masterData.onboarding.effectiveDate=event.target.value;invalidateOnboardingPreview();});
       root.querySelector('#masterOnboardingSheet')?.addEventListener('change',event=>masterUploadOnboarding(event.target.value));
       root.querySelector('#masterOnboardingPreview')?.addEventListener('click',masterPreviewOnboarding);
       root.querySelector('#masterOnboardingConfirm')?.addEventListener('click',masterConfirmOnboarding);

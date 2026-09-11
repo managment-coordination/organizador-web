@@ -155,3 +155,14 @@ La ficha de propiedad presenta `¿Tiene inquilino?` como eleccion directa y solo
 - El asistente ofrece coeficientes existentes antes de crear otro, reduciendo duplicados conceptuales.
 
 La verificacion `verify-erp-ux-onboarding.py` cubre migracion reentrante, propietarios/contactos, reimportacion, propiedades, titularidades, coeficiente especial, incidencias, permisos e invariabilidad economica ERP 2. Playwright recorre onboarding, propietarios, contactos, titularidades, estructuras y grupos en 1440x1000 y 390x844.
+
+## Correccion de recorte movil y analisis de Excel propio - 11/09/2026
+
+- Checkpoint previo: `ux-mobile-onboarding-pre-20260911`, commit `ca4dab7`. Sin migraciones ni cambios de dominio, permisos, datos maestros o calculos.
+- Causa reproducida: la pista implicita del grid de Datos maestros se ensanchaba por el ancho minimo de la barra de pestañas. En 390 px, un panel ocupaba 697,97 px. `overflow-x:hidden` en el documento ocultaba el sobrante y hacia que la comprobacion anterior de `document.scrollWidth` no detectara el recorte.
+- Se limitan las pistas y anchos minimos de contenedores, etiquetas y selectores ERP 1/2. Las tablas mantienen desplazamiento local; las pestañas mantienen navegacion horizontal contenida. No se ocultan datos para ajustar el ancho.
+- El analisis muestra columnas, numero de filas y ejemplos; lleva el foco al resultado o a un error visible. Conserva el archivo, mapeo manual y fecha efectiva; evita reutilizar resultados al cambiar de comunidad. Una nueva seleccion invalida la vista previa anterior. El analisis tiene limite de espera y permite reintentar.
+- MEJORA UX AUTONOMA: aviso cuando se carga una tabla de propiedades en el paso Propietarios y accion explicita para analizarla en el paso correcto. Los nombres de propietarios no se convierten en codigos ni se vinculan por similitud.
+- El Excel comunicado por el usuario pudo analizarse en servidor aislado: tres columnas y 40 filas; no se confirmo su importacion. Un archivo con nombres pero sin identificadores estables sigue necesitando correspondencia documentada con propietarios existentes. Formatos de este flujo: `.xlsx` y `.csv`; `.xls` muestra una indicacion de conversion, no se anuncia como soportado.
+- `scripts/verify-onboarding-mobile.mjs`: reproduccion anterior fallida y comprobacion posterior en 360, 390 y 1440 px; analisis de tabla no basada en plantilla; ejemplos; cambio de tipo explicito; mapeo conservado tras error; ausencia de confirmacion ante campos requeridos incompletos; errores de sesion/formato; reintento; limpieza al cambiar de comunidad. Admite verificacion privada opcional del archivo comunicado, sin incorporarlo al repositorio.
+- `scripts/verify-release-ui.mjs` comprueba ahora limites geometricos de paneles ademas del ancho del documento, para evitar un falso positivo cuando el CSS oculta el desbordamiento.
