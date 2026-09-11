@@ -18,7 +18,7 @@ try{
   for(let i=0;i<100&&!log.match(/http:\/\/127.0.0.1:\d+/);i++)await delay(200);
   const base=log.match(/http:\/\/127.0.0.1:\d+/)?.[0];assert.ok(base,log);
   browser=await chromium.launch({channel:'msedge',headless:true});
-  for(const width of [390,360,1440]){
+  for(const width of [390,360,1920]){
     const context=await browser.newContext({viewport:{width,height:900}}),page=await context.newPage(),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
     await page.goto(base);await page.locator('#loginUser').selectOption({label:'SuperUsuario'});
@@ -28,13 +28,17 @@ try{
     assert.ok(views.includes('master-data')&&views.includes('budgets')&&views.includes('assemblies'));
     for(const view of views){
       const mobile=width<700;
+      const area=await page.locator(`.tabs [data-view="${view}"]`).evaluate(n=>n.closest('[data-nav-area]').dataset.navArea);
+      if(area!=='global')await page.locator(`[data-workspace-area="${area}"]`).click();
       if(mobile)await page.locator('#mobileMenuToggle').click();
       const target=page.locator(mobile?`#mobileDrawerNav [data-mobile-view="${view}"]`:`.tabs [data-view="${view}"]`);
       for(const group of await target.locator('xpath=ancestor::details').all())if(!await group.evaluate(n=>n.open))await group.locator(':scope > summary').click();
       await target.click();await page.waitForTimeout(350);
+      await page.waitForLoadState('networkidle');
       assert.equal(await page.locator('#appView').getAttribute('data-view'),view);
       assert.ok(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2),`Overflow ${view}/${width}`);
-      if(view==='master-data')assert.match(await page.locator('#navigationTrail').innerText(),/Gestion.*Ficheros/);
+      if(view==='master-data')assert.match(await page.locator('#navigationTrail').innerText(),/Gestion/);
+      await page.screenshot({path:path.join(output,`${width}-${view}.png`)});
     }
     await page.locator('#homeTab').evaluate(n=>n.click());
     await page.locator('[data-home-view="map"]').click();
@@ -46,7 +50,7 @@ try{
       await open.click();await page.locator('#entityModal').waitFor();await page.keyboard.press('Escape');
     }
     // Explicitly close the existing modal through its own close control if Escape is not supported.
-    if(await page.locator('#entityModal').isVisible())await page.locator('#entityModal button').filter({hasText:/Cerrar/}).first().click();
+    if(await page.locator('#entityModal').isVisible())await page.locator('#closeModal').click();
     await page.evaluate(()=>window.scrollTo(0,0));
     if(width<700){
       await page.locator('#mobileMenuToggle').click();

@@ -39,7 +39,7 @@ Los accesos a un mismo modal desde mapa, IA, busqueda y tarjeta no son funciones
 
 Mapa tecnicamente valido: cada vista y acceso real conserva destino, sin migracion, eliminacion ni cambio de negocio/permisos. Se autoriza pasar automaticamente a fase B segun la instruccion del usuario. No hay conflicto material que requiera escoger entre comportamientos distintos.
 
-## Arquitectura objetivo aplicada
+## Primera reorganizacion (sustituida visualmente por el sistema siguiente)
 
 - Inicio: panel existente de atencion, sin duplicar menu entero.
 - Tareas: Trabajo Hoy, Tareas, Proyectos, Decisiones/Revision segun perfil, Notificaciones, Documentacion, IA y reuniones, Seguridad.
@@ -66,7 +66,7 @@ Pruebas locales superadas: `verify-navigation-structure.mjs` comprueba los 17 ID
 
 La rama de la vista activa se abre y las otras se pliegan al cambiar de pantalla. No se requiere mantener todas las ramas desplegadas para localizar el destino actual.
 
-### Cierre
+### Cierre de la primera reorganizacion
 
 - Reorganizacion completada y publicada: 100% de este trabajo transversal, sin variar certificaciones ERP. Implementacion `c7e9e10`; checkpoint final `navigation-structure-certified-20260911`. Codigo y documentacion de navegacion en GitHub.
 - Capturas finales revisadas: `navigation-structure-B9Rb8q` (360/390/1440); regresion UI `organizador-ui-release-pd8Fkj` (siete vistas y recorridos en escritorio/movil). Comprobacion geometrica tras terminar la animacion del menu, no solo ancho del documento.
@@ -74,3 +74,30 @@ La rama de la vista activa se abre y las otras se pliegan al cambiar de pantalla
 - Backup consistente `backups/before-operational-publish-20260911-094207`; checksums correctos, restauracion aislada `backups/restore-navigation-_psa6zcp/restored.db`, integridad y FKs correctas.
 - Servicio publicado en 8771; HTTP 200 y estructura nueva comprobados por LAN y Tailscale. Sin migracion ni cambios de dominio/API. No se toca UNO Marbella.
 - Incidencias bloqueantes: ninguna. Limitacion de inventario: Contabilidad/Proveedores no tienen vista web independiente que reubicar en este repositorio; sus datos/consumidores permanecen, y su ubicacion futura esta definida. ERP 3 sigue pendiente de decisiones funcionales de su contrato, no de esta reorganizacion.
+
+## Sistema profesional vigente - 11/09/2026
+
+Esta seccion sustituye la representacion visual desplegable anterior, no el inventario funcional ni los contratos/permisos. Punto de retorno: `ux-professional-pre-20260911`, commit `803ab10`. Los cambios documentales previos de ERP 3 y referencias sectoriales permanecen ajenos a este trabajo.
+
+### Navegacion
+
+- Cabecera con tres areas permanentes: Inicio, Tareas y Gestion. Cada area abre un destino autorizado ya existente; no introduce pantallas vacias.
+- Sidebar plano contextual: Trabajo y Recursos en Tareas; Comunidad en Gestion. Sus titulos son separadores visuales, no desplegables. Buscar y Configuracion global son accesos secundarios sujetos a los permisos existentes.
+- Gestion abre directamente Datos de la comunidad, Presupuestos y Asambleas. Ficheros sigue siendo una agrupacion conceptual, no un nivel adicional que obligue a hacer clic.
+- Breadcrumb de area y pantalla; las fichas siguen concentrando acciones, documentos e historico. Las pestañas locales de cada dominio no se convierten en modulos principales.
+- Copiloto transversal en la cabecera, accesible sin cubrir tarjetas ni botones. Se mantienen Centro IA y las acciones contextuales existentes.
+- Movil: Inicio/Tareas/Gestion visibles; OT abre un cajon con los accesos planos del area activa. Comparte catalogo y visibilidad con escritorio. Seguridad conserva su entrada exclusiva sin nuevas opciones.
+
+### Sistema visual reutilizable
+
+`server/workspace-ui.css` define la capa de presentacion del workspace y sus tokens: fondos neutros claros, tinta oscura, azul de navegacion/accion, verde para acciones positivas y rojo/ambar para incidencias. No gradients decorativos ni sombras de tarjetas; sombra reservada al modal/cajon. Radios de 6 px en controles y 8 px en modales. Tipografia Segoe UI/Arial, escala fija y espaciado consistente, foco de teclado visible y estados deshabilitados conservados.
+
+Iconos Lucide empaquetados localmente (`lucide-static`, version fijada), sin CDN ni peticiones a terceros. Los controles de icono tienen nombre accesible y ayuda al pasar el cursor. Nuevas pantallas deben reutilizar la cabecera, paneles, controles, tabs y tokens; no introducir otra paleta o navegacion paralela.
+
+Escritorio: sidebar de 216 px, contenido flexible, filtros junto al listado, tablas compactas y formularios distribuidos en columnas. Tarjetas sin estiramiento vertical artificial. En pantallas intermedias se apilan paneles que no caben. Movil: formularios de una columna, objetivos tactiles ampliados, pestañas locales desplazables y tablas con su propio desplazamiento cuando es necesario. Busqueda de tareas visible; filtros secundarios bajo el control Filtros. Incidencias y acciones funcionales no se eliminan.
+
+### Validacion y publicacion
+
+Pruebas de navegacion: 17 IDs preservados, 15 vistas del perfil completo en 360/390/1920 px, fichas contextuales y perfiles Presidente/Consulta/Seguridad. Evidencia `navigation-structure-S29Vr7`. Revision visual real de capturas; los estados de carga de algunos listados no se consideran evidencia suficiente y se complementan con recorridos ERP cargados de `verify-release-ui.mjs`.
+
+Regresion funcional y despliegue se registran al cierre. No hay migraciones, cambios de API ni de reglas economicas. Rollback mediante republicacion del checkpoint conservando `data/` y `backups/`; Git no sustituye el backup SQLite.

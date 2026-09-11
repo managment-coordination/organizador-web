@@ -50,6 +50,8 @@ try {
     await page.locator('#appView').waitFor({state:'visible'});
     for(const view of ['home','tasks','projects','master-data','budgets','admin','ai']){
       if(viewport.width<600){
+        const area=await page.locator(`.tabs [data-view="${view}"]`).evaluate(n=>n.closest('[data-nav-area]').dataset.navArea);
+        if(area!=='global')await page.locator(`[data-workspace-area="${area}"]`).click();
         await page.locator('#mobileMenuToggle').click();
         for(const group of await page.locator(`#mobileDrawerNav [data-mobile-view="${view}"]`).locator('xpath=ancestor::details').all()){
           if(!await group.evaluate(el=>el.open))await group.locator(':scope > summary').click();

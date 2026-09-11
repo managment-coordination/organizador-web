@@ -7569,6 +7569,8 @@ finally:
 }
 
 function homePage() {
+  const workspaceStyle=fs.readFileSync(path.join(__dirname,'workspace-ui.css'),'utf8');
+  const workspaceIcons=Object.fromEntries(['house','list-checks','building-2','calendar-days','folder-kanban','bell','files','file-chart-column','sparkles','upload','shield-check','search','settings-2','landmark','users','clipboard-check','circle-check','refresh-cw','filter-x','log-out','x'].map(name=>[name,fs.readFileSync(path.join(__dirname,'node_modules/lucide-static/icons',name+'.svg'),'utf8').replace('<svg','<svg aria-hidden="true" focusable="false"')]));
   return `<!doctype html>
 <html lang="es">
 <head>
@@ -8733,6 +8735,7 @@ function homePage() {
       .masterMemberRow input[type="checkbox"] { position:absolute; left:12px; top:13px; }
       .masterList { max-height:320px; }
     }
+    ${workspaceStyle}
   </style>
 </head>
 <body>
@@ -8743,6 +8746,11 @@ function homePage() {
         <h1>${appName}</h1>
         <p>Entorno de gestion compartido</p>
       </div>
+      <nav id="workspaceAreas" class="workspaceAreas hidden" aria-label="Areas de trabajo">
+        <button type="button" data-workspace-area="home">Inicio</button>
+        <button type="button" data-workspace-area="tasks">Tareas</button>
+        <button type="button" data-workspace-area="management">Gestion</button>
+      </nav>
       <div class="session">
         <span id="sessionStatus">Comprobando acceso...</span>
         <button class="secondary hidden" id="changeCommunityTop">Cambiar comunidad</button>
@@ -8873,6 +8881,7 @@ function homePage() {
               </div>
             </div>
           </div>
+          <div id="workFilters" class="workFilters"></div>
           <div class="cards" id="cards"></div>
         </section>
       </div>
@@ -10179,19 +10188,61 @@ function homePage() {
       fillSelect($("priorityFilter"), rows, row => row.prioridad, "Todas las prioridades");
     }
 
+    const workspaceIconMarkup=${JSON.stringify(workspaceIcons)};
+    const workspaceNavigation=[
+      {area:'home',label:'Resumen',items:[['homeTab','house']]},
+      {area:'tasks',label:'Trabajo',items:[['mapTab','calendar-days'],['taskTab','list-checks'],['projectTab','folder-kanban'],['workTab','clipboard-check'],['reviewTab','circle-check'],['notificationTab','bell']]},
+      {area:'tasks',label:'Recursos',items:[['documentsTab','files'],['reportsTab','file-chart-column'],['aiTab','sparkles'],['importTab','upload'],['securityTab','shield-check']]},
+      {area:'management',label:'Comunidad',items:[['masterDataTab','building-2'],['budgetTab','landmark'],['assemblyTab','users']]},
+      {area:'global',label:'General',items:[['globalSearchTab','search'],['adminTab','settings-2']]}
+    ];
+    function initializeWorkspaceNavigation(){
+      const nav=document.querySelector('.tabs'),sections=[];
+      workspaceNavigation.forEach(group=>{
+        const section=document.createElement('section');section.className='workspaceNavSection';section.dataset.navArea=group.area;
+        const heading=document.createElement('h3');heading.textContent=group.label;section.append(heading);
+        group.items.forEach(([id,icon])=>{const button=$(id);button.insertAdjacentHTML('afterbegin',workspaceIconMarkup[icon]);section.append(button);});sections.push(section);
+      });
+      nav.replaceChildren(...sections);
+      const filters=$('listFilters'),tools=$('reload').parentElement;
+      $('workFilters').append(filters,tools);
+      tools.prepend($('mobileFiltersToggle'));
+      const copilot=$('copilotFab');copilot.insertAdjacentHTML('afterbegin',workspaceIconMarkup.sparkles);copilot.title='Abrir copiloto';copilot.setAttribute('aria-label','Abrir copiloto');document.querySelector('.session').prepend(copilot);
+      [['reload','refresh-cw','Actualizar'],['clearFilters','filter-x','Limpiar filtros'],['logoutTop','log-out','Cerrar sesion'],['closeModal','x','Cerrar ficha']].forEach(([id,icon,label])=>{
+        const button=$(id);button.innerHTML=workspaceIconMarkup[icon];button.classList.add('iconButton');button.title=label;button.setAttribute('aria-label',label);
+      });
+      document.querySelectorAll('[data-workspace-area]').forEach(button=>{
+        button.insertAdjacentHTML('afterbegin',workspaceIconMarkup[{home:'house',tasks:'list-checks',management:'building-2'}[button.dataset.workspaceArea]]);
+        button.addEventListener('click',()=>{
+          const group=workspaceNavigation.filter(g=>g.area===button.dataset.workspaceArea);
+          const preferred={home:'homeTab',tasks:'taskTab',management:'masterDataTab'}[button.dataset.workspaceArea];
+          const target=!$(preferred).classList.contains('hidden')?$(preferred):group.flatMap(g=>g.items).map(([id])=>$(id)).find(tab=>!tab.classList.contains('hidden'));
+          if(target)switchView(target.dataset.view);
+        });
+      });
+    }
     function setActiveNavigation(view) {
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "masterDataTab", "budgetTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", "master-data":"masterDataTab", budgets:"budgetTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
-      document.querySelectorAll('.tabs [data-nav-group]').forEach(group=>{
-        group.classList.toggle('hidden', !group.querySelector('.tab:not(.hidden)'));
-        group.open=Boolean(target && group.contains($(target)));
+      const targetArea=target?$(target).closest('[data-nav-area]')?.dataset.navArea:'home';
+      const area=targetArea==='global'?'global':targetArea||'home';
+      const areaLabel={home:'Inicio',tasks:'Tareas',management:'Gestion',global:'General'}[area];
+      document.querySelectorAll('.tabs [data-nav-area]').forEach(group=>{
+        group.classList.toggle('hidden',!group.querySelector('.tab:not(.hidden)'));
+        group.classList.toggle('navAway',group.dataset.navArea!=='global'&&group.dataset.navArea!==area);
       });
-      const trail=[];
-      if(target){let parent=$(target).parentElement;while(parent && !parent.classList.contains('tabs')){if(parent.matches('[data-nav-group]'))trail.unshift(parent.querySelector(':scope > summary').textContent);parent=parent.parentElement;}trail.push($(target).querySelector('span').textContent);}
+      $('workspaceAreas').classList.toggle('hidden',!state.usuario||(state.usuario||{}).rol==='Seguridad');
+      document.querySelectorAll('[data-workspace-area]').forEach(button=>{
+        const available=workspaceNavigation.filter(g=>g.area===button.dataset.workspaceArea).flatMap(g=>g.items).some(([id])=>!$(id).classList.contains('hidden'));
+        button.classList.toggle('hidden',!available);button.classList.toggle('active',button.dataset.workspaceArea===area);button.setAttribute('aria-pressed',String(button.dataset.workspaceArea===area));
+      });
+      const trail=target?[areaLabel,$(target).querySelector('span').textContent]:[];
       $('navigationTrail').textContent=trail.join(' / ');
       $('navigationTrail').classList.toggle('hidden', view==='home'||(state.usuario||{}).rol==='Seguridad');
       $("appView").dataset.view = view;
+      $('workFilters').classList.toggle('hidden',!['tasks','projects'].includes(view));
+      document.querySelector('.mobileDrawerTitle strong').textContent=areaLabel;
       syncMobileNavigation();
     }
 
@@ -10199,7 +10250,7 @@ function homePage() {
       const drawer = $("mobileDrawerNav");
       if (!drawer) return;
       const tree=document.querySelector('.tabs').cloneNode(true);
-      tree.querySelectorAll('.hidden').forEach(node=>node.remove());
+      tree.querySelectorAll('.hidden,.navAway').forEach(node=>node.remove());
       tree.querySelectorAll('[id]').forEach(node=>node.removeAttribute('id'));
       tree.querySelectorAll('.tab').forEach(tab=>{
         tab.dataset.mobileView=tab.dataset.view;delete tab.dataset.view;
@@ -12569,7 +12620,7 @@ function homePage() {
         return;
       }
       if (currentView === "master-data") {
-        $("contentTitle").textContent = "Datos maestros";
+        $("contentTitle").textContent = "Datos de la comunidad";
         $("contentSubtitle").textContent = "Comunidades, propiedades, propietarios, grupos, coeficientes y ejercicios con trazabilidad.";
         $("visibleCount").textContent = masterData.loaded ? (masterData.propertyTotal + " propiedades · " + masterData.ownerTotal + " propietarios") : "Cargando...";
         $("viewActions").classList.add("hidden");
@@ -14397,6 +14448,7 @@ function homePage() {
       if (view === "security" && (securityData.access || {}).can_manage && !securityData.overview) loadSecurityData();
     }
 
+    initializeWorkspaceNavigation();
     $("homeTab").addEventListener("click", () => switchView("home"));
     $("projectTab").addEventListener("click", () => switchView("projects"));
     $("taskTab").addEventListener("click", () => switchView("tasks"));
@@ -14422,11 +14474,6 @@ function homePage() {
       const button = event.target.closest("button[data-mobile-view]");
       if (button) switchView(button.dataset.mobileView);
     });
-    $('mobileDrawerNav').addEventListener('toggle',event=>{
-      const group=event.target;if(!group.matches('[data-nav-group]'))return;
-      const source=document.querySelector('.tabs [data-nav-group="'+group.dataset.navGroup+'"]');
-      if(source)source.open=group.open;
-    },true);
     document.addEventListener("keydown", event => { if (event.key === "Escape") closeMobileDrawer(); });
     $("mobileFiltersToggle").addEventListener("click", () => {
       const filters = $("listFilters");
