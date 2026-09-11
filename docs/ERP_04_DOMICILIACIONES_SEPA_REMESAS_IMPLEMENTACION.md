@@ -168,3 +168,12 @@ No realizada. Produccion conserva ERP 0-3 y su configuracion previa; comprobacio
 - 201 tablas identicas, integridad/FK correctas, valores descifrados identicos y 17 pruebas del adaptador desde el codigo restaurado. Fuente sintetica con exportacion, cobro e imputacion ERP 3 y devolucion; no datos bancarios reales. Prueba mecanica `erp4-restore-proof.json` dentro del backup.
 - Continuar desde este checkpoint y la lista de pendientes exactos, no desde `686896a`. No volver a implementar XML, transaccion compartida ERP 3, resultados/reenvios ni transporte protegido ya existentes.
 - No publicar ni conceder el hito 4B hasta cerrar sus operaciones pendientes; tampoco habilitar datos bancarios reales por disponer de pruebas con claves temporales.
+
+Ultimo checkpoint de continuacion: `erp4-progress-results-access-20260911`.
+
+- Codigo `df7469f2538b2c36d745464282e807058a2f9bb6`: incluye las ampliaciones de importacion observada, suspension/finalizacion y revelacion restringida, con 64 pruebas de nucleo correctas.
+- Backup independiente `backups/erp4-progress-results-access-20260911/erp0-backup-20260911-221553`.
+- Restauracion `%TEMP%/organizador-erp0-restore-sl7ad7ov`; clave sintetica separada `%TEMP%/erp4-checkpoint-custody-zlkk2ads`.
+- 201 tablas/hash identicos, valores descifrados identicos, integridad/FK correctas, pruebas de adaptador y transporte HTTP ejecutadas desde el codigo restaurado. No se ha probado aun un navegador contra una instancia ERP 4 completa.
+- Comprobacion final solo de lectura en Ubuntu: `systemctl --user is-active organizador-web.service` devuelve `active`. No se ha instalado codigo, migrado datos ni aprovisionado claves productivas. Esta comprobacion no sustituye al futuro smoke test de publicacion ERP 4.
+- Pendientes exactos siguen en su apartado: servicios y corte externo restantes, UI/archivo y contexto, ACL/custodia productivas, A01-A50, escritorio/movil y publicacion. No existe una decision funcional nueva que deba tomar el usuario. **ERP 4 conserva 25% certificado; no esta cerrado ni habilita ERP 5.**
