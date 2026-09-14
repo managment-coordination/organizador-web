@@ -8,16 +8,30 @@ Dependencia economica: [cierre ERP 3](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION
 
 ## Estado verificable
 
-PRUEBAS. Diseno 100%. Implementacion **75% certificado**; cierre de publicacion pendiente.
-No publicado. Interfaz bancaria integrada en codigo y recorridos HTTPS sobre copia verificados; falta la aceptacion completa y custodia productiva. La operativa bancaria real permanece deshabilitada.
-No se han tratado datos bancarios reales ni migrado produccion.
+COMPLETADO. Diseno 100%. Implementacion y aceptacion tecnica **100% certificado**.
+Publicado en Ubuntu y GitHub. Migracion productiva aditiva, historicos intactos, interfaz integrada, A01-A50 acreditados en pruebas controladas y restauracion verificada.
+La operativa bancaria sensible/real permanece deshabilitada hasta HTTPS, retencion independiente de claves y configuracion acreditada por comunidad. El cierre tecnico no acredita aceptacion comercial de ficheros por un banco. No se han utilizado datos bancarios reales en pruebas.
 
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
 | 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
 | 4B Servicios deterministas | 84/84 del nucleo; 17/17 del adaptador; servicios restantes, lote 200, rollback de artefacto, resultados ERP 3, custodia POSIX y restauracion sintetica acreditados. Casos adicionales 85-88 de seleccion, parcial, ejercicio cerrado y gasto independiente superados | 25 puntos |
 | 4C Recorrido integrado | Aplicacion completa con login HTTPS/POSIX: propiedad/propietario/comunidad, mandato, seleccion, XML, rechazo masivo, reenvio y gasto ERP 3. Navegador con 200 recibos, dos paginas, documentos y Excel revisado; 1440/1920/390 sin desbordamiento | 25 puntos |
-| 4D Aceptacion y publicacion | No implementado; las pruebas del nucleo/adaptador no equivalen a los 50 casos integrales del contrato | Sin puntos |
+| 4D Aceptacion y publicacion | Matriz A01-A50, regresion ERP 0-3, Ubuntu/HTTPS aislado, escritorio/movil, publicacion, integridad/FK, restauracion previa y posterior con arranque; custodia separada y activacion real bloqueada | 25 puntos |
+
+## Cierre certificado
+
+- Codigo publicado: `5676f61c1c545ff08e489fd0fb0b7635d3a67e20`; checkpoint `erp4-release-ready-20260914`. Checkpoint documental de cierre: `erp4-completed-20260914`.
+- Publicacion exclusiva en `/home/coordinador/apps/organizador-web`, servicio `organizador-web.service`, puerto 8771; Marbella UNO intacto. GitHub `main` y checkpoints enviados sin force.
+- Backup previo inmediato: `backups/erp0-backup-20260914-081151`; restore `backups/stage-erp4-20260914-081033/verification/organizador-erp0-restore-9mzkyu6a`, 166 tablas y arranque correctos.
+- Backup posterior: `backups/erp0-backup-20260914-081225`; restore `backups/stage-erp4-20260914-081033/verification/organizador-erp0-restore-d9n060pn`, 205 tablas y arranque correctos. `erp4-publication-proof.json` en ese backup conserva commit, puertas, integridad/FK, restauraciones y bloqueo de activacion. Las 164 tablas de negocio preexistentes conservan sus hashes.
+- Candidato final restaurado tambien localmente: `backups/erp4-release-ready-20260914/erp0-backup-20260914-101010`, restore `organizador-erp0-restore-mj5ettpb`, custodia sintetica separada `erp4-checkpoint-custody-h1f9objt`; 205 tablas identicas, secretos descifrados iguales, adaptador y transporte correctos.
+- Smoke posterior con el codigo instalado: cobro ERP 3/idempotencia, devolucion, rollback economico y seleccion/resultado masivo 200, **4/4** en `/tmp/organizador-erp4-foundations-bhkv64nf`. Se ejecuta en copia del backup, nunca modifica economia productiva para probarla.
+- Navegador real por Tailscale tras publicar: login 1440/390 sin overflow ni errores JS; rutas bancarias y ERP 3 sin sesion devuelven 401. `/health` correcto, servicio activo; permisos POSIX de clave/directorio 0600/0700 y los tres flags bancarios en 0 comprobados.
+- Recuperacion final de codigo/documentacion consolidada: archivo independiente bajo `backups/erp4-completed-20260914/`, mediante ERP 0 con commit explicito y verificacion aislada. La recuperacion de datos bancarios requiere ademas la custodia separada descrita abajo; Git no sustituye datos ni claves.
+- No quedan pendientes de implementacion ERP 4 ni decisiones funcionales nuevas. La activacion real requiere las condiciones de implantacion descritas en Custodia. ERP 5 puede comenzar tecnicamente con autorizacion nueva; no se ha iniciado.
+
+Los apartados parciales siguientes conservan evidencias historicas. Sus indicaciones de falta de UI/publicacion/custodia corresponden a esos checkpoints y quedan sustituidas por este cierre y la matriz A01-A50, no describen el estado actual.
 
 ## Checkpoint y recuperacion previa
 
@@ -122,11 +136,8 @@ Ampliacion final del checkpoint de acceso: **64/64** pruebas del nucleo correcta
 
 ## Pendientes exactos de continuacion
 
-Continuar desde estos servicios, sin reiniciar migraciones ni repetir el diseno:
-
-1. Checkpoint de aceptacion, backup/restauracion con el codigo final y esquema 18. Los servicios, acciones UX y recorridos descritos anteriormente estan terminados; no reiniciarlos.
-2. Preparar runtime bancario independiente de los ERP anteriores, ejecutar las regresiones finales en copia Ubuntu, publicar el candidato solo si pasan las puertas y verificar restauracion posterior, rutas, aislamiento e integridad productiva.
-3. Mantener bancaria real y acceso sensible deshabilitados hasta HTTPS acreditado y configuracion bancaria por comunidad. Esto no bloquea el cierre tecnico autorizado, pero no equivale a una remesa aceptada por el banco.
+Pendientes de implementacion: ninguno. Checkpoint, runtime independiente, migracion, regresiones, publicacion, smoke y restauracion cerrados el 14/09/2026.
+Mantener bancaria real y acceso sensible deshabilitados hasta HTTPS acreditado, recuperacion/retencion organizativa de claves y configuracion bancaria por comunidad. Esto no bloquea el cierre tecnico autorizado, pero no equivale a una remesa aceptada por el banco.
 
 No hay nueva decision funcional material que requiera al usuario. Configuraciones bancarias reales y seguridad de implantacion siguen siendo puertas obligatorias del contrato, no autorizacion para operar con datos reales ahora.
 
@@ -263,9 +274,9 @@ Segundo checkpoint, adaptador incluido:
 - Incidencia detectada y corregida: el primer archivo Git habia normalizado XSD antes de aplicar `-text`; se reindexaron exclusivamente los dos esquemas para conservar sus bytes originales y se repitio la restauracion. La copia fallida anterior no acredita cierre y no se publico.
 - Este checkpoint SEPA sigue siendo recuperable. La continuacion posterior incorpora migracion 16 y nuevos servicios; usar el ultimo checkpoint de resultados indicado abajo al retomar, no reiniciar desde este tag.
 
-## Publicacion
+## Publicacion del checkpoint parcial (historico)
 
-No realizada. Produccion conserva ERP 0-3 y su configuracion previa; comprobacion final SSH: `organizador-web.service` activo. ERP 4 no esta listo para uso bancario ni para declarar cerrado su contrato operativo hacia ERP 5. El 75% restante sigue pendiente, no bloqueado por una nueva decision del usuario. No continuar a ERP 5.
+En el checkpoint parcial de resultados no se publico. Ese estado queda sustituido por el cierre certificado superior: codigo ERP 4 publicado, operativa bancaria real aun bloqueada por configuracion de implantacion.
 
 ## Checkpoint de resultados y transporte protegido
 
