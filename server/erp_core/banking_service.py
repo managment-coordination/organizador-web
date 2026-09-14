@@ -1,6 +1,7 @@
 """ERP 4 boundary: explicit bank grants, encrypted evidence, safe idempotent commands."""
 
 from dataclasses import replace
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import sqlite3
@@ -43,6 +44,18 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
     def __init__(self, database_path, *, vault=None):
         self.database_path = str(database_path)
         self.vault = vault
+        self._shared_connection = None
+
+    @classmethod
+    def in_transaction(cls, database_path, connection, *, vault):
+        if not connection.in_transaction:
+            raise RuntimeError('La composicion bancaria requiere una transaccion activa.')
+        database = next((r[2] for r in connection.execute('PRAGMA database_list') if r[1] == 'main'), '')
+        if Path(database).resolve() != Path(database_path).resolve():
+            raise RuntimeError('La conexion bancaria pertenece a otra base de datos.')
+        service = cls(database_path, vault=vault)
+        service._shared_connection = connection
+        return service
 
     @classmethod
     def from_runtime(cls, database_path):
@@ -128,7 +141,7 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
         return {'reason': env.reason, 'evidence': {'type': env.evidence.entity_type, 'id': env.evidence.entity_id}}
 
     def _write(self, session, env, capability, op):
-        if env.command not in COMMAND_NAMES:
+        if env.command not in COMMAND_NAMES and env.command not in getattr(self, 'COMMANDS', ()):
             raise ContractError('Comando bancario no registrado.')
         if self.vault is None:
             raise ContractError('La custodia bancaria no esta configurada.')
@@ -136,9 +149,11 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
             raise ContractError('La operacion bancaria requiere idempotencia.')
         if env.origin in ('ai', 'agent'):
             raise PermissionError('Las operaciones bancarias requieren confirmacion humana directa.')
-        conn = connect(self.database_path)
+        conn = self._shared_connection or connect(self.database_path)
         try:
-            with write_transaction(conn):
+            if self._shared_connection and not conn.in_transaction:
+                raise RuntimeError('La transaccion bancaria compartida ya no esta activa.')
+            with nullcontext(conn) if self._shared_connection else write_transaction(conn):
                 actor, _ = self._session(conn, session, env.community_id, capability)
                 context = self._protected_context(conn, env, session)
                 request = {'actor': actor.user_id, 'payload': env.payload, 'version': env.expected_version,
@@ -163,11 +178,11 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
                 protected = self.vault.put(conn, env.community_id, 'operation-context', context, now)
                 result = op(conn, actor, env, now)
                 audit = write_event(conn, community_id=env.community_id, actor=actor, action=env.command,
-                                    entity_type='erp4_operation', entity_id=result.get('id'), before=None,
+                                    entity_type=getattr(self, 'AUDIT_ENTITY', 'erp4_operation'), entity_id=result.get('id'), before=None,
                                     after={k:v for k,v in result.items() if k!='download_token'}, reason=safe.reason, origin=env.origin, request_id=safe.idempotency_key,
                                     entity_version=result.get('version'), metadata={'protected_context_id': protected})
                 outbox = enqueue(conn, community_id=env.community_id, event_type=env.command,
-                                 aggregate_type='erp4_operation', aggregate_id=result.get('id'),
+                                 aggregate_type=getattr(self, 'AUDIT_ENTITY', 'erp4_operation'), aggregate_id=result.get('id'),
                                  payload={'audit_event_id': audit}, dedupe_key=safe.idempotency_key)
                 response = {'ok': True, 'entity': result, 'audit_event_id': audit,
                             'outbox_event_id': outbox, 'idempotent_replay': False}
@@ -176,7 +191,8 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
         except sqlite3.IntegrityError:
             raise ConflictError('El registro bancario entra en conflicto con sus relaciones o con otra operacion.') from None
         finally:
-            conn.close()
+            if self._shared_connection is None:
+                conn.close()
 
     def _read(self, session, query, capability, op):
         conn = connect(self.database_path, readonly=True)

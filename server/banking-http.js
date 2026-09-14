@@ -73,27 +73,28 @@ export function createBankingHttp(config, services) {
       }
       const trustedSession={...session,banking_reauthenticated_at:confirmations.get(key)?.at || null};
       const action=url.pathname.split('/').at(-1);
-      if (!['query','command','download','reveal','document'].includes(action)) {
+      if (!['query','command','download','reveal','document','statement-original'].includes(action)) {
         sendJson(res,404,{ok:false,error:'Operacion bancaria no encontrada.'}); return true;
       }
       let envelope;
       if (action==='download') envelope={id_comunidad:community,token:body.token};
       else if (action==='reveal') envelope={id_comunidad:community,account_id:body.account_id,reason:body.reason};
       else if (action==='document') envelope={id_comunidad:community,document_id:body.document_id,reason:body.reason};
+      else if (action==='statement-original') envelope={id_comunidad:community,import_id:body.import_id,reason:body.reason};
       else {
         envelope={...body,id_comunidad:community};
         if (action==='command') envelope.origin='web';
-        if (!String(envelope[action] || '').startsWith('erp4.')) {
+        if (!['erp4.','erp5.'].some(prefix=>String(envelope[action] || '').startsWith(prefix))) {
           sendJson(res,400,{ok:false,error:'Operacion bancaria no valida.'}); return true;
         }
       }
       const result=await runBanking(trustedSession,action,envelope);
-      if (action==='download' || action==='document') {
+      if (action==='download' || action==='document' || action==='statement-original') {
         const bytes=Buffer.from(result.content_base64,'base64');
-        const ext=action==='document' && ['pdf','png','jpg'].includes(result.extension)?result.extension:'xml';
+        const ext=action==='statement-original'&&['csv','xls','xlsx','txt','xml','json'].includes(result.extension)?result.extension:action==='document' && ['pdf','png','jpg'].includes(result.extension)?result.extension:'xml';
         res.writeHead(200,{'Content-Type':ext==='xml'?'application/xml; charset=utf-8':'application/octet-stream',
           'Content-Security-Policy':"sandbox; default-src 'none'",
-          'Content-Disposition':`attachment; filename="${ext==='xml'?'remesa-sepa.xml':'documento-bancario.'+ext}"`,'Content-Length':bytes.length});
+          'Content-Disposition':`attachment; filename="${action==='statement-original'?'extracto-original.'+ext:ext==='xml'?'remesa-sepa.xml':'documento-bancario.'+ext}"`,'Content-Length':bytes.length});
         res.end(bytes);
       } else sendJson(res,200,result);
     } catch (error) {

@@ -159,7 +159,7 @@ class BankingResults:
         if not isinstance(p['decisions'],list) or not 1<=len(p['decisions'])<=200:raise ContractError('Revisa entre 1 y 200 lineas por confirmacion.')
         planned=[];seen=set()
         for decision in p['decisions']:
-            require_fields(decision,('result_line_id','action'),('allocate_cents','collection_id','return_spec'))
+            require_fields(decision,('result_line_id','action'),('allocate_cents','collection_id','return_spec','return_id'))
             row=conn.execute('SELECT * FROM erp_resultado_lineas WHERE id_comunidad=? AND id=? AND result_id=?',
                              (community,identity(decision['result_line_id']),result['id'])).fetchone()
             if not row or row['id'] in seen:raise ContractError('Linea no disponible o repetida.')
@@ -174,7 +174,7 @@ class BankingResults:
             current=self._line_status(conn,community,line['id'])
             action=decision['action'];kind=data['kind']
             if kind=='pending' or data.get('contradictory'):raise ConflictError('El resultado sigue pendiente de aclaracion; no hay efecto que confirmar.')
-            expected={'settlement':{'record_collection','link_collection'},'returned':{'return','terminal_without_collection'},
+            expected={'settlement':{'record_collection','link_collection'},'returned':{'return','link_return','terminal_without_collection'},
                       'technical':{'none'},'rejected':{'none'},'cancelled':{'none'}}[kind]
             if action not in expected:raise ContractError('La accion no corresponde al resultado bancario.')
             row_plan={'result_line_id':row['id'],'row_version':row['version'],'line_id':line['id'],
@@ -192,6 +192,14 @@ class BankingResults:
                 ReceivablesService._date_open(conn,community,data['effective_on'])
                 identity_value,canonical=self._bank_identity(community,creditor['treasury_id'],data,line['id'])
                 old=self._existing_bank_operation(conn,community,identity_value,canonical)
+                from .reconciliation_sources import bank_occurrence_facts
+                occurrence=bank_occurrence_facts(conn,self.vault,community,identity_value,canonical) if not old else None
+                if occurrence:
+                    required='link_collection' if kind=='settlement' else 'link_return'
+                    field='collection_id' if kind=='settlement' else 'return_id'
+                    if action!=required or identity(decision.get(field))!=occurrence['fact_id']:
+                        raise ConflictError('Esta ocurrencia ya tiene un hecho ERP 3. Enlaza el existente; no crees otro cobro/devolucion.')
+                    row_plan['occurrence_movement_id']=occurrence['movement_id']
                 row_plan.update(amount_cents=canonical['amount_cents'],identity=identity_value,canonical=canonical)
                 if old:
                     row_plan.update(already_processed=True,operation_id=old['id'],collection_id=old['collection_id'],return_id=old['return_id'])
@@ -221,6 +229,15 @@ class BankingResults:
                         ON o.id_comunidad=e.id_comunidad AND o.id=e.operation_id WHERE e.id_comunidad=? AND e.line_id=?
                         AND e.kind='settlement' AND o.collection_id=?''',(community,line['id'],collection_id)).fetchone()
                     if not linked:raise ConflictError('La devolucion no tiene un cobro identificado para este intento. Conserva la evidencia pendiente.')
+                    if action=='link_return':
+                        returned=ReceivablesService._entity(conn,'erp_devoluciones',community,decision.get('return_id'))
+                        if returned['collection_id']!=collection_id or returned['effective_on']!=data['effective_on'] or returned['amount_cents']!=int(canonical['amount_cents']):
+                            raise ConflictError('La devolucion existente no corresponde a este cobro, importe y fecha.')
+                        if conn.execute('SELECT 1 FROM erp_banco_operaciones WHERE id_comunidad=? AND return_id=?',(community,returned['id'])).fetchone():
+                            raise ConflictError('La devolucion ya tiene identidad bancaria; revisa su referencia.')
+                        row_plan.update(collection_id=collection_id,return_id=returned['id'])
+                        planned.append(row_plan)
+                        continue
                     spec=require_fields(decision.get('return_spec',{}),('free_cents','reversals'))
                     key='bank-return-'+self.vault.fingerprint(community,'bank-operation-identity',identity_value)
                     return_payload={'collection_id':collection_id,'effective_on':data['effective_on'],'external_key':key,**spec}
@@ -278,7 +295,7 @@ class BankingResults:
                                      'allocations':[{'receipt_id':row['receipt_id'],'amount_cents':row['allocate_cents']}]}
                             proposal=economic.allocation_preview(session,self._economic_envelope(e,'allocation.preview',key+'-allocation-preview',payload))['entity']
                             economic.allocation_confirm(session,self._economic_envelope(e,'allocation.confirm',key+'-allocation',{'proposal_id':proposal['id']},proposal['version']))
-                    else:
+                    elif row['action']!='link_return':
                         proposal=economic.return_preview(session,self._economic_envelope(e,'return.preview',key+'-return-preview',row['return_payload']))['entity']
                         economic.return_confirm(session,self._economic_envelope(e,'return.confirm',key+'-return',{'proposal_id':proposal['id']},proposal['version']))
                         return_id=conn.execute('SELECT id FROM erp_devoluciones WHERE id_comunidad=? AND external_key=?',(e.community_id,row['return_payload']['external_key'])).fetchone()[0]

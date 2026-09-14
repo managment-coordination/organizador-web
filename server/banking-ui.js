@@ -2,9 +2,15 @@
 function createBankingUI(ctx) {
   const {api,html:h,root,active,communities,moneyLabel:money}=ctx;
   const today=()=>new Date().toLocaleDateString('sv-SE');
-  let s,generation=0;
-  const reset=()=>{generation++;s={community:0,section:'remittances',offset:0,keys:new Map(),error:'',filters:{},selected:new Map()};};
+  let s,generation=0,reconciliation;
+  const reset=()=>{generation++;reconciliation?.cancel();s={community:0,section:'remittances',offset:0,keys:new Map(),error:'',filters:{},selected:new Map()};};
   reset();
+  async function openReconciliation(community,filters={},scope=''){
+    s.community=community;s.section='reconciliation';s.filters=filters;s.scope=scope;
+    reconciliation ||= createReconciliationUI({...ctx,active:()=>active()&&s.section==='reconciliation',
+      openRemittances:community=>{reset();s.community=community;return load();}});
+    ctx.navigate();return reconciliation.open(community,filters,scope);
+  }
   const can=k=>Boolean(s.permissions?.[k]);
   const labels={activa:'Activa',activo:'Activo',pendiente:'Pendiente de revision',suspendido:'Suspendido',suspendida:'Suspendida',
     revocado:'Revocado',caducado:'Caducado',agotado:'Agotado',recurrente:'Recurrente',puntual:'Puntual',
@@ -77,7 +83,8 @@ function createBankingUI(ctx) {
   const paging=()=>`<div class="toolbar">${button('prev','Anterior',s.offset?'':'disabled')}<span>${s.list?.total||0} registros</span>${button('next','Siguiente',s.offset+50<(s.list?.total||0)?'':'disabled')}</div>`;
   function render() {
     if(!active())return;
-    const tabs=[['remittances','Remesas'],['mandates','Cuentas y mandatos'],['results','Resultados'],['external','Instrucciones externas'],['settings','Configuracion']];
+    if(s.section==='reconciliation'){reconciliation?.render();return;}
+    const tabs=[['remittances','Remesas'],['reconciliation','Conciliacion'],['mandates','Cuentas y mandatos'],['results','Resultados'],['external','Instrucciones externas'],['settings','Configuracion']];
     root().innerHTML=`<div class="finWorkspace bankWorkspace"><div class="budgetToolbar">${select('bankCommunity','Comunidad',communities().map(c=>[c.id_comunidad,c.nombre]),s.community)}${button('reload','Actualizar')}</div>
       ${s.status?.available?`<div class="budgetTabs finTabs">${tabs.filter(([key])=>key!=='results'||can('results')).map(([key,text])=>button('section',text,`data-section="${key}"`,s.section===key?'active':'')).join('')}</div>`:''}
       ${s.scope?`<div class="finScope">${h(s.scope)} ${button('clear-scope','Ver comunidad')}</div>`:''}
@@ -140,7 +147,7 @@ function createBankingUI(ctx) {
     ...sel.filters,search:sel.search,offset:sel.offset,limit:100});sel.rows=result.items;sel.total=result.total;render();}
   async function chooseAction(action,b) {
     if(action==='reload'){s.detail=null;s.form=null;s.review=null;s.selection=null;return load();}
-    if(action==='section'){s.section=b.dataset.section;s.offset=0;s.filters={};s.scope='';s.form=null;s.detail=null;s.review=null;s.selection=null;return load();}
+    if(action==='section'){if(b.dataset.section==='reconciliation')return openReconciliation(s.community,s.filters,s.scope);s.section=b.dataset.section;s.offset=0;s.filters={};s.scope='';s.form=null;s.detail=null;s.review=null;s.selection=null;return load();}
     if(action==='prev'||action==='next'){s.offset+=action==='next'?50:-50;return load();}
     if(action==='clear-scope'){s.filters={};s.scope='';return load();}
     if(action==='close'){s.form=null;s.review=null;s.detail=null;s.selection=null;s.revealed=null;return load();}
@@ -250,14 +257,14 @@ function createBankingUI(ctx) {
           const instruction=await q('instruction.find',{attempt_key:f.attempt});
           return {name:'results.resolve',version:row.version,payload:{result_line_id:row.id,line_id:instruction.id,details:{kind:f.kind,effective_on:f.on,terminal:!!f.terminal,funds_evidence:!!f.funds,...(f.amount?{amount_cents:ctx.moneyCents(f.amount),currency:'EUR',bank_event_id:f.bank_event,psp:f.psp,service:f.service}:{})}},summary:[['Referencia',f.attempt],['Resultado',label(f.kind)],['Efecto','Solo aclaracion: requiere despues confirmar el resultado economico.']],after:async()=>{s.detail={type:'result',data:await q('results.get',{id:result.id})};render();}};
         });
-      const choices=['settlement','returned'].includes(row.kind)?(await q('results.choices',{result_line_id:row.id})).collections:[];
-      const actions=row.kind==='settlement'?[['record_collection','Registrar cobro'],['link_collection','Enlazar cobro existente']]:row.kind==='returned'?[['return','Devolver cobro identificado'],['terminal_without_collection','Cierre acreditado sin cobro identificado']]:[['none','Registrar resultado sin fondos']];
+      const options=['settlement','returned'].includes(row.kind)?await q('results.choices',{result_line_id:row.id}):{collections:[],returns:[]};const choices=options.collections;
+      const actions=row.kind==='settlement'?[['record_collection','Registrar cobro'],['link_collection','Enlazar cobro existente']]:row.kind==='returned'?[['return','Devolver cobro identificado'],['link_return','Enlazar devolucion existente'],['terminal_without_collection','Cierre acreditado sin cobro identificado']]:[['none','Registrar resultado sin fondos']];
       return form('Confirmar resultado',select('action','Accion',actions)+
         (row.kind==='settlement'?field('allocate','Importe a imputar al recibo (EUR)','text','0'):'')+
         (['settlement','returned'].includes(row.kind)?select('collection','Cobro identificado',[['','Selecciona si corresponde'],...choices.map(c=>[c.id,c.effective_on+' · '+money(c.amount_cents)+' · disponible '+money(c.balance.available_cents)])],'',false):'')+
-        (row.kind==='returned'?field('free','Saldo libre devuelto (EUR)','text','0')+`<fieldset><legend>Imputaciones que revierte la devolucion</legend>${choices.flatMap(c=>c.allocations.filter(a=>BigInt(a.remaining_cents)>0n).map(a=>field('reverse_'+a.id,a.number+' · no revertido '+money(a.remaining_cents),'text','0'))).join('')}</fieldset>`:''),async f=>{
+        (row.kind==='returned'?select('returned','Devolucion ya registrada',[['','Selecciona solo para enlazar'],...(options.returns||[]).map(d=>[d.id,d.effective_on+' · '+money(d.amount_cents)])],'',false)+field('free','Saldo libre devuelto (EUR)','text','0')+`<fieldset><legend>Imputaciones que revierte la devolucion</legend>${choices.flatMap(c=>c.allocations.filter(a=>BigInt(a.remaining_cents)>0n).map(a=>field('reverse_'+a.id,a.number+' · no revertido '+money(a.remaining_cents),'text','0'))).join('')}</fieldset>`:''),async f=>{
           const reversals=Object.entries(f).filter(([k])=>k.startsWith('reverse_')).map(([k,v])=>({allocation_id:Number(k.slice(8)),amount_cents:ctx.moneyCents(v)})).filter(r=>BigInt(r.amount_cents)>0n);
-          const decision={result_line_id:row.id,action:f.action,...(row.kind==='settlement'?{allocate_cents:ctx.moneyCents(f.allocate)}:{}),...(f.collection?{collection_id:Number(f.collection)}:{}),...(f.action==='return'?{return_spec:{free_cents:ctx.moneyCents(f.free),reversals}}:{})};
+          const decision={result_line_id:row.id,action:f.action,...(row.kind==='settlement'?{allocate_cents:ctx.moneyCents(f.allocate)}:{}),...(f.collection?{collection_id:Number(f.collection)}:{}),...(f.action==='link_return'?{return_id:Number(f.returned)}:{}),...(f.action==='return'?{return_spec:{free_cents:ctx.moneyCents(f.free),reversals}}:{})};
           const payload={result_id:result.id,decisions:[decision]};const pv=await command('results.preview',payload,null,f.reason,f.evidence);
           return {name:'results.confirm',version:pv.version,payload:{...payload,preview_hash:pv.preview_hash},summary:[['Resultado',label(row.kind)],['Fecha',row.effective_on],['Importe',row.amount_cents?money(row.amount_cents):'Sin fondos acreditados'],['Accion',actions.find(a=>a[0]===f.action)?.[1]]]};
         });
@@ -351,5 +358,5 @@ function createBankingUI(ctx) {
     root().querySelector('[data-bank-form="external-search"]')?.addEventListener('submit',e=>{e.preventDefault();s.externalSearch=new FormData(e.target).get('search');s.offset=0;safe(load);});
     busyControls();
   }
-  return {render,reset,ensure:()=>{if(!s.loaded&&!s.loading)load();},open:(community,filters={},scope='')=>{reset();s.community=community;s.filters=filters;s.scope=scope;s.section=filters.owner_id||filters.property_id?'mandates':'remittances';ctx.navigate();}};
+  return {render,reset,openReconciliation,ensure:()=>{if(s.section!=='reconciliation'&&!s.loaded&&!s.loading)load();},open:(community,filters={},scope='')=>{reset();s.community=community;s.filters=filters;s.scope=scope;s.section=filters.owner_id||filters.property_id?'mandates':'remittances';ctx.navigate();}};
 }

@@ -91,7 +91,14 @@ class BankingQueries:
                 detail=ReceivablesService(self.database_path).collection_get(session,QueryEnvelope('erp3.collection.get',q.community_id,{'collection_id':cid,'effective_at':data['effective_on']}))['entity']
                 collections.append({'id':cid,'effective_on':detail['collection']['effective_on'],'amount_cents':str(detail['collection']['amount_cents']),
                     'balance':detail['balance'],'allocations':[{'id':a['id'],'number':a['number'],'remaining_cents':a['remaining_cents']} for a in detail['allocations']]})
-            return {'collections':collections,'requires_human_confirmation':True}
+            returns=[]
+            if data['kind']=='returned' and ids:
+                for returned in conn.execute('''SELECT d.id,d.collection_id,d.effective_on,d.amount_cents FROM erp_devoluciones d
+                    WHERE d.id_comunidad=? AND d.effective_on=? AND d.amount_cents=? AND NOT EXISTS
+                    (SELECT 1 FROM erp_banco_operaciones o WHERE o.id_comunidad=d.id_comunidad AND o.return_id=d.id)
+                    ORDER BY d.id DESC LIMIT 200''',(q.community_id,data['effective_on'],int(data.get('amount_cents') or 0))):
+                    if returned['collection_id'] in ids:returns.append({**dict(returned),'amount_cents':str(returned['amount_cents'])})
+            return {'collections':collections,'returns':returns,'requires_human_confirmation':True}
         return self._read(session,query,'results',op)
 
     def reference_list(self, session, query):

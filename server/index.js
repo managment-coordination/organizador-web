@@ -4276,8 +4276,17 @@ def handle_accounting_query():
     mejoras = first("SELECT COALESCE(SUM(importe),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') = '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
     gastos_pagados = first("SELECT COALESCE(SUM(pagado),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_pago) BETWEEN date(?) AND date(?)", (start, end))["total"]
     pendientes = first("SELECT COALESCE(SUM(pendiente),0) AS total FROM cf_gastos_facturas WHERE COALESCE(cuenta_resumen,'') <> '610' AND date(fecha_alta) BETWEEN date(?) AND date(?)", (start, end))["total"]
-    saldo_ini = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) < date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (start,))
-    saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
+    from erp_core.reconciliation_sources import period_bank_answer
+    bank_source = period_bank_answer(path, financial_session, list(allowed_ids), start, end)
+    if bank_source:
+        bank_start_display, bank_end_display = bank_source['display_start'], bank_source['display_end']
+        bank_note = bank_source['note']
+    else:
+        saldo_ini = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) < date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (start,))
+        saldo_fin = first("SELECT saldo FROM cf_extractos_banco_lineas WHERE date(fecha) <= date(?) AND saldo IS NOT NULL ORDER BY date(fecha) DESC, id_linea_banco DESC LIMIT 1", (end,))
+        bank_start_display = money(saldo_ini['saldo']) if saldo_ini else 'No disponible'
+        bank_end_display = money(saldo_fin['saldo']) if saldo_fin else 'No disponible'
+        bank_note = 'Saldos legacy observados, sin cobertura ERP 5 activada; no constituyen conciliacion bancaria certificada.'
     answer = "\\n".join([
         f"Balance financiero provisional del {start} al {end}:",
         f"- Recibos emitidos ERP: {ingresos_emitidos}",
@@ -4292,8 +4301,9 @@ def handle_accounting_query():
         f"- Gastos pagados ordinarios: {money(gastos_pagados)}",
         f"- Gastos ordinarios pendientes de pago: {money(pendientes)}",
         f"- Mejoras/inversiones grupo 610: {money(mejoras)}",
-        f"- Saldo banco inicial disponible: {money(saldo_ini['saldo']) if saldo_ini else 'no disponible'}",
-        f"- Saldo banco final disponible: {money(saldo_fin['saldo']) if saldo_fin else 'no disponible'}",
+        f"- Saldo banco inicial: {bank_start_display}",
+        f"- Saldo banco final: {bank_end_display}",
+        bank_note,
         "Nota: es una lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres."
     ])
     display = {
@@ -4316,13 +4326,14 @@ def handle_accounting_query():
                 {"Concepto": "Gastos pagados ordinarios", "Importe": money(gastos_pagados)},
                 {"Concepto": "Gastos ordinarios pendientes de pago", "Importe": money(pendientes)},
                 {"Concepto": "Mejoras/inversiones grupo 610", "Importe": money(mejoras)},
-                {"Concepto": "Saldo banco inicial disponible", "Importe": money(saldo_ini["saldo"]) if saldo_ini else "No disponible"},
-                {"Concepto": "Saldo banco final disponible", "Importe": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+                {"Concepto": "Saldo banco inicial", "Importe": bank_start_display},
+                {"Concepto": "Saldo banco final", "Importe": bank_end_display},
             ],
         }],
         "note": totals["note"] + " Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
     }
-    return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("expense_invoices", "bank_lines") + [{"module":"ingresos_recibos","table":"erp3.period.summary","description":"Movimientos ERP y observaciones historicas separados"}], data_status="incompleto" if totals["note"] else "inferido", query_domain="contabilidad")
+    bank_refs = [{"module":"bancos_remesas","table":"erp5.bank.period","description":bank_note,"coverage_until":end if bank_source['complete'] else None}] if bank_source else source_refs("bank_lines")
+    return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("expense_invoices") + bank_refs + [{"module":"ingresos_recibos","table":"erp3.period.summary","description":"Movimientos ERP y observaciones historicas separados"}], data_status="incompleto" if totals["note"] or (bank_source and not bank_source['complete']) else "inferido", query_domain="contabilidad")
 
 def handle_property_query():
     prop_query = extract_property_query(question)
@@ -7330,7 +7341,7 @@ finally:
 
 function homePage() {
   const receivablesScript=fs.readFileSync(path.join(__dirname,'receivables-ui.js'),'utf8');
-  const bankingScript=fs.readFileSync(path.join(__dirname,'banking-ui.js'),'utf8');
+  const bankingScript=fs.readFileSync(path.join(__dirname,'reconciliation-ui.js'),'utf8')+'\n'+fs.readFileSync(path.join(__dirname,'banking-ui.js'),'utf8');
   const workspaceStyle=fs.readFileSync(path.join(__dirname,'workspace-ui.css'),'utf8');
   const workspaceIcons=Object.fromEntries(['house','list-checks','building-2','calendar-days','folder-kanban','bell','files','file-chart-column','sparkles','upload','shield-check','search','settings-2','landmark','users','clipboard-check','circle-check','refresh-cw','filter-x','log-out','x'].map(name=>[name,fs.readFileSync(path.join(__dirname,'node_modules/lucide-static/icons',name+'.svg'),'utf8').replace('<svg','<svg aria-hidden="true" focusable="false"')]));
   return `<!doctype html>
@@ -8921,7 +8932,7 @@ function homePage() {
   </main>
   <script>
     ${receivablesScript}
-    const receivablesUI=createReceivablesUI({api,html:value=>html(value),moneyLabel,moneyCents,moneyInput,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='receivables',navigate:()=>switchView('receivables')});
+    const receivablesUI=createReceivablesUI({api,html:value=>html(value),moneyLabel,moneyCents,moneyInput,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='receivables',navigate:()=>switchView('receivables'),openBankLinks:(community,filters,scope)=>bankingUI.openReconciliation(community,filters,scope)});
     ${bankingScript}
     const bankingUI=createBankingUI({api,html:value=>html(value),moneyLabel,moneyCents,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='banking',navigate:()=>switchView('banking'),isSuperuser:()=>state.usuario?.rol==='Superusuario',openReturnFee:(community,id)=>receivablesUI.openReturnFee(community,id),openReceipt:(community,id)=>receivablesUI.openReceipt(community,id)});
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };

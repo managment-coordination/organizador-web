@@ -238,7 +238,18 @@ tbody tr:hover { background:#f7fafc; }
 .bankPropertySelection { max-height:320px; overflow:auto; }
 .bankPropertySelection [hidden] { display:none!important; }
 .bankRevealed { padding:12px 0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.reconcileWorkspace .masterDataFormGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.reconcileWorkspace .masterDataFormGrid>label { min-width:0; }
+.reconcileWorkspace :is(td,p,h3) { overflow-wrap:anywhere; }
+.reconcileWorkspace [hidden] { display:none!important; }
 @media(max-width:700px) {
+  .reconcileWorkspace>.budgetToolbar { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; align-items:end; }
+  .reconcileWorkspace>.budgetToolbar>label:nth-child(2) { grid-column:1/-1; }
+  .reconcileWorkspace .budgetToolbar button { width:auto!important; min-width:0; margin:0; }
+  .reconcileWorkspace .masterDataFormGrid { grid-template-columns:minmax(0,1fr); }
+  .reconcileWorkspace .budgetToolbar input { min-width:0; width:100%; }
+  .reconcileWorkspace .finSummary .finTable tbody tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+  .reconcileWorkspace .finSummary .finTable tbody td { margin:0; padding:8px; min-width:0; }
   .bankWorkspace .masterFormGrid { grid-template-columns:minmax(0,1fr); }
   .bankWorkspace :is(.toolbar,.budgetToolbar) { flex-wrap:wrap; }
   .bankWorkspace button { max-width:100%; white-space:normal; }

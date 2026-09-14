@@ -1612,6 +1612,10 @@ from .quota_plans_schema import STATEMENTS as QUOTA_PLAN_STATEMENTS
 
 MIGRATIONS += (Migration(19, "erp2_3_active_quota_plans", QUOTA_PLAN_STATEMENTS),)
 
+from .reconciliation_schema import STATEMENTS as RECONCILIATION_STATEMENTS
+
+MIGRATIONS += (Migration(20, "erp5_bank_reconciliation", RECONCILIATION_STATEMENTS),)
+
 
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (

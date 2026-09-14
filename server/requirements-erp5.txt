@@ -1,0 +1,4 @@
+# Application-specific runtime; extends the certified bank custody stack.
+-r requirements-erp4.txt
+xlrd==2.0.1
+reportlab==4.4.9

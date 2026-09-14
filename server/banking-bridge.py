@@ -5,6 +5,7 @@ import json
 import sys
 
 from erp_core.banking_service import BankingService, COMMAND_NAMES
+from erp_core.reconciliation_service import ReconciliationService, COMMANDS as ERP5_COMMANDS, QUERIES as ERP5_QUERIES
 from erp_core.contracts import CommandEnvelope, QueryEnvelope
 from erp_core.errors import ContractError, ConflictError, NotFoundError
 
@@ -23,10 +24,16 @@ def main():
     value=request.get('envelope') or {}
     if action=='command':
         env=CommandEnvelope.from_value(value)
+        if env.command in ERP5_COMMANDS:
+            erp5=ReconciliationService(service.database_path,vault=service.vault)
+            return getattr(erp5,env.command[5:].replace('.','_'))(session,env)
         if env.command not in COMMAND_NAMES:raise NotFoundError('Operacion bancaria no disponible.')
         return getattr(service,env.command[5:].replace('.','_'))(session,env)
     if action=='query':
         query=QueryEnvelope.from_value(value)
+        if query.query.startswith('erp5.') and query.query[5:] in ERP5_QUERIES:
+            erp5=ReconciliationService(service.database_path,vault=service.vault)
+            return getattr(erp5,query.query[5:].replace('.','_'))(session,query)
         name=query.query[5:] if query.query.startswith('erp4.') else ''
         if name not in QUERIES:raise NotFoundError('Consulta bancaria no disponible.')
         return getattr(service,name.replace('.','_'))(session,query)
@@ -37,6 +44,9 @@ def main():
         return service.reveal_account(session,value.get('id_comunidad'),value.get('account_id'),value.get('reason'))
     if action=='document':
         return service.document_download(session,value.get('id_comunidad'),value.get('document_id'),value.get('reason'))
+    if action=='statement-original':
+        return ReconciliationService(service.database_path,vault=service.vault).statement_original(session,
+            value.get('id_comunidad'),value.get('import_id'),value.get('reason'))
     raise NotFoundError('Operacion bancaria no disponible.')
 
 
