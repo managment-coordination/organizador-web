@@ -332,13 +332,13 @@ function createReceivablesUI(ctx) {
     if(name==='plan-coverage') {
       const plan=s.plans.items.find(x=>x.id===Number(button.dataset.id)),exercise=s.plans.references.exercises.find(x=>x.id_ejercicio===plan.exercise_id);
       if(!exercise)throw new Error('El ejercicio no esta disponible para nuevas emisiones.');
-      setForm('Empezar a emitir '+plan.name,input('effective_from','Primer periodo gestionado en esta app','date',exercise.fecha_inicio)+input('effective_until','Ultimo periodo','date',exercise.fecha_fin),d=>({name:'coverage.confirm',payload:{concept_key:plan.origin_type==='presupuesto'?'ordinario':'cuota_plan:'+plan.id,effective_from:d.effective_from,effective_until:d.effective_until,authority:'erp3'}}),{evidenceRequired:true});return;
+      setForm('Empezar a emitir '+plan.name,input('effective_from','Primer periodo gestionado en esta app','date',exercise.fecha_inicio)+input('effective_until','Ultimo periodo','date',exercise.fecha_fin),d=>({name:'coverage.confirm',content:table(['Plan','Primer periodo','Ultimo periodo','Fuente'],[[h(plan.name),h(d.effective_from),h(d.effective_until),'Nuevas emisiones en esta app']]),payload:{concept_key:plan.origin_type==='presupuesto'?'ordinario':'cuota_plan:'+plan.id,effective_from:d.effective_from,effective_until:d.effective_until,authority:'erp3'}}),{evidenceRequired:true});return;
     }
     if(name==='plan-edit'){planForm(s.plans.items.find(x=>x.id===Number(button.dataset.id)));return;}
     if(name==='plan-history'){s.planHistory=s.plans.items.find(x=>x.id===Number(button.dataset.id));render();return;}
     if(name==='plan-state') {
       const plan=s.plans.items.find(x=>x.id===Number(button.dataset.id));
-      setForm((plan.active?'Desactivar':'Activar')+' '+plan.name,input('effective_from','Efectivo desde','date',s.cut),d=>({name:'erp2.quota_plan.activity',payload:{plan_id:plan.id,active:!plan.active,effective_from:d.effective_from},version:plan.activity_version}));return;
+      setForm((plan.active?'Desactivar':'Activar')+' '+plan.name,input('effective_from','Efectivo desde','date',s.cut),d=>({name:'erp2.quota_plan.activity',content:table(['Plan','Estado','Efectivo desde'],[[h(plan.name),plan.active?'Inactivo':'Activo',h(d.effective_from)]]),payload:{plan_id:plan.id,active:!plan.active,effective_from:d.effective_from},version:plan.activity_version}));return;
     }
     if(name==='period-emission') {
       const refs=s.plans.references;

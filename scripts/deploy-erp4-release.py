@@ -46,8 +46,9 @@ if args.validated_stage:
     prior=args.validated_stage.resolve(strict=True)
     assert prior.parent==APP/'backups' and prior.name.startswith('stage-erp4-') and (prior/'source.db').is_file()
     def domain_files(folder):
+        ui_names={'banking-ui.js','receivables-ui.js'} if args.quota_plans else {'banking-ui.js'}
         return {str(p.relative_to(folder)):hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file()
-            and not any(x in p.relative_to(folder).parts for x in ('node_modules','_python_packages','__pycache__')) and p.name!='banking-ui.js'}
+            and not any(x in p.relative_to(folder).parts for x in ('node_modules','_python_packages','__pycache__')) and p.name not in ui_names}
     assert domain_files(stage/'server')==domain_files(prior/'server'),'Domain changed: run the complete gate again'
     shutil.copytree(prior/'server/node_modules',stage/'server/node_modules')
 else:subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
