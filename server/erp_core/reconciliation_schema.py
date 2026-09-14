@@ -131,3 +131,20 @@ for name in ('erp_banco_movimientos','erp_banco_movimiento_identidades','erp_ban
     for operation in ('UPDATE','DELETE'):
         STATEMENTS.append(f"CREATE TRIGGER {name}_no_{operation.lower()} BEFORE {operation} ON {name} BEGIN SELECT RAISE(ABORT,'ERP5 history is immutable'); END")
 STATEMENTS = tuple(STATEMENTS)
+
+RECTIFICATION_STATEMENTS = (
+    '''CREATE TABLE erp_tesoreria_rectificaciones (
+        id INTEGER PRIMARY KEY, id_comunidad INTEGER NOT NULL,
+        outflow_id INTEGER, leg_id INTEGER, effective_on TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK(typeof(amount_cents)='integer' AND amount_cents!=0),
+        secret_id TEXT NOT NULL, registered_at TEXT NOT NULL, actor_id INTEGER NOT NULL,
+        CHECK((outflow_id IS NOT NULL)+(leg_id IS NOT NULL)=1),
+        UNIQUE(id_comunidad,id), UNIQUE(id_comunidad,outflow_id), UNIQUE(id_comunidad,leg_id),
+        FOREIGN KEY(id_comunidad,outflow_id) REFERENCES erp_tesoreria_salidas(id_comunidad,id),
+        FOREIGN KEY(id_comunidad,leg_id) REFERENCES erp_tesoreria_transferencia_extremos(id_comunidad,id),
+        FOREIGN KEY(id_comunidad,secret_id) REFERENCES erp_banca_secretos(id_comunidad,id),
+        FOREIGN KEY(id_comunidad) REFERENCES comunidades(id_comunidad),
+        FOREIGN KEY(actor_id) REFERENCES usuarios(id_usuario))''',
+    "CREATE TRIGGER erp_tesoreria_rectificaciones_no_update BEFORE UPDATE ON erp_tesoreria_rectificaciones BEGIN SELECT RAISE(ABORT,'ERP5 history is immutable'); END",
+    "CREATE TRIGGER erp_tesoreria_rectificaciones_no_delete BEFORE DELETE ON erp_tesoreria_rectificaciones BEGIN SELECT RAISE(ABORT,'ERP5 history is immutable'); END",
+)

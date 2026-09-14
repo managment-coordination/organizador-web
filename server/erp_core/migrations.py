@@ -1616,6 +1616,10 @@ from .reconciliation_schema import STATEMENTS as RECONCILIATION_STATEMENTS
 
 MIGRATIONS += (Migration(20, "erp5_bank_reconciliation", RECONCILIATION_STATEMENTS),)
 
+from .reconciliation_schema import RECTIFICATION_STATEMENTS
+
+MIGRATIONS += (Migration(21, "erp5_treasury_rectifications", RECTIFICATION_STATEMENTS),)
+
 
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (

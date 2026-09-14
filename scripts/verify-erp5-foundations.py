@@ -90,7 +90,7 @@ class ReconciliationTests(unittest.TestCase):
     def test_01_migration_reentrant_history(self):
         checks=list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations'));apply_all(self.conn)
         self.assertEqual(checks,list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations')))
-        self.assertEqual(checks[-1][0],20)
+        self.assertEqual(checks[-1][0],21)
 
     def test_02_duplicate_file_and_stable_id(self):
         first=self.imported([self.row()]);again=self.imported([self.row()])
@@ -198,6 +198,83 @@ class ReconciliationTests(unittest.TestCase):
         self.match([{'movement_id':mid,'action':'record_outflow','amount_cents':'-10000','kind':'payment','description':'Pago sintetico'}])
         events=list(self.conn.execute("SELECT payload_json FROM erp_outbox WHERE event_type='erp5.outflow.confirmed'"))
         self.assertEqual(len(events),1);self.assertIn('monetary',events[0][0])
+
+    def test_45_outflow_rectification_preserves_original_and_bank(self):
+        mid=self.imported([self.row('-10000')])[0]
+        self.match([{'movement_id':mid,'action':'record_outflow','amount_cents':'-6000','kind':'payment','description':'Pago parcial sintetico'}])
+        fact=dict(self.conn.execute('SELECT * FROM erp_tesoreria_salidas').fetchone())
+        detail=self.service.movement_get(self.session,self.q('movement.get',{'id':mid}))['entity']
+        self.assertTrue(detail['history'][0]['document_pending'])
+        p=self.service.fact_reverse_preview(self.session,self.e('fact.reverse_preview',{'kind':'outflow','id':fact['id'],'effective_on':'2026-09-03'}))['entity']
+        env=self.e('fact.reverse_confirm',{'proposal_id':p['id']},1)
+        result=self.service.fact_reverse_confirm(self.session,env)
+        self.assertTrue(self.service.fact_reverse_confirm(self.session,env)['idempotent_replay'])
+        self.assertTrue(result['entity']['original_history_preserved'])
+        self.assertEqual(fact,dict(self.conn.execute('SELECT * FROM erp_tesoreria_salidas').fetchone()))
+        self.assertEqual(self.service.movement_get(self.session,self.q('movement.get',{'id':mid}))['entity']['remaining_cents'],'-10000')
+        events=[json.loads(r[0]) for r in self.conn.execute("SELECT payload_json FROM erp_outbox WHERE event_type IN ('erp5.outflow.confirmed','erp5.outflow.reversed')")]
+        self.assertEqual(sum(int(e['amount_cents']) for e in events),0)
+        self.assertEqual(next(e for e in events if 'reverses_economic_fact_id' in e)['reverses_component_id'],'funds')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+        with self.assertRaises(ConflictError):self.service.fact_reverse_preview(self.session,self.e('fact.reverse_preview',{'kind':'outflow','id':fact['id'],'effective_on':'2026-09-03'}))
+        with self.assertRaises(ConflictError):self.match([{'movement_id':mid,'action':'link_outflow','amount_cents':'-6000','fact_id':fact['id']}])
+
+    def test_46_transfer_rectification_compensates_only_accredited_legs(self):
+        other=self.second_account('caja');mid=self.imported([self.row('-10000')])[0]
+        t=self.transfer({'source_id':self.account,'destination_id':other,'amount_cents':'10000','legs':[
+            {'side':'source','movement_id':mid,'amount_cents':'10000'},
+            {'side':'destination','amount_cents':'10000','effective_on':'2026-09-01','cash_evidence':'Justificante sintetico'}]})
+        p=self.service.fact_reverse_preview(self.session,self.e('fact.reverse_preview',{'kind':'transfer','id':t['id'],'effective_on':'2026-09-03'}))['entity']
+        self.service.fact_reverse_confirm(self.session,self.e('fact.reverse_confirm',{'proposal_id':p['id']},1))
+        self.assertEqual(self.service.transfer_list(self.session,self.q('transfer.list',{}))['entity']['items'][0]['state'],'rectificada')
+        self.assertEqual(self.service.movement_get(self.session,self.q('movement.get',{'id':mid}))['entity']['remaining_cents'],'-10000')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_tesoreria_transferencia_extremos').fetchone()[0],2)
+        events=[json.loads(r[0]) for r in self.conn.execute("SELECT payload_json FROM erp_outbox WHERE event_type='erp5.transfer.leg_reversed'")]
+        self.assertEqual(len(events),2);self.assertEqual(sum(int(r['amount_cents']) for r in events),0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_banco_movimientos').fetchone()[0],1)
+        with self.assertRaises(ConflictError):self.service.transfer_complete_preview(self.session,self.e('transfer.complete_preview',{'transfer_id':t['id'],'legs':[{'side':'source','movement_id':mid,'amount_cents':'10000'}]}))
+
+    def test_47_rectification_rollback_stale_and_permission(self):
+        mid=self.imported([self.row('-10000')])[0]
+        self.match([{'movement_id':mid,'action':'record_outflow','amount_cents':'-10000','kind':'commission','description':'Comision sintetica'}])
+        fact=self.conn.execute('SELECT id FROM erp_tesoreria_salidas').fetchone()[0]
+        p=self.service.fact_reverse_preview(self.session,self.e('fact.reverse_preview',{'kind':'outflow','id':fact,'effective_on':'2026-09-03'}))['entity']
+        tables=('erp_tesoreria_rectificaciones','erp_conciliacion_componentes','erp_audit_events','erp_outbox')
+        before={t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables}
+        with patch.object(self.service,'_event',side_effect=RuntimeError('Synthetic rectification failure')):
+            with self.assertRaises(RuntimeError):self.service.fact_reverse_confirm(self.session,self.e('fact.reverse_confirm',{'proposal_id':p['id']},1))
+        self.assertEqual(before,{t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables})
+        self.service.permissions_save(self.session,self.e('permissions.save',{'user_id':self.uid,'capability':'manage_outflows','allowed':False},1))
+        with self.assertRaises(PermissionError):self.service.fact_reverse_confirm(self.session,self.e('fact.reverse_confirm',{'proposal_id':p['id']},1))
+        self.service.permissions_save(self.session,self.e('permissions.save',{'user_id':self.uid,'capability':'manage_outflows','allowed':True},2))
+        match=self.conn.execute('SELECT id FROM erp_conciliaciones ORDER BY id LIMIT 1').fetchone()[0]
+        self.service.match_reverse(self.session,self.e('match.reverse',{'id':match}))
+        with self.assertRaises(ConflictError):self.service.fact_reverse_confirm(self.session,self.e('fact.reverse_confirm',{'proposal_id':p['id']},1))
+
+    def test_48_actual_query_consumer_uses_erp5_with_and_without_read_permission(self):
+        import subprocess
+        coverage={'start_on':'2026-09-01','end_on':'2026-09-30','opening_cents':'0','closing_cents':'10000','complete':True,'balance_type':'booked'}
+        mid=self.imported([self.row()],coverage)[0]
+        self.service.pending_assign(self.session,self.e('pending.assign',{'movement_id':mid,'user_id':self.uid,'review_on':'2026-10-01','note':'Revision sintetica'}))
+        p=self.service.source_preview(self.session,self.e('source.preview',{'treasury_id':self.account,'start_on':'2026-09-01','end_on':'2026-09-30'}))['entity']
+        self.service.source_confirm(self.session,self.e('source.confirm',{'proposal_id':p['id']},1))
+        fixture=self.work/'query-fixture.json'
+        for allowed,expected in ((True,'100,00 EUR'),(False,'No verificable')):
+            if not allowed:self.service.permissions_save(self.session,self.e('permissions.save',{'user_id':self.uid,'capability':'read','allowed':False},1))
+            scoped={**self.session,'comunidades':[c for c in self.session['comunidades'] if c['id_comunidad']==self.community]}
+            fixture.write_text(json.dumps({'db':str(self.db),'session':scoped,'expected':expected}))
+            import os
+            env={**os.environ,'PYTHON_BIN':sys.executable}
+            result=subprocess.run(['node',str(ROOT/'scripts/verify-erp5-query-consumer.mjs'),str(fixture)],capture_output=True,text=True,env=env)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
+    def test_49_oversized_economic_batch_is_rejected_without_partial_effect(self):
+        mid=self.imported([self.row()])[0]
+        tables=('erp_cobros','erp_conciliacion_propuestas','erp_conciliacion_componentes','erp_audit_events','erp_outbox')
+        before={t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables}
+        with self.assertRaises(ContractError):self.service.match_preview(self.session,self.e('match.preview',{'components':[
+            {'movement_id':mid,'action':'record_collection','amount_cents':'1'} for _ in range(201)]}))
+        self.assertEqual(before,{t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables})
 
     def second_account(self,kind='banco'):
         secret=self.vault.put(self.conn,self.community,'treasury-account',{'iban':'ES6621000418401234567891'},'2026-09-01T00:00:00Z') if kind=='banco' else None
@@ -481,6 +558,125 @@ class ReconciliationTests(unittest.TestCase):
         with self.assertRaises(NotFoundError):self.service.legacy_preview(self.session,self.e('legacy.preview',{'treasury_id':self.account,'rows':[{**row,'id':unknown}]}))
         with self.assertRaises(ConflictError):self.service.legacy_preview(self.session,self.e('legacy.preview',{'treasury_id':self.account,'rows':[{**row,'movement':self.row('9999')}]}))
         self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+
+
+    def test_50_multiblock_account_is_explicit_and_foreign_block_is_denied(self):
+        import copy
+        from lxml import etree
+        spec=importlib.util.spec_from_file_location('erp5_adapter_fixtures',ROOT/'scripts/verify-erp5-adapters.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        payload=module.AdapterTests().xml();root=etree.fromstring(base64.b64decode(payload['content_base64']))
+        parent=root[0];second=copy.deepcopy(parent[1]);parent.append(second)
+        ns={'n':'urn:iso:std:iso:20022:tech:xsd:camt.053.001.08'}
+        second.find('n:Acct/n:Id/n:IBAN',ns).text='ES6621000418401234567891'
+        payload.update(treasury_id=self.account,content_base64=base64.b64encode(etree.tostring(root)).decode())
+        manifest=self.service.statement_analyze(self.session,self.e('statement.analyze',payload))['entity']
+        self.assertTrue(manifest['requires_block']);self.assertEqual(len(manifest['blocks']),2)
+        self.assertNotIn('ES912100',json.dumps(manifest));self.assertNotIn('ES662100',json.dumps(manifest))
+        with self.assertRaises(ContractError):self.service.statement_preview(self.session,self.e('statement.preview',payload))
+        with self.assertRaises(ConflictError):self.service.statement_preview(self.session,self.e('statement.preview',{**payload,'options':{'block_index':1}}))
+        first=self.service.statement_preview(self.session,self.e('statement.preview',{**payload,'options':{'block_index':0}}))['entity']
+        self.service.statement_confirm(self.session,self.e('statement.confirm',{'id':first['id']},1))
+        replay=self.service.statement_preview(self.session,self.e('statement.preview',{**payload,'options':{'block_index':0}}))['entity']
+        self.assertEqual(first['id'],replay['id']);self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_banco_movimientos').fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+
+    def test_51_unknown_value_date_and_unreferenced_ingress_do_not_invent_facts(self):
+        row=self.row(ref='');row.pop('value_on');mid=self.imported([row])[0]
+        public=self.service.movement_get(self.session,self.q('movement.get',{'id':mid}))['entity']
+        self.assertIsNone(public['value_on']);self.assertEqual(public['state'],'pendiente')
+        proposals=self.service.proposals_get(self.session,self.q('proposals.get',{'movement_id':mid}))['entity']
+        self.assertEqual(proposals['items'],[]);self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+        negative=self.imported([self.row('-10000','UNKNOWN-RETURN')])[0]
+        with self.assertRaises((ContractError,ConflictError)):
+            self.match([{'movement_id':negative,'action':'return','amount_cents':'-10000','return_payload':{'effective_on':'2026-09-01','free_cents':'10000','reversals':[],'external_key':'missing-origin'}}])
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_devoluciones').fetchone()[0],0)
+
+    def test_52_cross_community_transfer_never_nets_or_creates_funds(self):
+        from erp_core.errors import NotFoundError
+        original=self.community
+        foreign=self.conn.execute('SELECT id_comunidad FROM comunidades WHERE id_comunidad<>? LIMIT 1',(original,)).fetchone()[0]
+        self.community=foreign;other=self.second_account('caja');self.community=original
+        mid=self.imported([self.row('-10000')])[0]
+        with self.assertRaises(NotFoundError):self.transfer({'source_id':self.account,'destination_id':other,'amount_cents':'10000','legs':[{'side':'source','movement_id':mid,'amount_cents':'10000'}]})
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_tesoreria_transferencias').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+
+    def test_53_missing_or_incomparable_coverage_blocks_closure(self):
+        mid=self.imported([self.row()])[0]
+        period={'treasury_id':self.account,'start_on':'2026-09-01','end_on':'2026-09-30'}
+        with self.assertRaises(ConflictError):self.service.closure_preview(self.session,self.e('closure.preview',period))
+        for kind,complete in (('available',True),('booked',False)):
+            self.service.opening_confirm(self.session,self.e('opening.confirm',{**period,'opening_cents':'0','closing_cents':'10000','complete':complete,'balance_type':kind}))
+            with self.assertRaises(ConflictError):self.service.closure_preview(self.session,self.e('closure.preview',period))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_conciliacion_cierres').fetchone()[0],0)
+
+    def test_54_late_import_requires_reopen_and_second_closure_preserves_first(self):
+        period={'treasury_id':self.account,'start_on':'2026-09-01','end_on':'2026-09-30'}
+        mid=self.imported([self.row()],{**period,'opening_cents':'0','closing_cents':'10000','complete':True})[0]
+        self.service.pending_assign(self.session,self.e('pending.assign',{'movement_id':mid,'user_id':self.uid,'review_on':'2026-10-01','note':'Revisar origen'}))
+        preview=self.service.closure_preview(self.session,self.e('closure.preview',period))['entity'];first=self.service.closure_confirm(self.session,self.e('closure.confirm',{'proposal_id':preview['id']},1))['entity']
+        snapshot=self.conn.execute('SELECT secret_id FROM erp_conciliacion_cierres WHERE id=?',(first['id'],)).fetchone()[0]
+        staged=self.service.statement_preview(self.session,self.e('statement.preview',{'treasury_id':self.account,'profile':'manual-v1','rows':[self.row('100','LATE')]}))['entity']
+        with self.assertRaises(ConflictError):self.service.statement_confirm(self.session,self.e('statement.confirm',{'id':staged['id']},1))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_banco_movimientos').fetchone()[0],1)
+        self.service.closure_reopen(self.session,self.e('closure.reopen',{'id':first['id']},1))
+        late=self.service.statement_confirm(self.session,self.e('statement.confirm',{'id':staged['id']},1))['entity']['movement_ids'][0]
+        self.service.pending_assign(self.session,self.e('pending.assign',{'movement_id':late,'user_id':self.uid,'review_on':'2026-10-02','note':'Apunte tardio'}))
+        self.service.opening_confirm(self.session,self.e('opening.confirm',{**period,'opening_cents':'0','closing_cents':'10100','complete':True}))
+        next_preview=self.service.closure_preview(self.session,self.e('closure.preview',period))['entity'];second=self.service.closure_confirm(self.session,self.e('closure.confirm',{'proposal_id':next_preview['id']},1))['entity']
+        self.assertNotEqual(first['id'],second['id']);self.assertEqual(self.conn.execute('SELECT secret_id FROM erp_conciliacion_cierres WHERE id=?',(first['id'],)).fetchone()[0],snapshot)
+
+
+    def test_55_file_parsing_never_holds_the_economic_write_lock(self):
+        original=parse;calls=[]
+        def unlocked(payload):
+            with closing(connect(self.db)) as probe:
+                probe.execute('PRAGMA busy_timeout=50');probe.execute('BEGIN IMMEDIATE');probe.rollback()
+            calls.append(payload['profile']);return original(payload)
+        payload={'treasury_id':self.account,'profile':'tabular-v1','filename':'synthetic.csv',
+            'content_base64':base64.b64encode(b'Date;Amount\n2026-09-01;100.00\n').decode()}
+        with patch('erp_core.reconciliation_service.parse',side_effect=unlocked):
+            analyzed=self.service.statement_analyze(self.session,self.e('statement.analyze',payload))['entity']
+            self.assertEqual(analyzed['headers'],['Date','Amount'])
+            preview=self.service.statement_preview(self.session,self.e('statement.preview',{**payload,'mapping':{'operation_on':0,'amount':1}}))['entity']
+            self.service.statement_remap(self.session,self.e('statement.remap',{'id':preview['id'],'mapping':{'operation_on':0,'amount':1},'options':{'date_format':'iso','decimal_separator':'.'}},1))
+        self.assertEqual(len(calls),3)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+
+
+    def test_56_cash_to_bank_preserves_transfer_identity_and_no_owner_collection(self):
+        cash=self.second_account('caja');mid=self.imported([self.row('10000')])[0]
+        transfer=self.transfer({'source_id':cash,'destination_id':self.account,'amount_cents':'10000','legs':[
+            {'side':'source','amount_cents':'10000','effective_on':'2026-09-01','cash_evidence':'Arqueo y justificante sinteticos'},
+            {'side':'destination','movement_id':mid,'amount_cents':'10000'}]})
+        self.assertEqual(transfer['state'],'confirmada');self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+        effects=[json.loads(r[0]) for r in self.conn.execute("SELECT payload_json FROM erp_outbox WHERE event_type='erp5.transfer.leg_confirmed'")]
+        self.assertEqual(len(effects),2);self.assertEqual(sum(int(e['amount_cents']) for e in effects),0)
+
+
+    def test_57_blocked_economic_period_does_not_change_date_or_effect(self):
+        mid=self.imported([self.row()])[0]
+        with self.conn:
+            self.conn.execute("INSERT INTO erp_bloqueos_periodo(id_comunidad,dominio,fecha_inicio,fecha_fin,motivo,creado_en,creado_por) VALUES (?,'financiero','2026-09-01','2026-09-30','Synthetic closed economic period','2026-09-01',?)",(self.community,self.uid))
+        with self.assertRaises(ConflictError):self.match([{'movement_id':mid,'action':'record_collection','amount_cents':'10000'}])
+        self.assertEqual(self.service.movement_get(self.session,self.q('movement.get',{'id':mid}))['entity']['operation_on'],'2026-09-01')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],0)
+        self.assertEqual(self.conn.execute("SELECT activo FROM erp_bloqueos_periodo WHERE motivo='Synthetic closed economic period'").fetchone()[0],1)
+
+    def test_58_delegated_permission_revoked_after_preview_rolls_back_entire_confirmation(self):
+        from access_control import save_permissions,defaults
+        mid=self.imported([self.row()])[0]
+        preview=self.service.match_preview(self.session,self.e('match.preview',{'components':[{'movement_id':mid,'action':'record_collection','amount_cents':'10000'}]}))['entity']
+        with self.conn:
+            self.conn.execute("UPDATE usuarios SET rol='Usuario' WHERE id_usuario=?",(self.uid,))
+            save_permissions(self.conn,self.uid,self.community,'Usuario',defaults('Usuario'))
+            self.conn.execute('DELETE FROM erp_recibo_permisos WHERE id_usuario=? AND id_comunidad=?',(self.uid,self.community))
+        self.session=profile(self.conn,self.uid)
+        tables=('erp_cobros','erp_conciliaciones','erp_conciliacion_componentes','erp_audit_events','erp_outbox','erp_command_log','erp_banca_secretos')
+        before={t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables}
+        with self.assertRaises(PermissionError):self.service.match_confirm(self.session,self.e('match.confirm',{'proposal_id':preview['id']},1))
+        self.assertEqual(before,{t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables})
 
 
 if __name__=='__main__':

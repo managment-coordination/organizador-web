@@ -128,6 +128,13 @@ class RemittanceIntegrationTests(bank['BankingTests']):
         self.assertEqual(candidates['items'][0]['action'],'record_collection')
         self.assertEqual(candidates['items'][0]['allocations'],[{'receipt_id':receipt['id'],'amount_cents':'10000'}])
         self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_cobros WHERE external_source='erp5'").fetchone()[0],0)
+        candidate=candidates['items'][0];self.assertEqual(candidate['confidence'],'alta')
+        component={k:candidate[k] for k in ('action','amount_cents','allocations')};component['movement_id']=mid
+        proposal=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[component]}))['entity']
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':proposal['id']},1))
+        from erp_core.receivables_projection import receipt_balance
+        self.assertEqual(receipt_balance(self.conn,self.community,receipt['id'])['pending_cents'],'0')
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_cobros WHERE external_source='erp5'").fetchone()[0],1)
 
     def test_integration_10_receipt_collection_and_property_contexts(self):
         p,_=self.remittance_setup();mid=self.movement('15000');unrelated=self.movement('7000')
@@ -142,6 +149,77 @@ class RemittanceIntegrationTests(bank['BankingTests']):
             self.assertEqual([r['id'] for r in result['items']],[mid]);self.assertNotIn(unrelated,[r['id'] for r in result['items']])
         from erp_core.errors import NotFoundError
         with self.assertRaises(NotFoundError):self.reconciliation.movement_list(self.session,QueryEnvelope('erp5.movement.list',self.community,{'treasury_id':treasury,'receipt_id':9999999}))
+
+
+    def test_integration_11_cent_differences_never_change_receipt(self):
+        from erp_core.receivables_projection import receipt_balance,collection_balance
+        p,_=self.remittance_setup();receipt=p['receipt_ids'][0]
+        low=self.movement('9999')
+        reviewed=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[{'movement_id':low,'action':'record_collection','amount_cents':'9999',
+            'allocations':[{'receipt_id':receipt,'amount_cents':'9999'}]}]}))['entity']
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':reviewed['id']},1))
+        self.assertEqual(receipt_balance(self.conn,self.community,receipt,date.today().isoformat())['pending_cents'],'1')
+        second=p['receipt_ids'][1];high=self.movement('10001')
+        reviewed=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[{'movement_id':high,'action':'record_collection','amount_cents':'10001',
+            'allocations':[{'receipt_id':second,'amount_cents':'10000'}]}]}))['entity']
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':reviewed['id']},1))
+        collection=self.conn.execute("SELECT id FROM erp_cobros WHERE external_source='erp5' ORDER BY id DESC LIMIT 1").fetchone()[0]
+        self.assertEqual(collection_balance(self.conn,self.community,collection,date.today().isoformat())['available_cents'],'1')
+        self.assertEqual(self.conn.execute('SELECT amount_cents FROM erp_recibos WHERE id=?',(second,)).fetchone()[0],10000)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_tesoreria_salidas').fetchone()[0],0)
+
+
+    def test_integration_12_partially_registered_remittance_creates_only_missing_funds(self):
+        *_,first=self.bank_result_fixture();second=dict(self.conn.execute('SELECT * FROM erp_remesa_lineas WHERE id<>? ORDER BY id LIMIT 1',(first['id'],)).fetchone())
+        settled,row=self.stage_bank_result(first,'settlement',event='PARTIAL-A')
+        self.confirm_result(settled,row,'record_collection',allocate_cents='10000')
+        existing,existing_row=self.stage_bank_result(first,'settlement',event='PARTIAL-A',notes='Additional bank evidence')
+        missing,missing_row=self.stage_bank_result(second,'settlement',event='PARTIAL-B')
+        mid=self.movement('20000')
+        review=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[
+            {'movement_id':mid,'action':'bank_result','amount_cents':'10000','bank_result':{'result_id':existing['id'],'decisions':[{'result_line_id':existing_row,'action':'record_collection','allocate_cents':'10000'}]}},
+            {'movement_id':mid,'action':'bank_result','amount_cents':'10000','bank_result':{'result_id':missing['id'],'decisions':[{'result_line_id':missing_row,'action':'record_collection','allocate_cents':'10000'}]}}
+        ]}))['entity']
+        before=self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0]
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':review['id']},1))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],before+1)
+        from erp_core.receivables_projection import receipt_balance
+        self.assertEqual(receipt_balance(self.conn,self.community,first['receipt_id'])['pending_cents'],'0')
+        self.assertEqual(receipt_balance(self.conn,self.community,second['receipt_id'])['pending_cents'],'0')
+
+
+    def test_integration_14_aggregate_without_reliable_detail_stays_pending(self):
+        from erp_core.errors import ContractError
+        from erp_core.receivables_projection import receipt_balance
+        *_,line=self.bank_result_fixture()
+        mid=self.movement('20000')
+        receipts=list(self.conn.execute('SELECT receipt_id FROM erp_remesa_lineas WHERE id_comunidad=?',(self.community,)))
+        before={r[0]:receipt_balance(self.conn,self.community,r[0])['pending_cents'] for r in receipts}
+        tables=('erp_cobros','erp_imputaciones','erp_banco_operaciones','erp_conciliaciones','erp_conciliacion_componentes')
+        counts={t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables}
+        with self.assertRaises(ContractError):
+            self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[{
+                'movement_id':mid,'action':'bank_result','amount_cents':'20000','bank_result':{}}]}))
+        proposals=self.reconciliation.proposals_get(self.session,QueryEnvelope('erp5.proposals.get',self.community,{'movement_id':mid}))['entity']
+        self.assertFalse(any(p.get('allocations') for p in proposals['items']))
+        self.assertEqual(counts,{t:self.conn.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in tables})
+        self.assertEqual(before,{r[0]:receipt_balance(self.conn,self.community,r[0])['pending_cents'] for r in receipts})
+        self.assertEqual(self.reconciliation.movement_get(self.session,QueryEnvelope('erp5.movement.get',self.community,{'id':mid}))['entity']['remaining_cents'],'20000')
+
+    def test_integration_13_partial_and_multiple_bank_entries_for_one_receipt(self):
+        from erp_core.receivables_projection import receipt_balance
+        p,_=self.remittance_setup();receipt=p['receipt_ids'][0]
+        first=self.movement('6000')
+        reviewed=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[{'movement_id':first,'action':'record_collection','amount_cents':'6000',
+            'allocations':[{'receipt_id':receipt,'amount_cents':'6000'}]}]}))['entity']
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':reviewed['id']},1))
+        self.assertEqual(receipt_balance(self.conn,self.community,receipt)['pending_cents'],'4000')
+        second=self.movement('4000')
+        reviewed=self.reconciliation.match_preview(self.session,self.e5('match.preview',{'components':[{'movement_id':second,'action':'record_collection','amount_cents':'4000',
+            'allocations':[{'receipt_id':receipt,'amount_cents':'4000'}]}]}))['entity']
+        self.reconciliation.match_confirm(self.session,self.e5('match.confirm',{'proposal_id':reviewed['id']},1))
+        self.assertEqual(receipt_balance(self.conn,self.community,receipt)['pending_cents'],'0')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_imputaciones WHERE receipt_id=?',(receipt,)).fetchone()[0],2)
 
 
 if __name__=='__main__':

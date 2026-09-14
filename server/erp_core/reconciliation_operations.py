@@ -7,6 +7,65 @@ from .receivables_service import ReceivablesService
 
 
 class ReconciliationOperations:
+    def _fact_reversal(self,conn,session,community,p):
+        require_fields(p,('kind','id','effective_on'))
+        effective=day(p['effective_on']);ReceivablesService._date_open(conn,community,effective)
+        kind=p['kind']
+        if kind not in ('outflow','transfer'):raise ContractError('Solo se rectifican hechos propios de tesoreria. Usa ERP 3 para cobros/devoluciones.')
+        self._session(conn,session,community,'manage_outflows' if kind=='outflow' else 'manage_transfers')
+        entity=self._row(conn,'erp_tesoreria_salidas' if kind=='outflow' else 'erp_tesoreria_transferencias',community,p['id'])
+        if kind=='outflow':
+            originals=[{'id':entity['id'],'treasury_id':entity['treasury_id'],'amount_cents':entity['amount_cents'],'effective_on':entity['effective_on'],'outflow_id':entity['id'],'leg_id':None}]
+        else:
+            originals=[dict(r,outflow_id=None,leg_id=r['id']) for r in conn.execute('SELECT * FROM erp_tesoreria_transferencia_extremos WHERE id_comunidad=? AND transfer_id=? ORDER BY id',(community,entity['id']))]
+        for r in originals:
+            if conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones WHERE id_comunidad=? AND '+('outflow_id' if kind=='outflow' else 'leg_id')+'=?',(community,r['id'])).fetchone():
+                raise ConflictError('El hecho ya tiene una rectificacion. No se compensa dos veces.')
+            if effective<r['effective_on']:raise ContractError('La rectificacion no puede preceder al hecho original.')
+            self._guard_open(conn,community,r['treasury_id'],r['effective_on']);self._guard_open(conn,community,r['treasury_id'],effective)
+        column='outflow_id' if kind=='outflow' else 'transfer_id'
+        components=[dict(r) for r in conn.execute('SELECT c.* FROM erp_conciliacion_componentes c WHERE c.id_comunidad=? AND c.'+column+'=? AND c.reverses_id IS NULL AND NOT EXISTS (SELECT 1 FROM erp_conciliacion_componentes x WHERE x.id_comunidad=c.id_comunidad AND x.reverses_id=c.id) ORDER BY c.id',(community,entity['id']))]
+        for c in components:
+            m=self._row(conn,'erp_banco_movimientos',community,c['movement_id'])
+            self._guard_open(conn,community,m['treasury_id'],m['operation_on'])
+        entries=[{'outflow_id':r['outflow_id'],'leg_id':r['leg_id'],'treasury_id':r['treasury_id'],
+            'amount_cents':str(r['amount_cents'] if kind=='outflow' else -r['amount_cents']),
+            'original_effective_on':r['effective_on'],'effective_on':effective} for r in originals]
+        plan={'kind':kind,'fact_id':entity['id'],'effective_on':effective,'entries':entries,'components':components}
+        plan['preview_hash']=self.vault.fingerprint(community,'treasury-reversal',plan)
+        return plan
+
+    def fact_reverse_preview(self,session,env):
+        return self._write(session,env,'correct',lambda conn,actor,e,now:self._proposal(conn,actor,e,now,'fact_reversal',e.payload,self._fact_reversal(conn,session,e.community_id,e.payload)))
+
+    def fact_reverse_confirm(self,session,env):
+        def op(conn,actor,e,now):
+            proposal=self._row(conn,'erp_conciliacion_propuestas',e.community_id,e.payload['proposal_id']);self._version(proposal,e.expected_version)
+            if proposal['state']!='pendiente' or proposal['kind']!='fact_reversal':raise ConflictError('Propuesta de rectificacion no disponible.')
+            data=self.vault.get(conn,e.community_id,proposal['secret_id'],'reconciliation-proposal')
+            plan=self._fact_reversal(conn,session,e.community_id,data['payload'])
+            if plan['preview_hash']!=data['public']['preview_hash']:raise ConflictError('El hecho o sus enlaces han cambiado. Revisa de nuevo.')
+            secret=self.vault.put(conn,e.community_id,'treasury-rectification',{'plan':plan,'reason':e.reason,'evidence':e.evidence.entity_id},now)
+            if plan['components']:
+                matchsecret=self.vault.put(conn,e.community_id,'bank-match',{'fact_reversal':proposal['id']},now)
+                match=conn.execute('INSERT INTO erp_conciliaciones (id_comunidad,secret_id,registered_at,actor_id) VALUES (?,?,?,?)',(e.community_id,matchsecret,now,actor.user_id)).lastrowid
+                for c in plan['components']:
+                    conn.execute('''INSERT INTO erp_conciliacion_componentes (id_comunidad,match_id,movement_id,kind,collection_id,return_id,refund_id,outflow_id,transfer_id,amount_cents,reverses_id,registered_at,actor_id)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',(e.community_id,match,c['movement_id'],c['kind'],c['collection_id'],c['return_id'],c['refund_id'],c['outflow_id'],c['transfer_id'],-c['amount_cents'],c['id'],now,actor.user_id))
+                self._event(conn,e,'reconciliation.reversed','match',match,{'effect':'link','fact_reversal_id':proposal['id']})
+            ids=[]
+            for r in plan['entries']:
+                rid=conn.execute('INSERT INTO erp_tesoreria_rectificaciones (id_comunidad,outflow_id,leg_id,effective_on,amount_cents,secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,?,?,?)',
+                    (e.community_id,r['outflow_id'],r['leg_id'],r['effective_on'],int(r['amount_cents']),secret,now,actor.user_id)).lastrowid
+                ids.append(rid);kind=plan['kind'];original=r['outflow_id'] or r['leg_id']
+                self._event(conn,e,'outflow.reversed' if kind=='outflow' else 'transfer.leg_reversed','treasury-rectification',rid,
+                    {'effect':'monetary','economic_fact_id':'erp5:rectification:'+str(rid),'component_id':str(rid),
+                     'reverses_economic_fact_id':'erp5:'+kind+':'+str(plan['fact_id']),'reverses_component_id':'funds' if kind=='outflow' else str(original),
+                     'treasury_id':r['treasury_id'],'amount_cents':r['amount_cents'],'currency':'EUR','effective_on':r['effective_on']})
+            conn.execute("UPDATE erp_conciliacion_propuestas SET state='confirmada',version=version+1 WHERE id=?",(proposal['id'],))
+            return {'id':plan['fact_id'],'kind':plan['kind'],'rectification_ids':ids,'bank_movements_unchanged':True,'original_history_preserved':True}
+        return self._write(session,env,'correct',op)
+
     def statement_original(self,session,community,import_id,reason):
         import base64
         from contextlib import closing
@@ -111,6 +170,8 @@ class ReconciliationOperations:
         transfer=self._row(conn,'erp_tesoreria_transferencias',community,p['transfer_id'])
         existing=[dict(r) for r in conn.execute('SELECT * FROM erp_tesoreria_transferencia_extremos WHERE id_comunidad=? AND transfer_id=? ORDER BY id',
                                               (community,transfer['id']))]
+        if conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones r JOIN erp_tesoreria_transferencia_extremos l ON l.id_comunidad=r.id_comunidad AND l.id=r.leg_id WHERE l.id_comunidad=? AND l.transfer_id=?',(community,transfer['id'])).fetchone():
+            raise ConflictError('La transferencia esta rectificada. No se completa ni reactiva.')
         plan=self._transfer_plan(conn,community,{'source_id':transfer['source_id'],'destination_id':transfer['destination_id'],
             'amount_cents':str(transfer['amount_cents']),'legs':p['legs']})
         totals={side:sum(abs(r['amount_cents']) for r in existing if r['side']==side)+sum(abs(int(r['amount_cents'])) for r in plan['legs'] if r['side']==side)
@@ -148,8 +209,9 @@ class ReconciliationOperations:
                 totals={side:sum(abs(x[0]) for x in conn.execute('SELECT amount_cents FROM erp_tesoreria_transferencia_extremos WHERE id_comunidad=? AND transfer_id=? AND side=?',
                     (q.community_id,r['id'],side))) for side in ('source','destination')}
                 transit=r['amount_cents']-min(totals.values())
+                rectified=bool(conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones x JOIN erp_tesoreria_transferencia_extremos l ON l.id_comunidad=x.id_comunidad AND l.id=x.leg_id WHERE l.id_comunidad=? AND l.transfer_id=?',(q.community_id,r['id'])).fetchone())
                 items.append({'id':r['id'],'source_id':r['source_id'],'destination_id':r['destination_id'],
-                              'amount_cents':str(r['amount_cents']),'state':'en_transito' if transit else 'confirmada','in_transit_cents':str(transit)})
+                              'amount_cents':str(r['amount_cents']),'state':'rectificada' if rectified else 'en_transito' if transit else 'confirmada','in_transit_cents':'0' if rectified else str(transit)})
             return {'items':items}
         return self._read(session,q,'read',op)
 
@@ -167,6 +229,7 @@ class ReconciliationOperations:
             secret=self.vault.put(conn,e.community_id,'bank-correction',{'reason':e.reason,'payload':p},now)
             rid=conn.execute('INSERT INTO erp_banco_movimiento_correcciones (id_comunidad,movement_id,replacement_id,kind,secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,?,?)',
                              (e.community_id,m['id'],replacement['id'],p['kind'],secret,now,actor.user_id)).lastrowid
+            self._event(conn,e,'bank_movement.corrected','bank-correction',rid,{'effect':'evidence','movement_id':m['id'],'replacement_id':replacement['id'],'kind':p['kind']})
             return {'id':rid,'movement_id':m['id'],'replacement_id':replacement['id'],'effect':'evidence'}
         return self._write(session,env,'correct',op)
 
@@ -230,6 +293,7 @@ class ReconciliationOperations:
         transit=0
         for t in conn.execute('SELECT * FROM erp_tesoreria_transferencias WHERE id_comunidad=? AND (source_id=? OR destination_id=?)',
             (community,p['treasury_id'],p['treasury_id'])):
+            if conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones x JOIN erp_tesoreria_transferencia_extremos l ON l.id_comunidad=x.id_comunidad AND l.id=x.leg_id WHERE l.id_comunidad=? AND l.transfer_id=? AND x.effective_on<=?',(community,t['id'],p['end_on'])).fetchone():continue
             legs=list(conn.execute('SELECT * FROM erp_tesoreria_transferencia_extremos WHERE id_comunidad=? AND transfer_id=? AND effective_on<=?',(community,t['id'],p['end_on'])))
             if legs:transit+=t['amount_cents']-min(sum(abs(r['amount_cents']) for r in legs if r['side']==side) for side in ('source','destination'))
         return {'source':'ERP5','treasury_id':p['treasury_id'],'start_on':p['start_on'],'end_on':p['end_on'],

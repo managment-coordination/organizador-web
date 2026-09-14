@@ -137,4 +137,26 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(complete['coverage']['complete']);self.assertEqual(complete['coverage']['end_on'],'2026-09-01')
 
 
+    def test_21_multiblock_camt_explicit_selection_preserves_original_hash(self):
+        import copy
+        from lxml import etree
+        p=self.xml();root=etree.fromstring(base64.b64decode(p['content_base64']));parent=root[0]
+        original=parent[1];second=copy.deepcopy(original);parent.append(second)
+        raw=etree.tostring(root);p=file_payload(raw,'multi.xml','camt.053.001.08')
+        manifest=parse(p);self.assertTrue(manifest['requires_block']);self.assertEqual(manifest['rows'],[])
+        self.assertNotIn('ES912100',str(manifest['blocks']))
+        first=parse({**p,'options':{'block_index':0}});second=parse({**p,'options':{'block_index':1}})
+        self.assertEqual(first['file_hash'],second['file_hash']);self.assertNotEqual(first['source_hash'],second['source_hash'])
+        self.assertEqual(first['rows'][0]['amount_cents'],'10000');self.assertEqual(len(second['rows']),1)
+        for index in (-1,2,'0',True):
+            with self.assertRaises(ContractError):parse({**p,'options':{'block_index':index}})
+
+    def test_22_multiblock_norm43_requires_account_selection(self):
+        raw=base64.b64decode(self.norm()['content_base64']);p=file_payload(raw+raw,'multi.txt','cuaderno43-v1')
+        self.assertTrue(parse(p)['requires_block'])
+        first=parse({**p,'options':{'block_index':0}});second=parse({**p,'options':{'block_index':1}})
+        self.assertNotEqual(first['source_hash'],second['source_hash']);self.assertEqual(second['coverage']['closing_cents'],'11000')
+        with self.assertRaises(ContractError):parse(file_payload(raw.splitlines()[0]+b'\n'+raw,'bad.txt','cuaderno43-v1'))
+
+
 if __name__=='__main__':unittest.main(verbosity=2)

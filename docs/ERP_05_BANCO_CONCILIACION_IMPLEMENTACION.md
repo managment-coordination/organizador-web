@@ -5,10 +5,10 @@ Seguimiento: [roadmap ERP](ERP_COMUNIDADES_ROADMAP.md).
 
 ## Estado de continuidad
 
-Diseno cerrado 100%. Implementacion **25% certificado**, DESARROLLO.
-Solo el hito de contrato/migracion validada tiene 25/25. Servicios,
-recorrido integrado y aceptacion final siguen abiertos; no sumar puntos
-por codigo sin completar su evidencia. Produccion no modificada por ERP 5.
+Diseno cerrado 100%. Implementacion **75% certificado**, DESARROLLO.
+5A migracion/adaptadores, 5B servicios/integracion y 5C recorrido funcional
+tienen 25/25 cada uno, con evidencia registrada debajo. 5D aceptacion final,
+publicacion y recuperacion productiva sigue abierto. Produccion no modificada por ERP 5.
 No iniciar ERP 6 ni habilitar operativa bancaria real.
 
 ## Checkpoint y recuperacion
@@ -20,7 +20,13 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
   `backups/erp5-pre-20260914/organizador-erp0-restore-v301l9xr`: apertura,
   runtime, integridad y 208 tablas correctos. Codigo publicado previo `b2329cd`.
 - Claves ERP 4 permanecen fuera del repositorio; recuperacion DPAPI existente.
-  Restauracion final con migracion 20 y claves pendiente.
+  Restauracion de avance con migracion 20 verificada: `erp0-backup-20260914-130311`,
+  restore `verification/organizador-erp0-restore-derxg75d`, runtime y 25 registros
+  cifrados recuperados con clave sintetica separada. Recuperacion final de
+  migracion 21 y publicacion pendiente.
+- Avance anterior: `081b623fe5339faab4a2c18247b79af25c3e8989`,
+  `erp5-progress-domain-web-20260914`. Nuevo checkpoint se registra en Git
+  bajo `erp5-progress-acceptance-20260914`; no sustituye el backup de datos.
 - Trabajo aislado Ubuntu: `backups/erp5-work-20260914`. Nunca desplegar
   esta carpeta sobre produccion sin cerrar aceptacion.
 
@@ -29,6 +35,9 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
 - Migracion aditiva 20: evidencias/importaciones cifradas, ocurrencias,
   identidades HMAC, correcciones, coberturas, propuestas, enlaces N:M,
   salidas, transferencias/extremos, cierres, pendientes y activacion de fuente.
+- Migracion aditiva 21: rectificaciones inmutables de salidas/extremos propios.
+  Contramovimientos explicitos, fecha efectiva, evidencia y eventos separados;
+  nunca modificar el apunte bancario ni borrar el hecho original.
 - Adaptadores CSV/XLSX/XLS/manual/Cuaderno 43/camt.053 y camt.054 v08.
   Limites de entrada, importes exactos, rechazo de contenido hostil,
   revision de duplicados y sustitucion pending/booked sin doble saldo.
@@ -40,34 +49,52 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
 - Saldos acreditados y cierre con pendientes documentados, reapertura;
   fuente rectora ERP 5 sin sumar saldos legacy. Exportacion CSV/XLSX exacta.
 - Transporte bancario privado y UI reutilizando el sistema visual actual.
+- Desglose bruto/neto editable sin persistencia durante la preparacion;
+  revision humana con aplicaciones a recibos y remanente del movimiento.
+  Contextos de recibo/cobro/propiedad/propietario/comunidad, seleccion masiva
+  entre paginas, originales reautenticados e informes CSV/XLSX/PDF.
+- Consultas bancarias incrustadas en `server/index.js` dirigidas a ERP 5
+  por cobertura y permisos: sin fallback legacy cuando ERP 5 ya esta activo.
 
 ## Evidencia ejecutada
 
-- Fundamentos: **44/44** pruebas en Ubuntu (168,760 s), carpeta
-  `verification/organizador-erp5-foundations-x0x192b2` dentro del trabajo aislado.
-- Adaptadores: **20/20** locales, incluido Excel numerico con separador
-  de usuario distinto, XLS/formulas y detalle camt inconsistente.
-- Integracion remesas: **9/9** casos y repeticion focalizada 07/08 correctos:
-  ambos ordenes de llegada extracto/resultado, sin duplicar cobros/devoluciones.
-  Caso 10 contextual desarrollado; pendiente registrar su ejecucion final.
+- Fundamentos: **58/58** Ubuntu, 196,018 s, carpeta
+  `verification/organizador-erp5-foundations-6ypmzc0x`. Integridad/FK verificadas
+  al terminar cada caso; incluye rectificaciones, bloqueo economico,
+  autorizacion revocada entre preview/confirm y parseo fuera del bloqueo de escritura.
+- Adaptadores: **22/22** Ubuntu, incluido Excel numerico/textual, XLS/formulas,
+  camt inconsistente y seleccion explicita de cuenta en archivos multibloque.
+- Integracion ERP 3/4: casos 01-13 correctos en la ultima ejecucion; caso 14
+  (remesa sin detalle fiable) verificado focalmente con el nuevo runtime, 5,920 s.
+  El primer intento del caso 14 utilizaba un resultado inexistente y esperaba
+  otra clase de error; corregida la fixture para representar ausencia de detalle,
+  sin modificar el dominio para hacer pasar la prueba. Gate final ejecutara el conjunto.
 - Regresion completa Ubuntu:
-  `verification/organizador-erp5-regression-zpimcwen/results.json`.
+  `verification/organizador-erp5-regression-ci26w7dl/results.json`.
   Migracion preserva hashes de 207 tablas existentes; SQLite y FK correctos.
   ERP 0, ERP 1 (26), ERP 2 integral/2B (14), Planes de Cuotas (20),
   ERP 3 (42), ERP 4 (92), adaptador SEPA (17), HTTP/UI existentes correctos.
-- Navegador real HTTPS, escritorio 1440x900 y movil 390x844:
-  importar -> cobro parcial -> pendiente -> acreditar saldos -> cierre ->
-  descarga XLSX, sin desbordamiento horizontal de pagina.
-  Capturas en `organizador-erp5-foundations-0zbcsxky/browser` del temporal local.
-  Ultima repeticion local correcta en `organizador-erp5-foundations-bhji1er4/browser`:
-  originales reautenticados, Excel y PDF; cero errores de pagina. PDF renderizado
-  e inspeccionado. Shell completo y recorridos contextuales aun pendientes.
+- Navegador real HTTPS con login/cookies Secure/SameSite y aplicacion completa:
+  `C:/Users/EQUIPO/AppData/Local/Temp/erp5-full-shell-FqXhBI`: cobro parcial,
+  salida negativa/documento pendiente, desconciliacion, rectificacion explicita,
+  saldos, cierre con pendientes y contextos de cobro/propiedad/propietario/comunidad.
+  `erp5-full-shell-G7fYFz`: neto 98 = cobro 100 - comision 2, cero confirmaciones
+  economicas durante preparacion/preview, una confirmacion y remanente exacto cero.
+  Escritorio 1440/1920 y movil 390, sin desbordamientos ni errores de pagina;
+  capturas realmente inspeccionadas. Descarga original/Excel/PDF validada antes
+  en `organizador-erp5-foundations-g8vuew9c/browser`; PDF renderizado e inspeccionado.
+- Plan ordinario y especial: `verification/organizador-erp5-plans-1d_rrkgd/proof.json`,
+  dos recibos independientes y dos cobros; cuotas, snapshots y coeficientes
+  intactos. Solo cambia legitimamente la version de concurrencia del recibo.
+- UI real en prueba focal: signos negativos del formulario manual, version de
+  rectificacion, reintento de preview sin duplicar componentes y desglose neto
+  preparado sin efectos. UI masiva: 52 seleccionados a traves de dos paginas.
 - Regresion focalizada ERP 4 tras resultados/consultas: **5/5**, 55,876 s.
 - Estado UI ERP 4/ERP 5 y sintaxis JS correctos. Migracion actual verificada
   nuevamente: hashes de 207 tablas anteriores intactos, integridad y cero FK.
 
-No afirmar A01-A64 completos: la matriz final aun no esta acreditada.
-Los cambios posteriores a cada ejecucion requieren sus pruebas focalizadas.
+La matriz siguiente identifica evidencia por criterio, no por conteos.
+A63 sigue abierto: no afirmar aceptacion final ni publicacion completadas.
 
 ## Decisiones tecnicas y mejoras autonomas
 
@@ -79,23 +106,105 @@ Los cambios posteriores a cada ejecucion requieren sus pruebas focalizadas.
 - Ningun saldo desconocido se presenta como cero verificable.
 - Descarga de originales por canal separado, reautenticacion y permisos;
   nunca almacenar el archivo descifrado en el resultado general de comandos.
+- MEJORA AUTONOMA IMPLEMENTADA: archivos multicuenta requieren seleccionar
+  bloque; identidad de evidencia por archivo/perfil/bloque, sin sumar cuentas
+  ajenas ni revelar IBAN en el manifiesto.
+- MEJORA AUTONOMA IMPLEMENTADA: analizar/remapear archivos fuera del bloqueo
+  de escritura, reautorizando y verificando version dentro de la transaccion.
+- MEJORA AUTONOMA IMPLEMENTADA: borrador de desglose neto local y editable,
+  con vista previa y remanente del backend, sin crear fondos mientras se edita.
+- Defecto directamente relacionado corregido: conversor compartido acepta solo
+  magnitudes positivas; formulario bancario aplica explicitamente el signo sin
+  cambiar ese conversor ni los otros dominios. Validado en navegador real.
+- Runtime ERP 5 aislado preparado fuera del repositorio, conservando ERP 4:
+  `/home/coordinador/.local/share/organizador-web/erp5-runtime`.
+  Dependencias fijadas en `server/requirements-erp5.txt`; xlwt 1.3.0 solo para
+  fixtures XLS. Gate/publicacion reutiliza `deploy-erp4-release.py --reconciliation`.
+  Ningun cambio de runtime/configuracion productiva aplicado todavia.
+
+## Matriz de aceptacion
+
+`Cnn`: `verify-erp5-foundations.py`; `Inn`: `verify-erp5-remittances.py`;
+`Dnn`: `verify-erp5-adapters.py`. Numeros corresponden al prefijo del caso.
+OK significa prueba ejecutada; no convierte automaticamente 5D en completado.
+
+| Criterio | Evidencia | Estado |
+|---|---|---|
+| A01 | I09 propuesta exacta, sin efectos hasta confirmar | OK |
+| A02 | C51 ingreso sin referencia | OK |
+| A03 | I13 cobro 60, deuda 40 | OK |
+| A04 | I05 un cobro/varias aplicaciones | OK |
+| A05 | I13 y C07 varios apuntes | OK |
+| A06 | I02 enlace de fondos ya existentes | OK |
+| A07 | I02 remesa liquidada | OK |
+| A08 | I01 delegacion atomica | OK |
+| A09 | I12 solo fondos ausentes | OK |
+| A10 | I14 sin detalle, sin aplicaciones ni fondos inventados | OK |
+| A11 | C08 y navegador G7fYFz | OK |
+| A12 | C09 no gasto sin evidencia | OK |
+| A13 | C32 e I08 devolucion existente | OK |
+| A14 | I08 y C26 una devolucion ERP 3 | OK |
+| A15 | C51 no cobro ficticio | OK |
+| A16 | I04 rechazo sin fondos | OK |
+| A17 | C20 salida sin factura/asiento inventado | OK |
+| A18 | C45 y navegador FqXhBI | OK |
+| A19 | C08 y regresion ERP 4 caso 88, politica de gastos | OK |
+| A20 | C21 dos extremos, sin principal adicional | OK |
+| A21 | C22 extremo ausente | OK |
+| A22 | C23 y C56 banco/caja en ambas direcciones | OK |
+| A23 | C52 transferencia entre comunidades denegada | OK |
+| A24 | C02 reimportacion | OK |
+| A25 | C02 y C40 alias por perfil | OK |
+| A26 | C04 contradiccion de identidad | OK |
+| A27 | C03 multiplicidad legitima | OK |
+| A28 | C03 solapamiento sin ID | OK |
+| A29 | C11 operacion/valor | OK |
+| A30 | C51 valor desconocido | OK |
+| A31 | C16 y C29 saldo acreditado | OK |
+| A32 | C53 sin saldo acreditado | OK |
+| A33 | C17 diferencia bloqueante | OK |
+| A34 | C53 base disponible/contable | OK |
+| A35 | C51 pendiente sin deuda | OK |
+| A36 | C16 y navegador FqXhBI | OK |
+| A37 | C53 cobertura incompleta | OK |
+| A38 | C54 importacion tardia | OK |
+| A39 | C54 cierre anterior intacto | OK |
+| A40 | C57 y regresion ERP 4 caso 86 | OK |
+| A41 | I11 diferencias exactas de centimo | OK |
+| A42 | C44 legacy observado | OK |
+| A43 | C29 y C48 consumidor real sin fallback | OK |
+| A44 | D01-07/15-17 y navegador CSV anterior | OK |
+| A45 | D12/13/22 Cuaderno 43 | OK |
+| A46 | D08-10/18-21 camt | OK |
+| A47 | D06/07/11 y C30 exportacion segura | OK |
+| A48 | C13/34/52 aislamiento | OK |
+| A49 | C58 delegacion revocada, rollback total | OK |
+| A50 | C27 dos revisores | OK |
+| A51 | C14/15 doble confirmacion | OK |
+| A52 | C24 e I03 rollback compartido | OK |
+| A53 | C10 fondos intactos al desconciliar | OK |
+| A54 | C45-47 rectificaciones explicitas | OK |
+| A55 | C19/34 cifrado, permisos y canales privados | OK |
+| A56 | C42 rotacion; restauracion de avance de 25 secretos | OK; final pendiente |
+| A57 | verify-erp5-plans.py, proof 1d_rrkgd | OK |
+| A58 | C43 inbox simulado; sin ERP 6 | OK |
+| A59 | C43 evidencia no duplica dinero | OK |
+| A60 | C21/22/46 eventos por extremos acreditados | OK |
+| A61 | C49 y verify-erp5-bulk-ui.mjs, 52 en dos paginas | OK |
+| A62 | FqXhBI/G7fYFz, login, division, confirmacion, cierre/contextos | OK |
+| A63 | Backup de migracion 21, gate final, publicacion y smoke | PENDIENTE |
+| A64 | regression-ci26w7dl, ERP 0-4/planes; pruebas nuevas focalizadas | OK; gate final pendiente |
 
 ## Pendientes exactos para cierre
 
-1. Rectificaciones explicitas de hechos propios de salida/extremos de
-   transferencia y sus eventos compensatorios; no basta la desconciliacion.
-2. UI: alias de identidad entre perfiles, ventana visible de propuestas,
-   pendiente documental de pagos y seleccion masiva entre paginas.
-3. Registrar prueba contextual recibo/cobro/propiedad y comprobar shell
-   completo, remesa, propietario y comunidad en escritorio/movil.
-4. Completar sustitucion controlada de consumidores bancarios legacy y
-   verificar consulta Python incrustada de periodos/frescura/fuente ERP 5.
-5. Ejecutar/documentar matriz A01-A64, incluidos limites, planes ordinarios/
-   especiales e importacion bancaria legible; no inferir cobertura por conteos.
-6. Ejecutar restauracion del avance con clave sintetica separada usando
-   `verify-erp5-recovery.py`; no confundirla con custodia productiva acreditada.
-7. Checkpoint final, backup posterior y restauracion aislada de datos/clave,
-   regresion focalizada de cambios nuevos, publicacion y smoke Ubuntu.
+1. Checkpoint de avance 75%, backup/restauracion de migracion 21 con clave
+   sintetica separada mediante `verify-erp5-recovery.py` y runtime nuevo.
+2. Gate final con el archivo del checkpoint: regresion ERP 0-4/planes, suites
+   ERP 5 completas y comprobaciones HTTP/UI, sin activar banca real.
+3. Solo despues: publicacion mediante procedimiento existente, backup previo
+   independiente, hashes historicos/FK, smoke Ubuntu y backup/restauracion final.
+4. Registrar prueba de publicacion/recuperacion en A63, checkpoint de cierre,
+   actualizar porcentaje a 100% exclusivamente despues de obtener evidencia.
 
 ## Seguridad de puesta en servicio
 

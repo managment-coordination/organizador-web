@@ -248,6 +248,8 @@ tbody tr:hover { background:#f7fafc; }
   .reconcileWorkspace .budgetToolbar button { width:auto!important; min-width:0; margin:0; }
   .reconcileWorkspace .masterDataFormGrid { grid-template-columns:minmax(0,1fr); }
   .reconcileWorkspace .budgetToolbar input { min-width:0; width:100%; }
+  .reconcileWorkspace .budgetToolbar>label { min-width:0; }
+  .reconcileWorkspace .budgetToolbar :is(input,select) { box-sizing:border-box; min-width:0; max-width:100%; width:100%; }
   .reconcileWorkspace .finSummary .finTable tbody tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
   .reconcileWorkspace .finSummary .finTable tbody td { margin:0; padding:8px; min-width:0; }
   .bankWorkspace .masterFormGrid { grid-template-columns:minmax(0,1fr); }

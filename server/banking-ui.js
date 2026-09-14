@@ -9,7 +9,7 @@ function createBankingUI(ctx) {
     s.community=community;s.section='reconciliation';s.filters=filters;s.scope=scope;
     reconciliation ||= createReconciliationUI({...ctx,active:()=>active()&&s.section==='reconciliation',
       openRemittances:community=>{reset();s.community=community;return load();}});
-    ctx.navigate();return reconciliation.open(community,filters,scope);
+    const opening=reconciliation.open(community,filters,scope);ctx.navigate();return opening;
   }
   const can=k=>Boolean(s.permissions?.[k]);
   const labels={activa:'Activa',activo:'Activo',pendiente:'Pendiente de revision',suspendido:'Suspendido',suspendida:'Suspendida',

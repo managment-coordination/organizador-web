@@ -146,7 +146,15 @@ def tabular(encoded, filename, mapping=None, options=None):
     return {'rows':rows,'errors':errors,'headers':parsed['headers']}
 
 
-def xml_statement(raw, profile):
+def selected_block(blocks, options):
+    if not blocks or len(blocks)>200:raise ContractError('Entre 1 y 200 bloques de cuenta por archivo.')
+    index=(options or {}).get('block_index')
+    if index is None:return None
+    if type(index) is not int or not 0<=index<len(blocks):raise ContractError('Selecciona un bloque de cuenta valido.')
+    return index
+
+
+def xml_statement(raw, profile, options=None):
     from pathlib import Path
     from lxml import etree
     from .banking_adapter import parse_xml
@@ -162,9 +170,11 @@ def xml_statement(raw, profile):
     n={'n':ns}
     def find(node,path):return node.findtext(path,default='',namespaces=n)
     blocks=root.findall('.//n:Stmt',n) if profile.startswith('camt.053') else root.findall('.//n:Ntfctn',n)
-    if len(blocks)!=1:
-        raise ContractError('Importa un solo bloque de cuenta cada vez.')
-    block=blocks[0];rows=[]
+    manifest=[{'index':i,'label':'Cuenta ****'+find(b,'n:Acct/n:Id/n:IBAN')[-4:]+' · Bloque '+str(i+1)} for i,b in enumerate(blocks)]
+    index=selected_block(blocks,options)
+    if index is None and len(blocks)>1:return {'rows':[],'errors':[],'blocks':manifest,'requires_block':True}
+    index=0 if index is None else index
+    block=blocks[index];rows=[]
     for i,entry in enumerate(block.findall('n:Ntry',n)):
         a=entry.find('n:Amt',n)
         if a is None or a.attrib.get('Ccy')!='EUR':
@@ -215,10 +225,35 @@ def xml_statement(raw, profile):
             'opening_cents':balances['OPBD']['amount_cents'],'closing_cents':balances['CLBD']['amount_cents'],
             'balance_type':'booked','complete':bool(profile.startswith('camt.053') and whole_days),
             'interval_from':interval_from or None,'interval_to':interval_to or None}
-    return {'rows':rows,'errors':[],'account_iban':find(block,'n:Acct/n:Id/n:IBAN'), 'coverage':coverage}
+    return {'rows':rows,'errors':[],'account_iban':find(block,'n:Acct/n:Id/n:IBAN'), 'coverage':coverage,
+            'blocks':manifest,'block_index':index}
 
 
 def norm43(raw, options):
+    lines=raw.decode(options.get('encoding','latin-1')).splitlines()
+    if any(len(line)!=80 for line in lines):raise ContractError('Cuaderno 43: registros de 80 caracteres requeridos.')
+    blocks=[];current=[]
+    for line in lines:
+        kind=line[:2]
+        if kind=='11':
+            if current:raise ContractError('Cuaderno 43: falta cierre del bloque anterior.')
+            current=[line]
+        elif kind=='88':
+            if current:raise ContractError('Cuaderno 43: cierre de archivo dentro de un bloque.')
+        else:
+            if not current:raise ContractError('Cuaderno 43: registro fuera de un bloque de cuenta.')
+            current.append(line)
+            if kind=='33':blocks.append(current);current=[]
+    if current:raise ContractError('Cuaderno 43 incompleto.')
+    manifest=[{'index':i,'label':'Cuenta ****'+b[0][16:20]+' · Bloque '+str(i+1)} for i,b in enumerate(blocks)]
+    index=selected_block(blocks,options)
+    if index is None and len(blocks)>1:return {'rows':[],'errors':[],'blocks':manifest,'requires_block':True}
+    index=0 if index is None else index
+    result=norm43_block(('\n'.join(blocks[index])).encode(options.get('encoding','latin-1')),options)
+    return {**result,'blocks':manifest,'block_index':index}
+
+
+def norm43_block(raw, options):
     lines=raw.decode(options.get('encoding','latin-1')).splitlines();rows=[];head=None;tail=None
     for i,line in enumerate(lines):
         if len(line)!=80:
@@ -284,5 +319,7 @@ def parse(payload):
         raw=decode_file(payload.get('content_base64'))
         if profile=='tabular-v1':result=tabular(payload['content_base64'],payload['filename'],payload.get('mapping'),payload.get('options'))
         elif profile=='cuaderno43-v1':result=norm43(raw,payload.get('options') or {})
-        else:result=xml_statement(raw,profile)
-    return {**result,'profile':profile,'source_hash':hashlib.sha256(raw).hexdigest()}
+        else:result=xml_statement(raw,profile,payload.get('options') or {})
+    file_hash=hashlib.sha256(raw).hexdigest()
+    source_hash=hashlib.sha256(canonical_json({'file_hash':file_hash,'profile':profile,'block_index':result['block_index']}).encode()).hexdigest() if len(result.get('blocks',[]))>1 and not result.get('requires_block') else file_hash
+    return {**result,'profile':profile,'source_hash':source_hash,'file_hash':file_hash}

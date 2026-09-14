@@ -7,7 +7,7 @@ import json
 from access_control import permission, profile
 from .banking_service import BankingService
 from .banking_tabular import masked_cell
-from .contracts import Actor, CommandEnvelope, canonical_json
+from .contracts import Actor, CommandEnvelope, QueryEnvelope, canonical_json
 from .errors import ContractError, ConflictError, NotFoundError
 from .outbox import enqueue
 from .receivables_contracts import cents, day, identity, require_fields, text
@@ -20,7 +20,8 @@ CAPABILITIES = frozenset(('read','import','propose','confirm','manage_outflows',
 COMMANDS = frozenset('erp5.'+x for x in ('permissions.save','statement.analyze','statement.preview',
     'statement.confirm','statement.remap','match.preview','match.confirm','match.reverse','opening.confirm',
     'closure.preview','closure.confirm','closure.reopen','pending.assign','transfer.preview','transfer.confirm',
-    'movement.correct','legacy.preview','legacy.confirm','transfer.complete_preview','transfer.complete_confirm','report.export','source.preview','source.confirm','profile.save'))
+    'movement.correct','legacy.preview','legacy.confirm','transfer.complete_preview','transfer.complete_confirm','report.export','source.preview','source.confirm','profile.save',
+    'fact.reverse_preview','fact.reverse_confirm'))
 QUERIES = frozenset(('workspace.get','movement.list','movement.get','statement.get','balances.get',
                     'proposals.get','closure.list','transfer.list','permissions.get','report.get','facts.list','source.status','profile.list'))
 
@@ -157,6 +158,7 @@ class ReconciliationService(ReconciliationOperations, BankingService):
             items=[]
             for kind,table in (('collection','erp_cobros'),('return','erp_devoluciones'),('refund','erp_reintegros'),('outflow','erp_tesoreria_salidas')):
                 for r in conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? ORDER BY id DESC',(q.community_id,)):
+                    if kind=='outflow' and conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones WHERE id_comunidad=? AND outflow_id=?',(q.community_id,r['id'])).fetchone():continue
                     if kind=='outflow':correct=r['treasury_id']==account
                     else:
                         related=r if kind=='collection' else conn.execute('SELECT * FROM erp_cobros WHERE id_comunidad=? AND id=?',(q.community_id,r['collection_id'])).fetchone()
@@ -188,9 +190,12 @@ class ReconciliationService(ReconciliationOperations, BankingService):
         return self._read(session,q,'read',op)
 
     def statement_analyze(self,session,env):
+        self._read(session,QueryEnvelope('erp5.statement.analyze',env.community_id,{}),'import',
+                   lambda conn,q:self._account(conn,q.community_id,env.payload['treasury_id']))
+        result=parse(env.payload)
         def op(conn,actor,e,now):
             self._account(conn,e.community_id,e.payload['treasury_id'])
-            result=parse(e.payload)
+            if 'blocks' in result:return {'blocks':result['blocks'],'requires_block':bool(result.get('requires_block'))}
             if 'headers' not in result:raise ContractError('Este formato no requiere mapeo de columnas.')
             signature=self.vault.fingerprint(e.community_id,'statement-columns',result['headers'])
             signatures=set(self.vault.fingerprints(e.community_id,'statement-columns',result['headers']).values())
@@ -296,12 +301,18 @@ class ReconciliationService(ReconciliationOperations, BankingService):
             'new_count':sum(r['action'] in ('new','book') for r in plan),'review_count':sum(r['action']=='review' for r in plan)}
 
     def statement_remap(self,session,env):
+        def original_input(conn,q):
+            row=self._row(conn,'erp_extractos_importaciones',q.community_id,env.payload['id']);self._version(row,env.expected_version)
+            if row['state']!='pendiente':raise ConflictError('El extracto confirmado no se remapea; revisa sus movimientos mediante correccion.')
+            data=self.vault.get(conn,q.community_id,row['secret_id'],'bank-statement')
+            return {**data['original'],'mapping':env.payload['mapping'],'options':env.payload['options']}
+        original=self._read(session,QueryEnvelope('erp5.statement.remap',env.community_id,{}),'import',original_input)['entity']
+        parsed=parse(original)
         def op(conn,actor,e,now):
             p=require_fields(e.payload,('id','mapping','options'))
             row=self._row(conn,'erp_extractos_importaciones',e.community_id,p['id']);self._version(row,e.expected_version)
             if row['state']!='pendiente':raise ConflictError('El extracto confirmado no se remapea; revisa sus movimientos mediante correccion.')
             data=self.vault.get(conn,e.community_id,row['secret_id'],'bank-statement')
-            original={**data['original'],'mapping':p['mapping'],'options':p['options']};parsed=parse(original)
             secret=self.vault.put(conn,e.community_id,'bank-statement',{**data,'previous_secret_id':row['secret_id'],
                 'original':original,'parsed':parsed,'coverage':original.get('coverage') or parsed.get('coverage')},now)
             conn.execute('UPDATE erp_extractos_importaciones SET secret_id=?,version=version+1 WHERE id=?',(secret,row['id']))
@@ -310,10 +321,13 @@ class ReconciliationService(ReconciliationOperations, BankingService):
         return self._write(session,env,'import',op)
 
     def statement_preview(self,session,env):
+        self._read(session,QueryEnvelope('erp5.statement.preview',env.community_id,{}),'import',
+                   lambda conn,q:self._account(conn,q.community_id,env.payload['treasury_id']))
+        parsed=parse(env.payload)
         def op(conn,actor,e,now):
             account=self._account(conn,e.community_id,e.payload['treasury_id'])
             if account['kind']!='banco':raise ContractError('Los extractos corresponden a una cuenta de banco.')
-            parsed=parse(e.payload)
+            if parsed.get('requires_block'):raise ContractError('Selecciona explicitamente el bloque de cuenta antes de revisar.')
             if parsed.get('headers') and e.payload.get('mapping') is None:raise ContractError('Mapea las columnas antes de revisar.')
             actual=self.vault.get(conn,e.community_id,account['secret_id'],'treasury-account')['iban']
             if parsed.get('account_iban') and parsed['account_iban']!=actual:raise ConflictError('El archivo corresponde a otra cuenta.')
@@ -455,6 +469,13 @@ class ReconciliationService(ReconciliationOperations, BankingService):
             result=self._movement_public(conn,q.community_id,r)
             result['history']=[{k:v for k,v in dict(c).items() if k not in ('secret_id',)} for c in conn.execute(
                 'SELECT * FROM erp_conciliacion_componentes WHERE id_comunidad=? AND movement_id=? ORDER BY id',(q.community_id,r['id']))]
+            for c in result['history']:
+                c['amount_cents']=str(c['amount_cents'])
+                c['reversed']=bool(conn.execute('SELECT 1 FROM erp_conciliacion_componentes WHERE id_comunidad=? AND reverses_id=?',(q.community_id,c['id'])).fetchone())
+                if c['kind']=='outflow':
+                    fact=self._row(conn,'erp_tesoreria_salidas',q.community_id,c['outflow_id'])
+                    c['document_pending']=not bool(self.vault.get(conn,q.community_id,fact['secret_id'],'treasury-outflow').get('document'))
+                    c['fact_rectified']=bool(conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones WHERE id_comunidad=? AND outflow_id=?',(q.community_id,fact['id'])).fetchone())
             result['imports']=[dict(x) for x in conn.execute('SELECT import_id,row_number FROM erp_banco_movimiento_evidencias WHERE id_comunidad=? AND movement_id=? ORDER BY id',
                                                            (q.community_id,r['id']))]
             return result
@@ -486,6 +507,8 @@ class ReconciliationService(ReconciliationOperations, BankingService):
                 kind=action[5:];table={'collection':'erp_cobros','return':'erp_devoluciones','refund':'erp_reintegros','outflow':'erp_tesoreria_salidas'}[kind]
                 fact=conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? AND id=?',(community,identity(c['fact_id']))).fetchone()
                 if not fact:raise NotFoundError('Hecho economico no disponible.')
+                if kind=='outflow' and conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones WHERE id_comunidad=? AND outflow_id=?',(community,fact['id'])).fetchone():
+                    raise ConflictError('La salida esta rectificada; no se acredita de nuevo.')
                 if 'currency' in fact.keys() and fact['currency']!=m['currency']:raise ConflictError('Moneda del hecho distinta al movimiento.')
                 ReceivablesService._session(conn,session,community,'read') if kind!='outflow' else self._session(conn,session,community,'read')
                 sign=1 if kind=='collection' else -1
@@ -523,6 +546,7 @@ class ReconciliationService(ReconciliationOperations, BankingService):
                             raise ConflictError('La aplicacion supera el pendiente o tiene otra moneda.')
                         responsibility=economic._choose_responsibility(conn,community,receipt['id'],m['operation_on'],allocated,allocation.get('responsibility_subjects'))
                         economic_snapshot.append({'receipt_id':receipt['id'],'version':receipt['version'],
+                            'number':masked_cell(receipt['number']),'description':masked_cell(receipt['description']),'allocated_cents':str(allocated),
                             'pending_cents':balance['pending_cents'],'responsibility':responsibility})
             elif action=='record_outflow':
                 self._session(conn,session,community,'manage_outflows')
@@ -659,16 +683,17 @@ class ReconciliationService(ReconciliationOperations, BankingService):
         def op(conn,q):
             m=self._row(conn,'erp_banco_movimientos',q.community_id,q.filters['movement_id']);private=self.vault.get(conn,q.community_id,m['secret_id'],'bank-movement')
             remain=self._remaining(conn,q.community_id,m)
-            if not remain or m['source_state']!='booked':return {'items':[],'movement':self._movement_public(conn,q.community_id,m)}
-            ReceivablesService._session(conn,session,q.community_id,'read')
             profile=conn.execute("SELECT * FROM erp_conciliacion_perfiles WHERE id_comunidad=? AND treasury_id=? AND kind='matching' ORDER BY id DESC LIMIT 1",(q.community_id,m['treasury_id'])).fetchone()
             default_window=self.vault.get(conn,q.community_id,profile['secret_id'],'reconciliation-profile')['config']['window_days'] if profile else 7
             window=q.filters.get('window_days',default_window)
             if type(window) is not int or not 0<=window<=90:raise ContractError('Ventana de fechas entre 0 y 90 dias.')
+            if not remain or m['source_state']!='booked':return {'items':[],'movement':self._movement_public(conn,q.community_id,m),'window_days':window,'engine_version':'erp5-match-v3'}
+            ReceivablesService._session(conn,session,q.community_id,'read')
             items=[]
             if remain<0:
                 for kind,table in (('return','erp_devoluciones'),('refund','erp_reintegros'),('outflow','erp_tesoreria_salidas')):
                     for fact in conn.execute(f'SELECT * FROM {table} WHERE id_comunidad=? AND amount_cents=? ORDER BY id',(q.community_id,abs(m['amount_cents']))):
+                        if kind=='outflow' and conn.execute('SELECT 1 FROM erp_tesoreria_rectificaciones WHERE id_comunidad=? AND outflow_id=?',(q.community_id,fact['id'])).fetchone():continue
                         related=None if kind=='outflow' else conn.execute('SELECT * FROM erp_cobros WHERE id_comunidad=? AND id=?',(q.community_id,fact['collection_id'])).fetchone()
                         correct=fact['treasury_id']==m['treasury_id'] if kind=='outflow' else related and related['treasury_reference']=='erp4-treasury:'+str(m['treasury_id'])
                         if not correct or abs((date.fromisoformat(fact['effective_on'])-date.fromisoformat(m['operation_on'])).days)>window:continue

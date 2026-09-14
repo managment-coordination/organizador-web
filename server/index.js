@@ -3792,6 +3792,10 @@ def economic_freshness(query_domain, sources):
             ("Informes contables actualizados", max_source_date("informes_contables", "fecha_ultima_actualizacion") or max_source_date("informes_contables", "fecha_creacion")),
         ],
     }
+    bank_sources = [source for source in (sources or []) if source.get("table") == "erp5.bank.period"]
+    if bank_sources:
+        source_dates.pop("cf_extractos_banco_lineas", None)
+        source_dates["erp5.bank.period"] = [("Cobertura bancaria ERP 5 revisada", source.get("coverage_until") or "") for source in bank_sources]
     details = []
     for table, table_dates in source_dates.items():
         for label, value in table_dates:
@@ -4313,7 +4317,7 @@ def handle_accounting_query():
             {"label": "Recibos emitidos", "value": ingresos_emitidos},
             {"label": "Cobros registrados", "value": cobros},
             {"label": "Gastos devengados", "value": money(gastos_devengados)},
-            {"label": "Saldo final banco", "value": money(saldo_fin["saldo"]) if saldo_fin else "No disponible"},
+            {"label": "Saldo final banco", "value": bank_end_display},
         ],
         "tables": [{
             "title": "Magnitudes del periodo",
@@ -4330,7 +4334,7 @@ def handle_accounting_query():
                 {"Concepto": "Saldo banco final", "Importe": bank_end_display},
             ],
         }],
-        "note": totals["note"] + " Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
+        "note": totals["note"] + " " + bank_note + " Lectura automatica de la base actual. Para valor de acta conviene generar el informe economico completo y revisar descuadres.",
     }
     bank_refs = [{"module":"bancos_remesas","table":"erp5.bank.period","description":bank_note,"coverage_until":end if bank_source['complete'] else None}] if bank_source else source_refs("bank_lines")
     return response(answer, 0.83, facts={"fecha_desde": start, "fecha_hasta": end}, display=display, sources=source_refs("expense_invoices") + bank_refs + [{"module":"ingresos_recibos","table":"erp3.period.summary","description":"Movimientos ERP y observaciones historicas separados"}], data_status="incompleto" if totals["note"] or (bank_source and not bank_source['complete']) else "inferido", query_domain="contabilidad")
