@@ -5,10 +5,11 @@ Seguimiento: [roadmap ERP](ERP_COMUNIDADES_ROADMAP.md).
 
 ## Estado de continuidad
 
-Diseno cerrado 100%. Implementacion **75% certificado**, DESARROLLO.
-5A migracion/adaptadores, 5B servicios/integracion y 5C recorrido funcional
-tienen 25/25 cada uno, con evidencia registrada debajo. 5D aceptacion final,
-publicacion y recuperacion productiva sigue abierto. Produccion no modificada por ERP 5.
+Diseno cerrado 100%. Implementacion **100% certificado**, COMPLETADO.
+5A migracion/adaptadores, 5B servicios/integracion, 5C recorrido funcional
+y 5D aceptacion/regresion/publicacion/recuperacion tienen 25/25 cada uno.
+Cierre tecnico con escenarios sinteticos y copias controladas; no significa
+activacion de cuentas/fuentes reales ni autorizacion de operativa bancaria real.
 No iniciar ERP 6 ni habilitar operativa bancaria real.
 
 ## Checkpoint y recuperacion
@@ -23,10 +24,13 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
   Restauracion de avance con migracion 20 verificada: `erp0-backup-20260914-130311`,
   restore `verification/organizador-erp0-restore-derxg75d`, runtime y 25 registros
   cifrados recuperados con clave sintetica separada. Recuperacion final de
-  migracion 21 y publicacion pendiente.
+  migracion 21 y publicacion verificada en la seccion de cierre.
 - Avance anterior: `081b623fe5339faab4a2c18247b79af25c3e8989`,
   `erp5-progress-domain-web-20260914`. Nuevo checkpoint se registra en Git
-  bajo `erp5-progress-acceptance-20260914`; no sustituye el backup de datos.
+  bajo `erp5-progress-acceptance-20260914` (`cb5ac04`); no sustituye el backup de datos.
+- Codigo publicado: `2a970157e0782ad32ce7b6765a30b16d86272adc`, checkpoint
+  `erp5-pre-publication-20260914`. Cierre documental/test de smoke:
+  `erp5-completed-20260914` (resoluble en Git, sin hash autorreferente).
 - Trabajo aislado Ubuntu: `backups/erp5-work-20260914`. Nunca desplegar
   esta carpeta sobre produccion sin cerrar aceptacion.
 
@@ -58,14 +62,16 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
 
 ## Evidencia ejecutada
 
-- Fundamentos: **58/58** Ubuntu, 196,018 s, carpeta
-  `verification/organizador-erp5-foundations-6ypmzc0x`. Integridad/FK verificadas
+- Fundamentos finales: **58/58** Ubuntu, 185,156 s, carpeta
+  `backups/stage-erp4-20260914-141003/verification/organizador-erp5-foundations-17fnzme9`.
+  Ejecucion anterior 58/58, 196,018 s, `organizador-erp5-foundations-6ypmzc0x`.
+  Integridad/FK verificadas
   al terminar cada caso; incluye rectificaciones, bloqueo economico,
   autorizacion revocada entre preview/confirm y parseo fuera del bloqueo de escritura.
 - Adaptadores: **22/22** Ubuntu, incluido Excel numerico/textual, XLS/formulas,
   camt inconsistente y seleccion explicita de cuenta en archivos multibloque.
-- Integracion ERP 3/4: casos 01-13 correctos en la ultima ejecucion; caso 14
-  (remesa sin detalle fiable) verificado focalmente con el nuevo runtime, 5,920 s.
+- Integracion final ERP 3/4: **15/15**, 107,823 s, con el runtime ERP 5.
+  Incluye remesa sin detalle fiable y enmascarado de texto libre de candidatos.
   El primer intento del caso 14 utilizaba un resultado inexistente y esperaba
   otra clase de error; corregida la fixture para representar ausencia de detalle,
   sin modificar el dominio para hacer pasar la prueba. Gate final ejecutara el conjunto.
@@ -94,7 +100,7 @@ No iniciar ERP 6 ni habilitar operativa bancaria real.
   nuevamente: hashes de 207 tablas anteriores intactos, integridad y cero FK.
 
 La matriz siguiente identifica evidencia por criterio, no por conteos.
-A63 sigue abierto: no afirmar aceptacion final ni publicacion completadas.
+Aceptacion A01-A64 completada con la publicacion/recuperacion y smoke registrados.
 
 ## Decisiones tecnicas y mejoras autonomas
 
@@ -120,7 +126,8 @@ A63 sigue abierto: no afirmar aceptacion final ni publicacion completadas.
   `/home/coordinador/.local/share/organizador-web/erp5-runtime`.
   Dependencias fijadas en `server/requirements-erp5.txt`; xlwt 1.3.0 solo para
   fixtures XLS. Gate/publicacion reutiliza `deploy-erp4-release.py --reconciliation`.
-  Ningun cambio de runtime/configuracion productiva aplicado todavia.
+  Publicacion configura solo ERP4_PYTHON_BIN al runtime ERP 5; conserva el
+  runtime ERP 4 para rollback y todas las puertas de activacion real en cero.
 - MEJORA AUTONOMA IMPLEMENTADA: enmascarar tambien numero/descripcion de
   recibos y numeros de aplicaciones en la lista de candidatos bancarios;
   prueba I15 con texto IBAN sintetico conserva el recibo original sin alterarlo.
@@ -136,7 +143,7 @@ A63 sigue abierto: no afirmar aceptacion final ni publicacion completadas.
 
 `Cnn`: `verify-erp5-foundations.py`; `Inn`: `verify-erp5-remittances.py`;
 `Dnn`: `verify-erp5-adapters.py`. Numeros corresponden al prefijo del caso.
-OK significa prueba ejecutada; no convierte automaticamente 5D en completado.
+OK significa prueba ejecutada. 5D se cierra por la evidencia adicional de publicacion.
 
 | Criterio | Evidencia | Estado |
 |---|---|---|
@@ -195,26 +202,60 @@ OK significa prueba ejecutada; no convierte automaticamente 5D en completado.
 | A53 | C10 fondos intactos al desconciliar | OK |
 | A54 | C45-47 rectificaciones explicitas | OK |
 | A55 | C19/34 e I15 cifrado, texto libre enmascarado, canales privados | OK |
-| A56 | C42 rotacion; restauracion de avance de 25 secretos | OK; final pendiente |
+| A56 | C42 rotacion; restauracion de 30 secretos y recuperacion DPAPI | OK |
 | A57 | verify-erp5-plans.py, proof 1d_rrkgd | OK |
 | A58 | C43 inbox simulado; sin ERP 6 | OK |
 | A59 | C43 evidencia no duplica dinero | OK |
 | A60 | C21/22/46 eventos por extremos acreditados | OK |
 | A61 | C49 y verify-erp5-bulk-ui.mjs, 52 en dos paginas | OK |
 | A62 | FqXhBI/G7fYFz, login, division, confirmacion, cierre/contextos | OK |
-| A63 | Backup de migracion 21, gate final, publicacion y smoke | PENDIENTE |
-| A64 | regression-ci26w7dl, ERP 0-4/planes; pruebas nuevas focalizadas | OK; gate final pendiente |
+| A63 | Backups 141922/142113 restaurados, 30 secretos sinteticos, publicacion y smoke | OK |
+| A64 | regression-ci26w7dl completa y gate final del paquete 2a97015 | OK |
 
-## Pendientes exactos para cierre
+## Cierre y publicacion
 
-1. Checkpoint de avance 75%, backup/restauracion de migracion 21 con clave
-   sintetica separada mediante `verify-erp5-recovery.py` y runtime nuevo.
-2. Gate final con el archivo del checkpoint: regresion ERP 0-4/planes, suites
-   ERP 5 completas y comprobaciones HTTP/UI, sin activar banca real.
-3. Solo despues: publicacion mediante procedimiento existente, backup previo
-   independiente, hashes historicos/FK, smoke Ubuntu y backup/restauracion final.
-4. Registrar prueba de publicacion/recuperacion en A63, checkpoint de cierre,
-   actualizar porcentaje a 100% exclusivamente despues de obtener evidencia.
+- Paquete Git del codigo `2a97015`, publicacion mediante el procedimiento
+  existente `deploy-erp4-release.py --quota-plans --reconciliation --publish`.
+  La candidata anterior se detuvo antes de produccion; no reutilizarla como
+  una publicacion exitosa ni repetir sus pruebas como evidencia final.
+- Gate final: ERP 0; ERP 1 (26); ERP 2 integral y motor (14); planes (20);
+  ERP 3 (42); SEPA (17); ERP 4 seis casos criticos tras la regresion completa
+  previa de 92 casos; ERP 5 58/22/15; HTTP y tres pruebas focales UI.
+  No afirmar que los seis casos finales son una nueva ejecucion de los 92.
+- Fuente/migracion conserva hashes de 206 tablas de negocio existentes
+  (el gate excluye las dos tablas de metadatos de migracion).
+- Backup productivo previo independiente:
+  `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260914-141922`.
+  Restore: `backups/stage-erp4-20260914-141003/verification/organizador-erp0-restore-vjheznfs`:
+  208 tablas, runtime accesible e integridad correcta.
+- Backup productivo posterior:
+  `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260914-142113`.
+  Restore: `backups/stage-erp4-20260914-141003/verification/organizador-erp0-restore-4exixhal`:
+  229 tablas, runtime accesible, SQLite/FK correctas e historicos equivalentes.
+  Prueba completa en `erp4-publication-proof.json` dentro de este backup;
+  contiene explicitamente `bank_reconciliation=true` y las puertas reales en cero.
+- Smoke sobre la aplicacion entregada en localhost y Tailscale:
+  `verify-erp5-postrelease.mjs`: health, UI ERP 5 entregada, sintaxis de los
+  scripts inline y denegacion 401 de rutas bancarias/recibos/comunidad ajena.
+  Servicio `organizador-web.service` activo.
+- Smoke economico POST publicacion sobre copias del backup posterior, con
+  codigo/runtime publicados: C16/C26/C13, 3/3 en 9,374 s; I01/I08, 2/2 en
+  13,938 s. Cierre/reapertura, devolucion, permisos, liquidacion y doble
+  llegada de resultados correctos, sin movimientos economicos en produccion.
+- Pruebas antiguas terminadas `organizador-erp5-foundations-fe7jn4z0`
+  conservadas en el archivo privado homonimo `.tar.gz`, contenido comparado
+  antes de liberar la carpeta temporal. SHA256:
+  `d2986b0921357a45695ad40f6143d4e6b29fc09c0feb445579e96d5ce25dc982`.
+  No eliminar backups previos/posteriores ni claves para liberar espacio.
+
+## Pendiente de puesta en servicio
+
+Sin bloques funcionales pendientes dentro del contrato ERP 5. Configurar y
+acreditar por comunidad cuentas, perfiles/mapeos, permisos, fuente rectora,
+corte/cobertura/saldos; HTTPS, custodia organizativa y retencion. Revisar
+capacidad/retencion de copias de prueba. El agregador y la automatizacion
+economica desatendida quedan fuera del alcance aprobado. ERP 6 puede pasar
+a cierre de su contrato, sin comenzar su implementacion automaticamente.
 
 ## Seguridad de puesta en servicio
 
