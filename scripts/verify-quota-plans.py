@@ -156,6 +156,16 @@ checks.append('regularizacion aprobada y materializada mediante ERP3, originales
 future={**manual,'plan_id':m['id'],'effective_from':'2028-04-01','amount_cents':'5000000'}
 future_version,_=plan(future,2);assert not future_version['regularization_required']
 checks.append('version futura no exige regularizacion de recibos anteriores')
+unissued=command('erp2.regularization.preview',{'id_plan':m['id'],'emitted_source':'erp3','coverage_start':'2028-04-01','coverage_end':'2028-04-30','cutoff_date':'2028-04-05','reason':'Synthetic unissued period'})['entity']
+assert all(int(l['net_emitted_cents'])==0 for l in unissued['lines'])
+command('erp2.regularization.approve',{'id_regularizacion':unissued['id_regularizacion'],'confirm_pending_recipients':True},1,evidence=evidence)
+conn=sqlite3.connect(database)
+period=conn.execute('SELECT clave_periodo FROM erp_plan_periodos WHERE id_plan_version=? AND fecha_inicio=\'2028-04-01\'',(future_version['calculation_version_id'],)).fetchone()[0]
+conn.close()
+try:command('erp3.emission.preview',{'plan_version_id':future_version['calculation_version_id'],'period_keys':[period],'property_ids':[unissued['lines'][0]['property_id']],'issued_on':'2028-04-05'})
+except ConflictError as error:assert 'regularizacion' in str(error)
+else:raise AssertionError('A regularized unissued period was charged again')
+checks.append('regularizacion de periodo no emitido bloquea un nuevo cargo completo duplicado')
 listed=query('erp2.quota_plan.list',{'effective_at':'2028-01-01'})['entity']
 assert listed['references']['groups'] and any(x['id']==m['id'] and x['active'] for x in listed['items'])
 conn=sqlite3.connect(database);conn.row_factory=sqlite3.Row

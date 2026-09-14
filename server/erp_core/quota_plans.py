@@ -59,7 +59,7 @@ class QuotaPlanService(ReceivablesService):
             'origin_type':p['origin_type'],'effective_from':start,'effective_until':end,'plan_id':plan_id,
             'previous_version':version}
         if p['origin_type']=='presupuesto':
-            b=budget._budget(conn,community,identity(p['budget_id']))
+            b=budget._budget(conn,community,identity(p.get('budget_id')))
             if b['estado']!='aprobado' or b['id_ejercicio']!=exercise['id_ejercicio']:raise ConflictError('Selecciona un presupuesto aprobado del ejercicio.')
             base=conn.execute('''SELECT p.id_plan,v.* FROM erp_planes_cuota p JOIN erp_plan_versiones v ON v.id_plan=p.id_plan
                 WHERE p.id_comunidad=? AND p.origen_tipo='presupuesto' AND p.origen_id=? AND v.estado='aprobada' ORDER BY v.version DESC LIMIT 1''',

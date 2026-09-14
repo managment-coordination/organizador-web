@@ -270,6 +270,16 @@ class ReceivablesService(AdjustmentOperations, RegularizationOperations, History
                     raise ConflictError('La ultima configuracion de obligados ha finalizado. Acredita su sucesion; no se reactiva una configuracion anterior.')
                 obligations=[self._subject(conn,community_id,{'type':s['type'],'id':s['id']}) for s in json.loads(config['subjects_json'])]
                 semantic=f"{pid}:{concept}:{period['fecha_inicio']}:{period['fecha_fin']}"
+                if configured and conn.execute('''SELECT 1 FROM erp_regularizacion_lineas l
+                    JOIN erp_regularizaciones g ON g.id_comunidad=l.id_comunidad AND g.id_regularizacion=l.id_regularizacion
+                    JOIN erp_planes_cuota op ON op.id_comunidad=g.id_comunidad AND op.id_plan=g.id_plan_esperado
+                    JOIN erp_plan_versiones v ON v.id_comunidad=op.id_comunidad AND v.id_plan=op.id_plan
+                    JOIN erp_plan_periodos d ON d.id_comunidad=v.id_comunidad AND d.id_plan_version=v.id_plan_version AND d.clave_periodo=l.periodo_clave
+                    WHERE l.id_comunidad=? AND l.id_propiedad=? AND g.estado='aprobada' AND l.diferencia_centimos<>0
+                    AND (g.id_plan_esperado=? OR (?='presupuesto' AND op.origen_tipo='presupuesto'))
+                    AND d.fecha_inicio<=? AND d.fecha_fin>=? LIMIT 1''',
+                    (community_id,pid,plan['id_plan'],configured['origen_tipo'],period['fecha_fin'],period['fecha_inicio'])).fetchone():
+                    raise ConflictError('Este periodo tiene una regularizacion aprobada. Revisa sus cargos o abonos; no emitas otra cuota completa.')
                 if configured and conn.execute('''SELECT 1 FROM erp_recibos WHERE id_comunidad=? AND id_propiedad=? AND concept_key=?
                     AND period_from<=? AND period_until>=? AND (period_from<>? OR period_until<>?)''',
                     (community_id,pid,concept,period['fecha_fin'],period['fecha_inicio'],period['fecha_inicio'],period['fecha_fin'])).fetchone():
