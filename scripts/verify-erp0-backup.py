@@ -19,7 +19,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("backup", type=Path)
 parser.add_argument("--keep", action="store_true")
 parser.add_argument("--runtime-node-modules", type=Path)
+parser.add_argument("--startup-timeout", type=int, default=6)
 args = parser.parse_args()
+if not 1 <= args.startup_timeout <= 120:
+    raise SystemExit("El plazo de arranque debe estar entre 1 y 120 segundos.")
 backup = args.backup.resolve()
 manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
 if manifest.get("format") not in {None, "erp0-backup-v1"}:
@@ -82,7 +85,8 @@ try:
         process = subprocess.Popen(["node", str(restore / "server" / "index.js")], cwd=restore,
                                    env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            for _ in range(60):
+            deadline = time.monotonic() + args.startup_timeout
+            while time.monotonic() < deadline:
                 if process.poll() is not None:
                     break
                 try:

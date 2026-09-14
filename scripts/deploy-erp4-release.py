@@ -23,6 +23,7 @@ parser.add_argument('--commit',required=True)
 parser.add_argument('--bank-python',type=Path,required=True)
 parser.add_argument('--recovery-key-sha256',required=True)
 parser.add_argument('--publish',action='store_true')
+parser.add_argument('--validated-stage',type=Path,help='Reuse the explicitly verified domain gate from a previous attempt; only banking UI/docs/test tooling may differ.')
 args=parser.parse_args()
 assert os.name=='posix' and Path.home()==Path('/home/coordinador') and APP.is_dir()
 assert re.fullmatch('[0-9a-f]{40}',args.commit)
@@ -40,7 +41,15 @@ with tarfile.open(args.archive) as bundle:
         assert not Path(member.name).is_absolute() and '..' not in parts
         assert not member.issym() and not member.islnk()
     bundle.extractall(stage,filter='data')
-subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
+if args.validated_stage:
+    prior=args.validated_stage.resolve(strict=True)
+    assert prior.parent==APP/'backups' and prior.name.startswith('stage-erp4-') and (prior/'source.db').is_file()
+    def domain_files(folder):
+        return {str(p.relative_to(folder)):hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.rglob('*') if p.is_file()
+            and not any(x in p.relative_to(folder).parts for x in ('node_modules','_python_packages','__pycache__')) and p.name!='banking-ui.js'}
+    assert domain_files(stage/'server')==domain_files(prior/'server'),'Domain changed: run the complete gate again'
+    shutil.copytree(prior/'server/node_modules',stage/'server/node_modules')
+else:subprocess.run(['npm','ci','--omit=dev','--no-audit','--no-fund'],cwd=stage/'server',check=True)
 if (APP/'server/_python_packages').exists():shutil.copytree(APP/'server/_python_packages',stage/'server/_python_packages')
 env={**os.environ,'PYTHONUTF8':'1','PYTHON_BIN':str(runtime),'ERP4_BANKING_ENABLED':'0','ERP4_HTTPS_READY':'0','ERP4_LIVE_BANKING_ENABLED':'0'}
 scratch=stage/'verification';scratch.mkdir(mode=0o700);env['TMPDIR']=str(scratch)
@@ -70,7 +79,7 @@ for script,parameters in (
         'BankingTests.test_82_bank_documents_reuse_catalogue_without_plaintext_or_generic_path',
         'BankingTests.test_83_bulk_200_domain_notifications_and_result_confirmation',
         'BankingTests.test_86_bank_partial_return_and_locked_exercise_keep_economic_boundary'])):
-    subprocess.run([str(runtime),str(stage/'scripts'/script),*parameters],cwd=stage,env=env,check=True)
+    if not args.validated_stage:subprocess.run([str(runtime),str(stage/'scripts'/script),*parameters],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-erp4-http.mjs')],cwd=stage,check=True)
 print(json.dumps({'stage_validated':str(stage),'migration_preserves_existing_tables':len(before)}),flush=True)
 if not args.publish:raise SystemExit(0)
@@ -80,7 +89,7 @@ def checkpoint(commit=None):
     if commit:command+=['--code-commit',commit]
     result=json.loads(subprocess.check_output(command,text=True,env=env))
     restored=json.loads(subprocess.check_output([str(runtime),str(stage/'scripts/verify-erp0-backup.py'),result['backup'],
-        '--keep','--runtime-node-modules',str(stage/'server/node_modules')],text=True,env=env))
+        '--keep','--startup-timeout','60','--runtime-node-modules',str(stage/'server/node_modules')],text=True,env=env))
     assert restored['runtime_accessible']
     assert signature(Path(result['backup'])/'database.db')==signature(Path(restored['restore'])/'database.db')
     return {'backup':result['backup'],'restore':restored}

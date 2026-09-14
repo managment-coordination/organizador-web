@@ -147,6 +147,15 @@ Este apartado prevalece sobre los estados parciales historicos de este documento
 
 ### Matriz A01-A50
 
+### Ajustes finales de publicacion
+
+- Candidato `d657e1887f6d1cd0b9caaa100df2d9d6561d2dbb`, tag `erp4-acceptance-candidate-20260914`: backup `backups/erp4-acceptance-candidate-20260914/erp0-backup-20260914-095701`, restore `organizador-erp0-restore-f25jb4iq`; 205 tablas, secretos, checksums, adaptador y transporte verificados.
+- Primera puerta Ubuntu detenida antes de instalar codigo: el arranque de la copia excedio la ventana de seis segundos. Servicio anterior reiniciado y activo, sin migracion productiva. Se hace configurable exclusivamente el plazo del verificador (60 segundos en despliegue). Backup previo `erp0-backup-20260914-080133` restaurado y arrancado correctamente en `/tmp/organizador-erp0-restore-tuucv3vz`; integridad correcta, 166 tablas.
+- Stage validado `stage-erp4-20260914-075805`: migracion conserva hashes de 164 tablas de negocio; ERP 0 (11), ERP 1 (26), ERP 2 (recorrido 40/16), ERP 3 (42/42), ERP 4 (seis casos economicos/documentales/masivos criticos), adaptador (17/17) y transporte correctos en Ubuntu. El reintento puede reutilizar esta evidencia solo si coincide el hash de todos los archivos backend; vuelve a migrar una copia reciente y verificar el historico. No se omiten gates por cambios de dominio.
+- MEJORA UX AUTONOMA: al cambiar de ficha se ignora el error de una peticion anterior; solo un 403 bancario explicito ofrece configuracion de permisos al superusuario. Los errores tecnicos se muestran, no se confunden con falta de permisos. `verify-erp4-ui-state.mjs` verifica los tres casos. Recorrido completo repetido correctamente en `%TEMP%/erp4-full-app-dvVaiJ`, capturas estables 1440/1920/390 inspeccionadas, sin overflow ni errores JS.
+
+### Correspondencia contractual
+
 Evidencia de dominio: numero `N` = `test_N` de `scripts/verify-erp4-foundations.py`, no numero de caso contractual. AD = `verify-erp4-adapter.py`; HTTP = `verify-erp4-http.mjs`; WEB = recorrido masivo anterior; APP = recorrido completo Ubuntu anterior. Todas las filas acreditan alcance tecnico sintetico/controlado. A40/A44 se completan ademas con restauracion/regresion de publicacion; ningun caso acredita aceptacion comercial por un PSP real.
 
 | Caso | Evidencia verificable |

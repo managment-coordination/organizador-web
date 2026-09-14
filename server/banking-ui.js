@@ -56,7 +56,13 @@ function createBankingUI(ctx) {
       if(token!==generation)return;
       if(!s.status.available)return;
       try{const workspace=await q('workspace.get');s.permissions=workspace.permissions;s.counts=workspace.counts;s.liveEnabled=workspace.live_enabled;}
-      catch(error){if(ctx.isSuperuser?.()){s.permissionUsers=(await q('permissions.get')).users;s.section='settings';s.permissions={};return;}throw error;}
+      catch(error){
+        if(token!==generation)return;
+        if(ctx.isSuperuser?.()&&error.status===403&&error.message==='No tienes permiso para esta operacion bancaria.'){
+          s.permissionUsers=(await q('permissions.get')).users;s.section='settings';s.permissions={};return;
+        }
+        throw error;
+      }
       s.creditors=(await q('creditor.list')).items;
       s.documents=await all('document.list');
       if(s.section==='remittances')s.list=await q('remittance.list',{...s.filters,offset:s.offset,limit:50});
