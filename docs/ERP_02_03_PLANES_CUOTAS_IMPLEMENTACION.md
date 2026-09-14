@@ -5,8 +5,9 @@ Referencia: [roadmap ERP](ERP_COMUNIDADES_ROADMAP.md), contratos [ERP 2](ERP_02_
 
 ## Estado y checkpoint
 
-Implementacion en PRUEBAS; cierre/publicacion pendientes. No atribuir 100% por el codigo.
+Implementacion COMPLETADA, 100% certificado: migracion, dominio, recorrido integrado y aceptacion/publicacion/restauracion acreditados. Los porcentajes certificados ERP 2/3/4 no cambian.
 Checkpoint previo `planes-cuotas-pre-20260914`, commit `8187e279e245804802e8cf3565ff8f9f43067679`.
+Checkpoints de avance `planes-cuotas-progress-20260914` (`fac8364`), revision UX `5c992ab`, proteccion de regularizaciones `aeba91a`; codigo final publicado `b2329cdb13d4d003f9557c620d87563bfa5e1cd5`. Checkpoint de cierre `planes-cuotas-completed-20260914` incluye esta documentacion.
 Backup independiente Ubuntu:
 `/home/coordinador/apps/organizador-web/backups/planes-cuotas-pre-20260914/erp0-backup-20260914-095239`.
 Restauracion previa verificada: 205 tablas, integridad, FK y arranque; copia local `backups/planes-cuotas-pre-20260914.db`.
@@ -44,6 +45,7 @@ La fuente/corte economico se acredita con el servicio de cobertura ERP 3 existen
 - Una propuesta se vuelve a validar completa antes de confirmar: cambios de estado, maestros, destinatarios o recibos impiden confirmar una revision obsoleta.
 - Composicion transaccional verifica que la conexion compartida corresponde a la misma base de datos.
 - La firma de regularizacion incorpora el resultado calculado para distinguir versiones economicas con las mismas propiedades/periodos.
+- Una regularizacion aprobada no nula sobre un periodo todavia no emitido bloquea la posterior emision de la cuota completa superpuesta: evita duplicar el cargo sin compensaciones silenciosas. Requiere revisar los cargos/abonos existentes.
 - Cero recibos nuevos aparece como `0`, no como celda vacia; volver a editar conserva campos y reconfigura las opciones visibles.
 
 ## Evidencia de pruebas
@@ -54,14 +56,17 @@ Reintento y segunda revision sin duplicados; fallo inyectado en segundo plan rev
 
 `verify-quota-plans-web.mjs`: shell completo, login real, puente ERP, crear/corregir/confirmar/desactivar, 56 recibos y reemision cero; capturas escritorio 1440/1920 y movil 390/360 sin desbordamiento horizontal. Capturas inspeccionadas, sin errores JavaScript.
 ERP 0, ERP 1, ERP 2 completo y motor ERP 2B: regresiones locales correctas.
-Regresion completa ERP 3/4 local interrumpida por espacio temporal (no fallo de dominio): repetir en copia Ubuntu antes de publicar; no certificar ejecuciones incompletas.
+La regresion local ERP 3/4 se interrumpio por espacio temporal; no se cuenta como superada. Se completo en copias Ubuntu: ERP 3 42/42 y ERP 4 92/92. Tras la ultima proteccion de regularizaciones se repitieron ERP 0/1/2, motor 2B, las 20 comprobaciones agrupadas de planes, ERP 3 42/42, seis casos bancarios criticos, adaptador SEPA 17/17 y seguridad HTTP. Las 92 pruebas bancarias completas corresponden a la puerta anterior, no a una supuesta segunda ejecucion completa final.
+Recorrido web revalidado contra shell y puente reales de Ubuntu aislado: Fuente de emision, correccion de propuesta, guardado, desactivacion, 56 recibos y segunda revision cero; cuatro anchuras sin desbordamiento ni errores JavaScript.
 
-## Pendientes exactos de cierre
+## Publicacion y restauracion verificadas
 
-1. Ejecutar las pruebas ampliadas y regresion completa ERP 0-4 en staging Ubuntu; verificar preservacion de todas las tablas existentes al migrar.
-2. Revalidar navegador con el codigo final y publicar solo tras superar las puertas de seguridad.
-3. Checkpoint final, backup posterior y restauracion aislada; smoke de Ubuntu, rutas, autorizacion e integridad.
-4. Sustituir este estado por la evidencia final y actualizar roadmap sin modificar porcentajes certificados ERP 2/3/4.
+Staging final: `/home/coordinador/apps/organizador-web/backups/stage-erp4-20260914-102620`. La migracion conserva las 203 tablas de negocio anteriores; las dos tablas de metadatos de migracion se verifican por separado.
+Publicacion Ubuntu, servicio independiente `organizador-web.service`, puerto 8771. Smoke: health, interfaz, rutas ERP 3/4 sin sesion rechazan con 401, integridad SQLite y FKs correctas, historicos preservados. No se toca UNO Marbella.
+Backup previo a publicar: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260914-103058`; restauracion aislada `verification/organizador-erp0-restore-kbqd7d72`, 205 tablas y arranque correcto.
+Backup posterior: `/home/coordinador/apps/organizador-web/backups/erp0-backup-20260914-103255`; restauracion aislada `verification/organizador-erp0-restore-h5nxlqy7`, 208 tablas y arranque correcto. Ambos directorios de restauracion estan dentro del staging final; firmas de datos coinciden con sus backups.
+Evidencia estructurada: `erp4-publication-proof.json` dentro del backup posterior; codigo `b2329cd`, integridad/FK e historicos correctos, planes activos disponibles y operativa bancaria real deshabilitada.
+Sin pendientes funcionales de esta ampliacion. Para usarla en una comunidad real siguen siendo necesarios permisos, fuente/corte de emision y obligados acreditados; no se inventan ni activan datos reales. Limpiar espacio temporal del PC queda como mantenimiento del entorno, no defecto del dominio.
 
 ## Restauracion y limites
 
