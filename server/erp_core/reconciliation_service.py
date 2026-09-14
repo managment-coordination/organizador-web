@@ -175,7 +175,7 @@ class ReconciliationService(ReconciliationOperations, BankingService):
                     ON r.id_comunidad=a.id_comunidad AND r.id=a.receipt_id WHERE a.id_comunidad=? AND a.collection_id=? AND a.reverses_id IS NULL''',(q.community_id,r['id'])):
                     reversed_total=sum(x[0] for x in conn.execute('SELECT amount_cents FROM erp_imputaciones WHERE id_comunidad=? AND reverses_id=?',(q.community_id,a['id'])))
                     remaining=a['amount_cents']-reversed_total
-                    if remaining>0:allocations.append({'id':a['id'],'number':a['number'],'remaining_cents':str(remaining)})
+                    if remaining>0:allocations.append({'id':a['id'],'number':masked_cell(a['number']),'remaining_cents':str(remaining)})
                 collections.append({'id':r['id'],'effective_on':r['effective_on'],'amount_cents':str(r['amount_cents']),
                     'available_cents':collection_balance(conn,q.community_id,r['id'])['available_cents'],
                     'beneficiary':{'type':'owner','id':payer['payer_owner_id']} if payer['payer_owner_id'] else {'type':'person','id':payer['payer_person_id']} if payer['payer_person_id'] else None,
@@ -184,7 +184,7 @@ class ReconciliationService(ReconciliationOperations, BankingService):
             receipts=[]
             for r in conn.execute('SELECT * FROM erp_recibos WHERE id_comunidad=? ORDER BY issued_on DESC,id DESC',(q.community_id,)):
                 b=receipt_balance(conn,q.community_id,r['id'])
-                if int(b['pending_cents']):receipts.append({'id':r['id'],'number':r['number'],'description':r['description'],'pending_cents':b['pending_cents']})
+                if int(b['pending_cents']):receipts.append({'id':r['id'],'number':masked_cell(r['number']),'description':masked_cell(r['description']),'pending_cents':b['pending_cents']})
             return {'items':items[:200],'receipts':receipts[:200],'collections':collections[:200],
                 'truncated':len(items)>200 or len(receipts)>200 or len(collections)>200}
         return self._read(session,q,'read',op)

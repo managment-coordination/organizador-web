@@ -206,6 +206,24 @@ class RemittanceIntegrationTests(bank['BankingTests']):
         self.assertEqual(before,{r[0]:receipt_balance(self.conn,self.community,r[0])['pending_cents'] for r in receipts})
         self.assertEqual(self.reconciliation.movement_get(self.session,QueryEnvelope('erp5.movement.get',self.community,{'id':mid}))['entity']['remaining_cents'],'20000')
 
+    def test_integration_15_candidate_free_text_masks_bank_identifiers_without_changing_receipt(self):
+        p,_=self.remittance_setup()
+        original=dict(self.conn.execute('SELECT * FROM erp_recibos WHERE id=?',(p['receipt_ids'][0],)).fetchone())
+        iban='ES9121000418450200051332'
+        # An independent synthetic read-model fixture; no confirmed receipt is edited.
+        candidate={k:v for k,v in original.items() if k!='id'}
+        candidate.update(number='SYNTHETIC '+iban,description='Synthetic payment '+iban,source_key='synthetic-sensitive-label')
+        with self.conn:
+            columns=list(candidate)
+            receipt=self.conn.execute('INSERT INTO erp_recibos('+','.join(columns)+') VALUES ('+','.join('?' for _ in columns)+')',list(candidate.values())).lastrowid
+        self.synthetic_receipts.add(receipt)
+        treasury=self.conn.execute('SELECT treasury_id FROM erp_acreedor_versiones WHERE id_comunidad=? LIMIT 1',(self.community,)).fetchone()[0]
+        facts=self.reconciliation.facts_list(self.session,QueryEnvelope('erp5.facts.list',self.community,{'treasury_id':treasury}))['entity']
+        visible=next(r for r in facts['receipts'] if r['id']==receipt)
+        self.assertNotIn(iban,visible['number']);self.assertNotIn(iban,visible['description'])
+        stored=self.conn.execute('SELECT number,description FROM erp_recibos WHERE id=?',(receipt,)).fetchone()
+        self.assertIn(iban,stored['number']);self.assertIn(iban,stored['description'])
+
     def test_integration_13_partial_and_multiple_bank_entries_for_one_receipt(self):
         from erp_core.receivables_projection import receipt_balance
         p,_=self.remittance_setup();receipt=p['receipt_ids'][0]

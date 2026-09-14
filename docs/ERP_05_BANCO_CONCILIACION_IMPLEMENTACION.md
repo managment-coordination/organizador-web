@@ -121,6 +121,16 @@ A63 sigue abierto: no afirmar aceptacion final ni publicacion completadas.
   Dependencias fijadas en `server/requirements-erp5.txt`; xlwt 1.3.0 solo para
   fixtures XLS. Gate/publicacion reutiliza `deploy-erp4-release.py --reconciliation`.
   Ningun cambio de runtime/configuracion productiva aplicado todavia.
+- MEJORA AUTONOMA IMPLEMENTADA: enmascarar tambien numero/descripcion de
+  recibos y numeros de aplicaciones en la lista de candidatos bancarios;
+  prueba I15 con texto IBAN sintetico conserva el recibo original sin alterarlo.
+  La primera candidata de publicacion se detuvo antes de tocar produccion
+  para incluir esta proteccion; no se han omitido errores de test del cierre.
+- Recuperacion de migracion 21: `verification/organizador-erp5-recovery-2k7mpfpk`,
+  backup `erp0-backup-20260914-140346`, restore `organizador-erp0-restore-xjni4nkq`:
+  arranque, integridad/FK y 30 secretos recuperados con custodia sintetica separada.
+  Recuperacion independiente de clave productiva verificada bajo DPAPI:
+  `C:/Users/EQUIPO/.ssh/organizador-web-erp4-recovery-20260914-160412.dpapi`.
 
 ## Matriz de aceptacion
 
@@ -184,7 +194,7 @@ OK significa prueba ejecutada; no convierte automaticamente 5D en completado.
 | A52 | C24 e I03 rollback compartido | OK |
 | A53 | C10 fondos intactos al desconciliar | OK |
 | A54 | C45-47 rectificaciones explicitas | OK |
-| A55 | C19/34 cifrado, permisos y canales privados | OK |
+| A55 | C19/34 e I15 cifrado, texto libre enmascarado, canales privados | OK |
 | A56 | C42 rotacion; restauracion de avance de 25 secretos | OK; final pendiente |
 | A57 | verify-erp5-plans.py, proof 1d_rrkgd | OK |
 | A58 | C43 inbox simulado; sin ERP 6 | OK |
