@@ -8,6 +8,36 @@ from .receivables_contracts import require_fields, identity, day, text
 
 
 class BankingImports:
+    def import_analyze(self,session,env):
+        def op(conn,actor,e,now):
+            from .banking_tabular import parse_workbook,masked_cell
+            p=require_fields(e.payload,('file_base64','filename'),('sheet_index',))
+            text(p['filename'],'Nombre del archivo',maximum=250)
+            parsed=parse_workbook(p['file_base64'],p['filename'],p.get('sheet_index',0))
+            source=self.vault.put(conn,e.community_id,'banking-workbook',{'file':p,'parsed':parsed,**self._evidence_value(e)},now)
+            return {'source_id':source,'sheets':[{'index':i,'label':masked_cell(s)} for i,s in enumerate(parsed['sheets'])],
+                'sheet_index':parsed['sheet_index'],'columns':[{'index':i,'label':masked_cell(name),
+                    'sample':masked_cell(parsed['rows'][0]['values'][i]) if i<len(parsed['rows'][0]['values']) else ''} for i,name in enumerate(parsed['headers'])],
+                'row_count':len(parsed['rows'])}
+        return self._write(session,env,'manage_accounts',op)
+
+    def import_file_preview(self,session,env):
+        from .database import connect
+        p=require_fields(env.payload,('source_id','mapping','source','cutoff'))
+        mapping=require_fields(p['mapping'],('iban',),('alias','observed_mandate_reference','observed_property_reference','observed_payer_reference'))
+        conn=connect(self.database_path,readonly=True)
+        try:
+            self._session(conn,session,env.community_id,'manage_accounts')
+            source=self.vault.get(conn,env.community_id,p['source_id'],'banking-workbook')
+        finally:conn.close()
+        parsed=source['parsed']
+        if any(type(index) is not int or not 0<=index<len(parsed['headers']) for index in mapping.values()) or len(set(mapping.values()))!=len(mapping):
+            raise ContractError('Revisa el mapeo de columnas; no repitas ni inventes correspondencias.')
+        rows=[{key:item['values'][index] if index<len(item['values']) else '' for key,index in mapping.items()} for item in parsed['rows']]
+        # The existing import owns validation, staging and idempotence, including the original file.
+        return self.import_preview(session,replace(env,payload={'source':p['source'],'cutoff':p['cutoff'],'rows':rows,
+            'file_base64':source['file']['file_base64'],'filename':source['file']['filename']}))
+
     def import_preview(self,session,env):
         def op(conn,actor,e,now):
             p=require_fields(e.payload,('source','cutoff','rows'),('file_base64','filename'))

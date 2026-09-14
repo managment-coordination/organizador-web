@@ -21,6 +21,21 @@ def _months_after(value, months):
 
 
 class RemittanceOperations:
+    @staticmethod
+    def _direct_for_receipt(conn,community,receipt,requested):
+        rows=list(conn.execute('''SELECT d.id,d.concept_key,v.id AS version_id,v.mandate_id,v.billing_config_id,
+            v.effective_from,v.effective_until,v.state FROM erp_domiciliaciones d
+            JOIN erp_domiciliacion_versiones v ON v.direct_debit_id=d.id AND v.id_comunidad=d.id_comunidad
+            WHERE d.id_comunidad=? AND d.property_id=? AND (d.concept_key='' OR d.concept_key=?)
+            AND v.effective_from<=? AND NOT EXISTS (SELECT 1 FROM erp_domiciliacion_versiones newer
+                WHERE newer.direct_debit_id=d.id AND newer.effective_from<=? AND newer.version>v.version)''',
+            (community,receipt['id_propiedad'],receipt['concept_key'],requested,requested)))
+        # A suspended specific authorization must not silently fall back to the generic one.
+        specific=[r for r in rows if r['concept_key']==receipt['concept_key']]
+        matches=[r for r in (specific or rows) if r['state']=='activa' and (not r['effective_until'] or r['effective_until']>requested)]
+        if len(matches)!=1:
+            raise ContractError('Falta una domiciliacion inequivoca y vigente para el recibo.')
+        return matches[0]
     def _attempt_evidence(self, conn, session, env):
         from .receivables_service import ReceivablesService
         authorizations = env.payload.get('third_party_authorizations', {})
@@ -85,6 +100,8 @@ class RemittanceOperations:
             raise ContractError('La autorizacion de pago no corresponde a los recibos seleccionados.')
         lines, total, single_use = [], 0, set()
         for rid in sorted(ids):
+            if conn.execute("SELECT 1 FROM erp_banca_instrucciones_externas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(community,rid)).fetchone():
+                raise ConflictError('El recibo tiene una instruccion bancaria externa pendiente de cierre.')
             receipt = conn.execute('SELECT * FROM erp_recibos WHERE id_comunidad=? AND id=?', (community, rid)).fetchone()
             if not receipt:
                 raise NotFoundError('Recibo no disponible en esta comunidad.')
@@ -122,21 +139,7 @@ class RemittanceOperations:
                 raise ContractError('El recibo requiere pagador y responsabilidad acreditados.')
             payer_snapshot = json.loads(payers[0][0])
             payer = {'type': payer_snapshot.get('type'), 'id': payer_snapshot.get('id')}
-            matches = []
-            for row in conn.execute('''SELECT d.id,d.concept_key,v.id AS version_id,v.mandate_id,v.billing_config_id,
-                v.effective_from,v.effective_until,v.state FROM erp_domiciliaciones d
-                JOIN erp_domiciliacion_versiones v ON v.direct_debit_id=d.id AND v.id_comunidad=d.id_comunidad
-                WHERE d.id_comunidad=? AND d.property_id=? AND (d.concept_key='' OR d.concept_key=?)
-                AND v.effective_from<=? AND NOT EXISTS (SELECT 1 FROM erp_domiciliacion_versiones newer
-                    WHERE newer.direct_debit_id=d.id AND newer.effective_from<=? AND newer.version>v.version)''',
-                (community, receipt['id_propiedad'], receipt['concept_key'], requested, requested)):
-                if row['state'] == 'activa' and (not row['effective_until'] or row['effective_until'] > requested):
-                    matches.append(row)
-            specific = [r for r in matches if r['concept_key'] == receipt['concept_key']]
-            matches = specific or matches
-            if len(matches) != 1:
-                raise ContractError('Falta una domiciliacion inequivoca y vigente para el recibo.')
-            direct = matches[0]
+            direct = self._direct_for_receipt(conn,community,receipt,requested)
             mandate = self._entity(conn, 'erp_mandatos', community, direct['mandate_id'])
             if mandate['state'] != 'activo' or mandate['creditor_id'] != creditor['id']:
                 raise ContractError('El mandato no esta activo para el acreedor seleccionado.')
@@ -168,7 +171,15 @@ class RemittanceOperations:
                                   (community, mandate['id'])).fetchone()[0]
             if requested >= _months_after(latest or version['signed_on'], 36):
                 raise ContractError('El mandato requiere revision por inactividad.')
-            if mandate['kind'] == 'puntual' and (latest or conn.execute('''SELECT 1 FROM erp_remesa_reservas r
+            authorized_retry = False
+            if mandate['kind']=='puntual' and retry_of and config.get('allow_failed_oneoff_retry'):
+                authorization = conn.execute("SELECT secret_id FROM erp_banca_control_eventos WHERE id_comunidad=? AND line_id=? AND kind='oneoff_retry_authorized' ORDER BY id DESC LIMIT 1",(community,retry_of)).fetchone()
+                if authorization:
+                    authorized_retry = self.vault.get(conn,community,authorization['secret_id'],'bank-control')['details'] == {
+                        'mandate_id':mandate['id'],'mandate_version':mandate['version']}
+                if self._line_status(conn,community,retry_of) not in ('rejected','cancelled'):
+                    authorized_retry = False
+            if mandate['kind'] == 'puntual' and ((latest and not authorized_retry) or conn.execute('''SELECT 1 FROM erp_remesa_reservas r
                 JOIN erp_remesa_lineas l ON l.id=r.line_id JOIN erp_mandato_versiones v ON v.id=l.mandate_version_id
                 WHERE r.id_comunidad=? AND v.mandate_id=? AND r.state IN ('activa','consumida')
                 AND NOT EXISTS (SELECT 1 FROM erp_remesa_revisiones rev WHERE rev.id=l.revision_id AND rev.remittance_id=?)''',

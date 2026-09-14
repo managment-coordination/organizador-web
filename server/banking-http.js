@@ -73,12 +73,13 @@ export function createBankingHttp(config, services) {
       }
       const trustedSession={...session,banking_reauthenticated_at:confirmations.get(key)?.at || null};
       const action=url.pathname.split('/').at(-1);
-      if (!['query','command','download','reveal'].includes(action)) {
+      if (!['query','command','download','reveal','document'].includes(action)) {
         sendJson(res,404,{ok:false,error:'Operacion bancaria no encontrada.'}); return true;
       }
       let envelope;
       if (action==='download') envelope={id_comunidad:community,token:body.token};
       else if (action==='reveal') envelope={id_comunidad:community,account_id:body.account_id,reason:body.reason};
+      else if (action==='document') envelope={id_comunidad:community,document_id:body.document_id,reason:body.reason};
       else {
         envelope={...body,id_comunidad:community};
         if (action==='command') envelope.origin='web';
@@ -87,10 +88,12 @@ export function createBankingHttp(config, services) {
         }
       }
       const result=await runBanking(trustedSession,action,envelope);
-      if (action==='download') {
+      if (action==='download' || action==='document') {
         const bytes=Buffer.from(result.content_base64,'base64');
-        res.writeHead(200,{'Content-Type':'application/xml; charset=utf-8',
-          'Content-Disposition':'attachment; filename="remesa-sepa.xml"','Content-Length':bytes.length});
+        const ext=action==='document' && ['pdf','png','jpg'].includes(result.extension)?result.extension:'xml';
+        res.writeHead(200,{'Content-Type':ext==='xml'?'application/xml; charset=utf-8':'application/octet-stream',
+          'Content-Security-Policy':"sandbox; default-src 'none'",
+          'Content-Disposition':`attachment; filename="${ext==='xml'?'remesa-sepa.xml':'documento-bancario.'+ext}"`,'Content-Length':bytes.length});
         res.end(bytes);
       } else sendJson(res,200,result);
     } catch (error) {

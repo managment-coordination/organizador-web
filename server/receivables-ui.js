@@ -405,5 +405,9 @@ function createReceivablesUI(ctx) {
     root().querySelector('[name=cut]')?.addEventListener('change',e=>{s.cut=e.target.value;s.detail=null;s.form=null;s.review=null;load();});
     root().querySelector('[data-fin-form=permissions] [name=user]')?.addEventListener('change',e=>{s.permissionUser=Number(e.target.value);render();});
   }
-  return {load,render,reset,open(community,filters={},label=''){reset();s.community=community;s.filters=filters;s.scopeLabel=label;s.section=Object.keys(filters).length?'debt':'receipts';ctx.navigate();},ensure(){if(!s.loaded&&!s.loading)load();}};
+  return {load,render,reset,async openReceipt(community,id){reset();s.community=community;await load();
+    if(s.error)throw new Error(s.error);const filters={receipt_id:id,effective_at:s.cut};
+    const data=(await q('erp3.receipt.get',filters)).entity;
+    const timeline=(await q('erp3.receipt.timeline',filters)).entity;s.detail={type:'receipt',data,timeline};ctx.navigate();render();
+  },open(community,filters={},label=''){reset();s.community=community;s.filters=filters;s.scopeLabel=label;s.section=Object.keys(filters).length?'debt':'receipts';ctx.navigate();},ensure(){if(!s.loaded&&!s.loading)load();}};
 }

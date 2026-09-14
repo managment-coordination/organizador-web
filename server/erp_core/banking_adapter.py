@@ -67,7 +67,7 @@ def amount(value):
 def profile_config(value):
     require_fields(value, ('bank_name', 'timezone', 'cutoff', 'lead_business_days', 'holidays',
                           'countries', 'max_lines', 'max_total_cents', 'recurrent_sequence', 'mode',
-                          'bank_profile_accepted', 'external_instructions_reviewed'), ('ascii_only',))
+                          'bank_profile_accepted', 'external_instructions_reviewed'), ('ascii_only','allow_failed_oneoff_retry'))
     text(value['bank_name'], 'Entidad bancaria', maximum=100)
     try:
         ZoneInfo(value['timezone'])
@@ -93,8 +93,9 @@ def profile_config(value):
     for flag in ('bank_profile_accepted', 'external_instructions_reviewed'):
         if type(value[flag]) is not bool:
             raise ContractError('Confirma la configuracion bancaria.')
-    if 'ascii_only' in value and type(value['ascii_only']) is not bool:
-        raise ContractError('Configuracion de caracteres no valida.')
+    for option in ('ascii_only','allow_failed_oneoff_retry'):
+        if option in value and type(value[option]) is not bool:
+            raise ContractError('Configuracion opcional no valida.')
     if value['mode'] == 'live' and not (value['bank_profile_accepted'] and value['external_instructions_reviewed']):
         raise ContractError('El uso real requiere perfil bancario aceptado y revision de remesas externas.')
     return dict(value)

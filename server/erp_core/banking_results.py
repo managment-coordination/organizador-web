@@ -18,13 +18,17 @@ KINDS = {'technical','pending','rejected','settlement','returned','cancelled'}
 class BankingResults:
     @staticmethod
     def _line_status(conn,community,line_id):
-        rows=list(conn.execute('SELECT kind FROM erp_banca_linea_eventos WHERE id_comunidad=? AND line_id=? ORDER BY effective_on DESC,id DESC',
+        rows=list(conn.execute('''SELECT kind FROM erp_banca_linea_eventos e WHERE id_comunidad=? AND line_id=?
+            AND NOT EXISTS (SELECT 1 FROM erp_banca_control_eventos c WHERE c.id_comunidad=e.id_comunidad
+                AND c.conflict_event_id=e.id AND c.kind='conflict_reviewed') ORDER BY effective_on DESC,id DESC''',
                                (community,line_id)))
         if any(r['kind']=='conflict' for r in rows):
             return 'conflict'
         economic=next((r['kind'] for r in rows if r['kind'] in ('settlement','returned')),None)
         terminal=economic or next((r['kind'] for r in rows if r['kind'] in ('cancelled','rejected')),None)
         if terminal:return terminal
+        if conn.execute("SELECT 1 FROM erp_banca_control_eventos WHERE id_comunidad=? AND line_id=? AND kind='terminal_history_gap'",(community,line_id)).fetchone():
+            return 'cancelled'
         cancelled=conn.execute('''SELECT 1 FROM erp_remesa_lineas l JOIN erp_remesa_revisiones v ON v.id=l.revision_id
             JOIN erp_remesas r ON r.id=v.remittance_id WHERE l.id_comunidad=? AND l.id=? AND r.state='cancelada' ''',(community,line_id)).fetchone()
         return 'cancelled' if cancelled else 'pending'
@@ -48,7 +52,10 @@ class BankingResults:
         for key,matches in entries.items():
             if not matches:continue
             specific=sorted(matches,key=lambda x: {'file':0,'group':1,'line':2}[x['scope']],reverse=True)[0]
-            contradiction=any(e['type']=='rejected' for e in matches) and any(e['type']=='technical' for e in matches)
+            # A partial file can contain a rejected line, but peers cannot disagree.
+            peers=[e for e in matches if e['scope']==specific['scope']]
+            contradiction=(len({e['type'] for e in peers})>1 or
+                (any(e['type']=='rejected' for e in matches) and any(e['type']=='technical' for e in matches)))
             result.append({'attempt_key':key,'kind':'pending' if contradiction else specific['type'],
                            'reason_code':specific.get('reason_code'),'source_entries':matches,
                            'contradictory':contradiction,'effective_on':None})
@@ -167,14 +174,20 @@ class BankingResults:
             current=self._line_status(conn,community,line['id'])
             action=decision['action'];kind=data['kind']
             if kind=='pending' or data.get('contradictory'):raise ConflictError('El resultado sigue pendiente de aclaracion; no hay efecto que confirmar.')
-            expected={'settlement':{'record_collection','link_collection'},'returned':{'return'},
+            expected={'settlement':{'record_collection','link_collection'},'returned':{'return','terminal_without_collection'},
                       'technical':{'none'},'rejected':{'none'},'cancelled':{'none'}}[kind]
             if action not in expected:raise ContractError('La accion no corresponde al resultado bancario.')
             row_plan={'result_line_id':row['id'],'row_version':row['version'],'line_id':line['id'],
                       'receipt_id':line['receipt_id'],'kind':kind,'action':action,'effective_on':data['effective_on'],
                       'current':current,'remittance_version':rem['version'],'remittance_id':rem['id'],
                       'treasury_id':creditor['treasury_id'],'already_processed':False}
-            if kind in ('settlement','returned'):
+            if action=='terminal_without_collection':
+                if data.get('terminal') is not True:
+                    raise ContractError('Sin cobro identificado, acredita que el banco ha cerrado definitivamente la instruccion.')
+                if conn.execute("SELECT 1 FROM erp_banca_linea_eventos WHERE id_comunidad=? AND line_id=? AND kind IN ('settlement','returned')",(community,line['id'])).fetchone():
+                    raise ConflictError('Este intento tiene historia economica: utiliza la devolucion ERP 3.')
+                row_plan['economic_history_pending']=True
+            elif kind in ('settlement','returned'):
                 ReceivablesService._session(conn,session,community,'record_collection' if kind=='settlement' else 'return_collection')
                 ReceivablesService._date_open(conn,community,data['effective_on'])
                 identity_value,canonical=self._bank_identity(community,creditor['treasury_id'],data,line['id'])
@@ -250,7 +263,8 @@ class BankingResults:
             for row in plan['rows']:
                 kind=row['kind'];operation_id=row.get('operation_id');collection_id=row.get('collection_id');return_id=row.get('return_id')
                 key='bank-result-'+str(row['result_line_id'])
-                if kind in ('settlement','returned') and not row['already_processed']:
+                history_gap=row['action']=='terminal_without_collection'
+                if kind in ('settlement','returned') and not row['already_processed'] and not history_gap:
                     if kind=='settlement':
                         if row['action']=='record_collection':
                             line=self._entity(conn,'erp_remesa_lineas',e.community_id,row['line_id'])
@@ -275,14 +289,17 @@ class BankingResults:
                     for kid,digest in self.vault.fingerprints(e.community_id,'bank-operation-identity',row['identity']).items():
                         conn.execute('INSERT INTO erp_banco_identidades VALUES (?,?,?,?)',(e.community_id,kid,digest,operation_id))
                 prior=row['current']
-                event_kind='conflict' if kind in ('cancelled','rejected') and prior in ('settlement','returned') else kind
+                event_kind='pending' if history_gap else 'conflict' if kind in ('cancelled','rejected') and prior in ('settlement','returned') else kind
                 source=conn.execute('SELECT secret_id FROM erp_resultado_lineas WHERE id_comunidad=? AND id=?',(e.community_id,row['result_line_id'])).fetchone()[0]
                 event=conn.execute('''INSERT INTO erp_banca_linea_eventos
                     (id_comunidad,line_id,result_line_id,operation_id,kind,effective_on,secret_id,registered_at,actor_id) VALUES (?,?,?,?,?,?,?,?,?)''',
                     (e.community_id,row['line_id'],row['result_line_id'],operation_id,event_kind,row['effective_on'],source,now,actor.user_id)).lastrowid
                 conn.execute('INSERT INTO erp_banca_resultado_aplicaciones(id_comunidad,result_line_id,event_id,registered_at,actor_id) VALUES (?,?,?,?,?)',
                              (e.community_id,row['result_line_id'],event,now,actor.user_id))
-                if event_kind in ('settlement','rejected','cancelled'):
+                if history_gap:
+                    self._control_event(conn,actor,e,now,'terminal_history_gap',row['effective_on'],line=row['line_id'],
+                        details={'result_line_id':row['result_line_id'],'economic_history_pending':True})
+                if history_gap or event_kind in ('settlement','rejected','cancelled'):
                     state='consumida' if kind=='settlement' else 'liberada'
                     conn.execute("UPDATE erp_remesa_reservas SET state=?,finished_at=?,reason=? WHERE id_comunidad=? AND line_id=? AND state='activa'",
                                  (state,now,kind,e.community_id,row['line_id']))
@@ -298,7 +315,7 @@ class BankingResults:
                     WHERE v.id_comunidad=? AND v.remittance_id=?''',(e.community_id,row['remittance_id']))]
                 closed = all(s in ('settlement','returned','rejected','cancelled') for s in statuses)
                 rem_state = 'cancelada' if all(s=='cancelled' for s in statuses) else 'finalizada' if closed else 'seguimiento'
-                conflicting = event_kind=='conflict' or (kind=='settlement' and prior in ('cancelled','rejected'))
+                conflicting = history_gap or event_kind=='conflict' or (kind=='settlement' and prior in ('cancelled','rejected'))
                 conn.execute('''UPDATE erp_remesas SET state=?,needs_review=CASE WHEN ? THEN 1 ELSE needs_review END,
                     version=version+1 WHERE id_comunidad=? AND id=?''',
                     (rem_state,int(conflicting),e.community_id,row['remittance_id']))

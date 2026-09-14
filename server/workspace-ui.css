@@ -227,3 +227,20 @@ tbody tr:hover { background:#f7fafc; }
 }
 .finSelection { max-height: 240px; overflow: auto; padding: 8px 0; }
 .finSelection label[hidden] { display: none; }
+.bankWorkspace { min-width:0; max-width:100%; }
+.bankWorkspace>button { justify-self:start; }
+.bankWorkspace>.budgetToolbar,.bankWorkspace>.budgetTabs { margin:0; }
+.bankWorkspace>h3,.bankWorkspace>p { margin:4px 0; }
+.bankWorkspace :is(fieldset,details,.masterFormGrid>label) { min-width:0; }
+.bankWorkspace .masterFormGrid>fieldset,.bankWorkspace .masterFormGrid>details { grid-column:1/-1; }
+.bankWorkspace :is(input,select,textarea) { box-sizing:border-box; max-width:100%; }
+.bankWorkspace fieldset { border:1px solid var(--line); border-radius:4px; padding:10px; }
+.bankPropertySelection { max-height:320px; overflow:auto; }
+.bankPropertySelection [hidden] { display:none!important; }
+.bankRevealed { padding:12px 0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+@media(max-width:700px) {
+  .bankWorkspace .masterFormGrid { grid-template-columns:minmax(0,1fr); }
+  .bankWorkspace :is(.toolbar,.budgetToolbar) { flex-wrap:wrap; }
+  .bankWorkspace button { max-width:100%; white-space:normal; }
+  .bankPropertySelection { max-height:260px; }
+}

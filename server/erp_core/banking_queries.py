@@ -9,6 +9,168 @@ from .receivables_service import ReceivablesService
 
 
 class BankingQueries:
+    def instruction_find(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,('attempt_key',))
+            from .receivables_contracts import text
+            key=text(q.filters['attempt_key'],'Referencia bancaria',maximum=35)
+            row=conn.execute('SELECT id,receipt_id,attempt_key FROM erp_remesa_lineas WHERE id_comunidad=? AND attempt_key=?',(q.community_id,key)).fetchone()
+            if not row:raise NotFoundError('No hay una instruccion con esta referencia exacta en la comunidad.')
+            return dict(row)
+        return self._read(session,query,'results',op)
+
+    def mandate_edit(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,('id',))
+            mandate=self._entity(conn,'erp_mandatos',q.community_id,q.filters['id'])
+            row=conn.execute('SELECT * FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=? ORDER BY version DESC LIMIT 1',(q.community_id,mandate['id'])).fetchone()
+            data=self.vault.get(conn,q.community_id,row['secret_id'],'mandate-version')
+            payload={key:data[key] for key in ('debtor_name','address','signers','property_ids')}
+            payload.update(id=mandate['id'],account_id=row['account_id'],signed_on=row['signed_on'],
+                effective_from=row['effective_from'],effective_until=row['effective_until'],
+                debtor={'type':'owner' if row['debtor_owner_id'] else 'person','id':row['debtor_owner_id'] or row['debtor_person_id']})
+            return {'version':mandate['version'],'payload':payload}
+        return self._read(session,query,'manage_mandates',op)
+
+    def profile_get(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,('creditor_id',))
+            self._entity(conn,'erp_acreedor_versiones',q.community_id,q.filters['creditor_id'])
+            row=conn.execute('SELECT * FROM erp_banca_configuraciones WHERE id_comunidad=? AND creditor_id=? ORDER BY version DESC LIMIT 1',(q.community_id,q.filters['creditor_id'])).fetchone()
+            if not row:return {'version':0,'config':None}
+            return {'version':row['version'],'config':self.vault.get(conn,q.community_id,row['secret_id'],'bank-profile')['config']}
+        return self._read(session,query,'configure_creditor',op)
+
+    def results_choices(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,('result_line_id',))
+            ReceivablesService._session(conn,session,q.community_id,'sensitive_read')
+            row=conn.execute('SELECT * FROM erp_resultado_lineas WHERE id_comunidad=? AND id=?',(q.community_id,identity(q.filters['result_line_id']))).fetchone()
+            if not row or not row['line_id']:raise NotFoundError('Resultado sin instruccion identificada.')
+            data=self.vault.get(conn,q.community_id,row['secret_id'],'bank-result-line')
+            ids=[]
+            if data['kind']=='returned':
+                ids=[r[0] for r in conn.execute('''SELECT DISTINCT o.collection_id FROM erp_banca_linea_eventos e
+                    JOIN erp_banco_operaciones o ON o.id_comunidad=e.id_comunidad AND o.id=e.operation_id
+                    WHERE e.id_comunidad=? AND e.line_id=? AND e.kind='settlement' AND o.collection_id IS NOT NULL''',(q.community_id,row['line_id']))]
+            elif data['kind']=='settlement' and data.get('amount_cents'):
+                ids=[r[0] for r in conn.execute('''SELECT c.id FROM erp_cobros c WHERE c.id_comunidad=? AND c.amount_cents=?
+                    AND c.currency='EUR' AND c.effective_on=? AND NOT EXISTS
+                    (SELECT 1 FROM erp_banco_operaciones o WHERE o.id_comunidad=c.id_comunidad AND o.collection_id=c.id)
+                    ORDER BY c.id DESC LIMIT 200''',(q.community_id,int(data['amount_cents']),data['effective_on']))]
+            from .contracts import QueryEnvelope
+            collections=[]
+            for cid in ids:
+                detail=ReceivablesService(self.database_path).collection_get(session,QueryEnvelope('erp3.collection.get',q.community_id,{'collection_id':cid,'effective_at':data['effective_on']}))['entity']
+                collections.append({'id':cid,'effective_on':detail['collection']['effective_on'],'amount_cents':str(detail['collection']['amount_cents']),
+                    'balance':detail['balance'],'allocations':[{'id':a['id'],'number':a['number'],'remaining_cents':a['remaining_cents']} for a in detail['allocations']]})
+            return {'collections':collections,'requires_human_confirmation':True}
+        return self._read(session,query,'results',op)
+
+    def reference_list(self, session, query):
+        def op(conn,q):
+            require_fields(q.filters,('kind',),('offset','limit','search','mandate_id','on'))
+            offset,limit=self._page(q.filters)
+            search=q.filters.get('search','')
+            if not isinstance(search,str) or len(search)>200:raise ContractError('Busqueda no valida.')
+            pattern='%'+search.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
+            kind=q.filters['kind']
+            if kind in ('properties','owners','persons'):
+                table,key,label={'properties':('cf_propiedades','id_propiedad','codigo_propiedad'),
+                    'owners':('cf_propietarios','id_propietario','nombre'),
+                    'persons':('erp_personas_cobro','id_persona_cobro','nombre')}[kind]
+                sql=f" FROM {table} WHERE id_comunidad=? AND {label} LIKE ? ESCAPE '\\'"
+                total=conn.execute('SELECT COUNT(*)'+sql,(q.community_id,pattern)).fetchone()[0]
+                items=[dict(r) for r in conn.execute(f'SELECT {key} AS id,{label} AS label'+sql+f' ORDER BY {label},{key} LIMIT ? OFFSET ?',
+                    (q.community_id,pattern,limit,offset))]
+                return {'items':items,'total':total}
+            if kind=='billing':
+                from .receivables_contracts import day
+                on=day(q.filters.get('on') or date.today().isoformat())
+                mandate=self._entity(conn,'erp_mandatos',q.community_id,q.filters.get('mandate_id'))
+                mv=conn.execute('SELECT * FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=? AND effective_from<=? ORDER BY version DESC LIMIT 1',
+                    (q.community_id,mandate['id'],on)).fetchone()
+                if not mv:return {'items':[],'total':0}
+                sql=''' FROM erp_config_recibo_versiones b JOIN cf_propiedades p ON p.id_comunidad=b.id_comunidad AND p.id_propiedad=b.id_propiedad
+                    WHERE b.id_comunidad=? AND b.estado='confirmada' AND b.efectiva_desde<=?
+                    AND (b.efectiva_hasta IS NULL OR b.efectiva_hasta>?)
+                    AND b.pagador_propietario_id IS ? AND b.pagador_persona_cobro_id IS ?
+                    AND EXISTS (SELECT 1 FROM erp_mandato_propiedades m WHERE m.id_comunidad=b.id_comunidad AND m.mandate_version_id=? AND m.property_id=b.id_propiedad)
+                    AND NOT EXISTS (SELECT 1 FROM erp_config_recibo_versiones n WHERE n.id_comunidad=b.id_comunidad AND n.id_propiedad=b.id_propiedad
+                        AND n.alcance=b.alcance AND COALESCE(n.concepto_clave,'')=COALESCE(b.concepto_clave,'')
+                        AND n.version>b.version AND n.estado='confirmada' AND n.efectiva_desde<=?)
+                    AND p.codigo_propiedad LIKE ? ESCAPE '\\' '''
+                args=(q.community_id,on,on,mv['debtor_owner_id'],mv['debtor_person_id'],mv['id'],on,pattern)
+                total=conn.execute('SELECT COUNT(*)'+sql,args).fetchone()[0]
+                items=[]
+                for row in conn.execute('SELECT b.id_config_recibo AS id,b.id_propiedad AS property_id,p.codigo_propiedad AS label,b.alcance,b.concepto_clave'+sql+' ORDER BY p.codigo_propiedad,b.id_config_recibo LIMIT ? OFFSET ?',(*args,limit,offset)):
+                    current=conn.execute("SELECT id,version FROM erp_domiciliaciones WHERE id_comunidad=? AND property_id=? AND scope=? AND concept_key=?",
+                        (q.community_id,row['property_id'],row['alcance'],row['concepto_clave'] or '')).fetchone()
+                    items.append({**dict(row),'replacement':dict(current) if current else None})
+                return {'items':items,'total':total}
+            raise ContractError('Tipo de seleccion no disponible.')
+        return self._read(session,query,'read_masked',op)
+
+    def permissions_get(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,())
+            from access_control import profile, permission
+            users=[]
+            for row in conn.execute('SELECT id_usuario,nombre FROM usuarios WHERE activo=1 ORDER BY nombre'):
+                if permission(profile(conn,row['id_usuario']),q.community_id,'puede_ver'):
+                    grants=[dict(g) for g in conn.execute('SELECT capability,allowed,version FROM erp_banca_permisos WHERE id_comunidad=? AND id_usuario=?',(q.community_id,row['id_usuario']))]
+                    users.append({**dict(row),'grants':grants})
+            return {'users':users}
+        return self._read(session,query,'grant',op)
+
+    def receipt_candidates(self,session,query):
+        def op(conn,q):
+            require_fields(q.filters,('creditor_id','requested_on'),('notification_id','offset','limit','search','property_id','owner_id'))
+            from .receivables_contracts import day, cents
+            from .errors import ConflictError
+            ReceivablesService._session(conn,session,q.community_id,'read')
+            offset,limit=self._page(q.filters)
+            requested=day(q.filters['requested_on'])
+            self._entity(conn,'erp_acreedor_versiones',q.community_id,q.filters['creditor_id'])
+            search=q.filters.get('search','')
+            if not isinstance(search,str) or len(search)>200:raise ContractError('Busqueda no valida.')
+            args=[q.community_id,'%'+search+'%','%'+search+'%'];where=['r.id_comunidad=?','(r.number LIKE ? OR p.codigo_propiedad LIKE ?)']
+            if q.filters.get('property_id'):where.append('r.id_propiedad=?');args.append(identity(q.filters['property_id']))
+            if q.filters.get('owner_id'):
+                where.append("EXISTS (SELECT 1 FROM erp_recibo_sujetos s WHERE s.id_comunidad=r.id_comunidad AND s.receipt_id=r.id AND s.owner_id=? AND s.role='obligated')")
+                args.append(identity(q.filters['owner_id']))
+            sql=' FROM erp_recibos r JOIN cf_propiedades p ON p.id_comunidad=r.id_comunidad AND p.id_propiedad=r.id_propiedad WHERE '+' AND '.join(where)
+            total=conn.execute('SELECT COUNT(*)'+sql,args).fetchone()[0]
+            rows=[]
+            for receipt in conn.execute('SELECT r.*,p.codigo_propiedad AS property_code'+sql+' ORDER BY r.id DESC LIMIT ? OFFSET ?',args+[limit,offset]):
+                balance=receipt_balance(conn,q.community_id,receipt['id'])
+                issues=[];mandate_id=None;validated=False;retry_of=None
+                prior=conn.execute('''SELECT l.id FROM erp_remesa_lineas l WHERE l.id_comunidad=? AND l.receipt_id=? ORDER BY l.id DESC LIMIT 1''',(q.community_id,receipt['id'])).fetchone()
+                if prior:retry_of=prior['id']
+                try:
+                    cents(balance['pending_cents'],positive=True)
+                    if balance['state']=='anulado' or balance['management']=='incobrable' or receipt['currency']!='EUR':
+                        raise ContractError('El recibo no es elegible.')
+                    direct=self._direct_for_receipt(conn,q.community_id,receipt,requested)
+                    mandate_id=direct['mandate_id']
+                    if q.filters.get('notification_id'):
+                        self._remittance_preview(conn,q.community_id,{'creditor_id':q.filters['creditor_id'],'requested_on':requested,
+                            'receipt_ids':[receipt['id']],'notification_id':q.filters['notification_id'],
+                            **({'retry_of':{str(receipt['id']):retry_of}} if retry_of else {})})
+                        validated=True
+                    else:
+                        if conn.execute("SELECT 1 FROM erp_remesa_reservas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(q.community_id,receipt['id'])).fetchone():
+                            raise ConflictError('Reservado en otra remesa.')
+                        if conn.execute("SELECT 1 FROM erp_banca_instrucciones_externas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(q.community_id,receipt['id'])).fetchone():
+                            raise ConflictError('Instruccion bancaria externa pendiente.')
+                except (ContractError,ConflictError,NotFoundError) as error:issues.append(str(error))
+                rows.append({'id':receipt['id'],'number':receipt['number'],'property_id':receipt['id_propiedad'],
+                    'property_code':receipt['property_code'],'description':receipt['description'],'due_on':receipt['due_on'],
+                    'pending_cents':balance['pending_cents'],'mandate_id':mandate_id,'retry_of':retry_of,
+                    'issues':issues,'validated':validated})
+            return {'items':rows,'total':total,'requires_final_review':True}
+        return self._read(session,query,'prepare',op)
+
     @staticmethod
     def _page(filters):
         offset, limit = filters.get('offset', 0), filters.get('limit', 100)
@@ -29,7 +191,8 @@ class BankingQueries:
                     f'SELECT state,COUNT(*) AS count FROM {table} WHERE id_comunidad=? GROUP BY state', (q.community_id,))]
             counts['pending_results'] = conn.execute("SELECT COUNT(*) FROM erp_resultados_bancarios WHERE id_comunidad=? AND state!='confirmado'", (q.community_id,)).fetchone()[0]
             counts['needs_review'] = conn.execute('SELECT COUNT(*) FROM erp_remesas WHERE id_comunidad=? AND needs_review=1', (q.community_id,)).fetchone()[0]
-            return {'permissions':grants,'counts':counts}
+            import os
+            return {'permissions':grants,'counts':counts,'live_enabled':os.environ.get('ERP4_LIVE_BANKING_ENABLED')=='1'}
         return self._read(session, query, 'read_masked', op)
 
     def creditor_list(self, session, query):

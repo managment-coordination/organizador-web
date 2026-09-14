@@ -14,6 +14,8 @@ from .banking_files import BankingFiles
 from .banking_results import BankingResults
 from .banking_queries import BankingQueries
 from .banking_imports import BankingImports
+from .banking_control import BankingControl
+from .banking_documents import BankingDocuments
 from .contracts import Actor, canonical_json
 from .database import connect, write_transaction
 from .errors import ConflictError, ContractError, NotFoundError
@@ -32,10 +34,12 @@ COMMAND_NAMES = frozenset('erp4.' + name for name in (
     'notification.record', 'remittance.preview', 'remittance.prepare', 'remittance.cancel_local',
     'profile.configure', 'remittance.build', 'remittance.export', 'presentation.record',
     'results.import', 'results.preview', 'results.confirm', 'results.resolve', 'retry.preview', 'retry.confirm',
-    'cancellation.request', 'cancellation.not_presented', 'import.preview', 'import.confirm'))
+    'cancellation.request', 'cancellation.not_presented', 'import.preview', 'import.confirm',
+    'external.register', 'external.close', 'mandate.succeed', 'mandate.authorize_retry', 'conflict.review', 'reversal.request',
+    'import.analyze','import.file_preview','document.upload'))
 
 
-class BankingService(MandateOperations, RemittanceOperations, BankingFiles, BankingResults, BankingQueries, BankingImports):
+class BankingService(MandateOperations, RemittanceOperations, BankingFiles, BankingResults, BankingQueries, BankingImports, BankingControl, BankingDocuments):
     def __init__(self, database_path, *, vault=None):
         self.database_path = str(database_path)
         self.vault = vault
@@ -116,6 +120,11 @@ class BankingService(MandateOperations, RemittanceOperations, BankingFiles, Bank
         # Reuse document/community validation, not the generic document read permission.
         from .receivables_service import ReceivablesService
         ReceivablesService(self.database_path)._validate_evidence(conn, session, env)
+        if env.evidence.entity_type!='external_reference':
+            if env.evidence.entity_type!='imported_document' or not conn.execute(
+                'SELECT 1 FROM erp_banca_documentos WHERE id_comunidad=? AND document_id=?',
+                (env.community_id,identity(env.evidence.entity_id))).fetchone():
+                raise ContractError('Incorpora la evidencia mediante Documentos bancarios protegidos, no desde una carpeta general.')
         return {'reason': env.reason, 'evidence': {'type': env.evidence.entity_type, 'id': env.evidence.entity_id}}
 
     def _write(self, session, env, capability, op):

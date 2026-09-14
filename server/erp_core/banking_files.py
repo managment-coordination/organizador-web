@@ -4,6 +4,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 import uuid
 
 from .banking_adapter import PROFILE_ID, build_core, profile_config, validate_schedule
@@ -69,6 +70,8 @@ class BankingFiles:
         if not row:
             raise ContractError('Completa la configuracion bancaria de la comunidad antes de preparar la remesa.')
         config = self.vault.get(conn, community, row['secret_id'], 'bank-profile')['config']
+        if config.get('mode')=='live' and os.environ.get('ERP4_LIVE_BANKING_ENABLED')!='1':
+            raise ContractError('La operativa real permanece deshabilitada hasta acreditar custodia, recuperacion y configuracion bancaria.')
         return row, profile_config(config)
 
     def _revision(self, conn, community, remittance_id):

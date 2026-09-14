@@ -60,6 +60,12 @@ if http_test.exists():
 sys.path.insert(0, str(Path(restored['restore']) / 'server'))
 from erp_core.banking_crypto import BankVault
 from erp_core.database import connect
+from erp_core.migrations import apply_all
+
+with closing(connect(Path(restored['restore']) / 'database.db')) as restored_conn:
+    schema_before=list(restored_conn.execute('SELECT version,checksum FROM erp_schema_migrations ORDER BY version'))
+    apply_all(restored_conn)
+    assert schema_before==list(restored_conn.execute('SELECT version,checksum FROM erp_schema_migrations ORDER BY version')), 'El checkpoint no coincide con el esquema restaurado.'
 
 
 def signature(path, vault):

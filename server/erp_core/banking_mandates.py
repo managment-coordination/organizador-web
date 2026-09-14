@@ -1,11 +1,13 @@
 """Versioned bank authorizations. Property ownership is never edited here."""
 
 from datetime import date
+from dataclasses import replace
 import json
 import re
 import uuid
 
 from .errors import ConflictError, ContractError, NotFoundError
+from .contracts import EvidenceRef
 from .receivables_contracts import day, identity, require_fields, text
 
 
@@ -109,9 +111,10 @@ class MandateOperations:
             if type(notice['days']) is not int or not 0 <= notice['days'] <= 365:
                 raise ContractError('El plazo acordado debe expresarse en dias naturales completos.')
             evidence = require_fields(notice['evidence'], ('type', 'id'))
-            text(evidence['type'], 'Tipo de acuerdo', maximum=80)
-            text(evidence['id'], 'Referencia del acuerdo', maximum=250)
-            details['prenotification_agreement'] = notice
+            from access_control import profile
+            ref=EvidenceRef.from_value(evidence)
+            self._protected_context(conn,replace(e,evidence=ref),profile(conn,actor.user_id))
+            details['prenotification_agreement'] = {'days':notice['days'],'evidence':{'type':ref.entity_type,'id':ref.entity_id}}
         elif previous:
             old = self.vault.get(conn, e.community_id, previous['secret_id'], 'mandate-version')
             if old.get('prenotification_agreement'):
@@ -198,13 +201,22 @@ class MandateOperations:
             p = require_fields(e.payload, ('id', 'state', 'effective_on'))
             mandate = self._entity(conn, 'erp_mandatos', e.community_id, p['id'])
             self._version(mandate, e.expected_version)
-            transitions = {'pendiente': {'activo', 'revocado'}, 'activo': {'suspendido', 'revocado'},
-                           'suspendido': {'activo', 'revocado'}}
+            transitions = {'pendiente': {'activo', 'revocado','caducado'}, 'activo': {'suspendido', 'revocado','caducado'},
+                           'suspendido': {'activo', 'revocado','caducado'}}
             if p['state'] not in transitions.get(mandate['state'], set()):
                 raise ContractError('Transicion de mandato no permitida.')
             effective = day(p['effective_on'])
             if effective > date.today().isoformat():
                 raise ContractError('Registra la transicion cuando sea efectiva; no anticipes el estado.')
+            if p['state'] in ('activo','caducado'):
+                from .banking_remittances import _months_after
+                latest = conn.execute("SELECT MAX(effective_on) FROM erp_mandato_eventos WHERE id_comunidad=? AND mandate_id=? AND event_type='presentada'",(e.community_id,mandate['id'])).fetchone()[0]
+                signed = conn.execute('SELECT MIN(signed_on) FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=?',(e.community_id,mandate['id'])).fetchone()[0]
+                expired = date.today().isoformat() >= _months_after(latest or signed,36)
+                if p['state']=='activo' and expired:
+                    raise ContractError('El mandato ha caducado por inactividad; requiere un nuevo mandato firmado.')
+                if p['state']=='caducado' and (not expired or effective < _months_after(latest or signed,36)):
+                    raise ContractError('No se ha cumplido el plazo de inactividad.')
             if p['state'] == 'activo':
                 revision = conn.execute('SELECT * FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=? ORDER BY version DESC LIMIT 1',
                                         (e.community_id, mandate['id'])).fetchone()

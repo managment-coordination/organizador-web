@@ -1,6 +1,6 @@
 # ERP 4 - Implementacion de domiciliaciones, mandatos y remesas
 
-Fecha: 11/09/2026. Continuidad de implementacion, no nuevo diseno.
+Actualizado: 14/09/2026. Continuidad de implementacion, no nuevo diseno.
 
 Contrato: [ERP 4](ERP_04_DOMICILIACIONES_SEPA_REMESAS.md).
 Estado y metodologia: [roadmap ERP](ERP_COMUNIDADES_ROADMAP.md).
@@ -9,14 +9,14 @@ Dependencia economica: [cierre ERP 3](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION
 ## Estado verificable
 
 DESARROLLO. Diseno 100%. Implementacion **25% certificado**; aceptacion funcional completa pendiente.
-No publicado. Rutas bancarias dedicadas preparadas y cerradas por defecto; sin interfaz ERP 4 ni recorrido web certificado.
+No publicado. Interfaz bancaria integrada en codigo y recorridos HTTPS sobre copia verificados; falta la aceptacion completa y custodia productiva. La operativa bancaria real permanece deshabilitada.
 No se han tratado datos bancarios reales ni migrado produccion.
 
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
 | 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
-| 4B Servicios deterministas | Exportacion cifrada, resultados y efectos atomicos ERP 3, reenvios y consultas incorporados; quedan operaciones de contrato y seguridad integrada por cerrar | Sin puntos |
-| 4C Recorrido integrado | No implementado | Sin puntos |
+| 4B Servicios deterministas | 82 pruebas de nucleo superadas; corte externo, sucesion, excepciones y almacen documental cifrado incorporados; falta cerrar toda la evidencia de servicio/seguridad | Sin puntos |
+| 4C Recorrido integrado | UI y contexto integrados; navegador HTTPS sintetico, seleccion/exportacion, importacion, cobro/devolucion y documentos comprobados; quedan acciones y recorrido de app completa | Sin puntos |
 | 4D Aceptacion y publicacion | No implementado; las pruebas del nucleo/adaptador no equivalen a los 50 casos integrales del contrato | Sin puntos |
 
 ## Checkpoint y recuperacion previa
@@ -124,14 +124,37 @@ Ampliacion final del checkpoint de acceso: **64/64** pruebas del nucleo correcta
 
 Continuar desde estos servicios, sin reiniciar migraciones ni repetir el diseno:
 
-1. Completar operaciones 4B restantes: corte con reservas/instrucciones bancarias externas, enmiendas de RUM/acreedor con aliases/sucesion documentada, ciclo de inactividad/mandato puntual y resolucion de incidencias contradictorias ya confirmadas. Importacion observada de cuentas y suspension/finalizacion de domiciliacion ya estan implementadas; no repetirlas ni repetir generacion/XML, resultados o reenvio.
-2. Completar casos de resultados: cobertura integral pain.002 a nivel servicio, retorno sin cobro previo con acreditacion terminal e incidencia, inversion postliquidacion y enlace UX al gasto independiente ERP 3. Identidades/aliases futuros ERP 5 no deben duplicar cobros manuales; mantener confirmacion humana.
-3. Cerrar pruebas de todos los cambios del servicio y su integracion. Configuracion, excepciones de prenotificacion y terceros ya tienen contrato operativo en dominio; falta UX completa y puertas de implantacion. Conservar el adaptador/XSD actual.
-4. Completar seguridad integrada: comprobar HTTPS real del gateway y revelacion/descarga extremo a extremo, ACL de evidencias/exportaciones, provisionado/custodia y restauracion operativa en Ubuntu, rotacion y retirada controlada de indices. Revelacion y reautenticacion de dominio/transporte ya incorporadas; claves/configuracion productivas NO aprovisionadas.
-5. Completar/verificar extremo a extremo el transporte HTTP dedicado ya incorporado (no incorporar bancos al dispatcher general/IA), vistas Bancos y remesas del design system actual, enlaces de comunidad/propiedad/propietario, seleccion masiva y revision comprensible. No hay UI ERP 4 que pueda probarse aun. Configuracion preparada: `ERP4_PUBLIC_ORIGIN`, `ERP4_TRUST_LOOPBACK_PROXY`, ademas de los opt-in y custodia del contrato; no configurada en produccion.
-6. Completar matriz A01-A50, recorridos economicos con ERP 3, pruebas escritorio/movil, regresiones finales, checkpoint/backup/restauracion y solo entonces publicacion y smoke test Ubuntu. No publicar este estado parcial.
+1. Completar UX de excepciones ya implementadas: revision de conflicto confirmado, autorizacion puntual fallida, tercero para recibo, prenotificacion generable y enlace directo al gasto independiente ERP 3. No repetir corte externo, sucesion, inactividad, retorno con hueco documental, inversion ni parser de resultados, que ya estan implementados y probados.
+2. Verificar los ultimos formularios de cambio de cuenta y sucesion, aclaracion de referencias y sus queries `mandate.edit`/`instruction.find`. Revisar guardas visuales de estado, gestion completa de paginacion/filtros en instrucciones externas y cambio de hoja Excel sin obligar a mapear la hoja anterior. Confirmacion de lotes de resultados sigue pendiente de recorrido masivo.
+3. Cerrar seguridad integrada: comprobar `from_runtime` y gateway HTTPS reales en Ubuntu, custodia/provisionado y recuperacion separada duradera, rotacion/retencion segura de indices. El navegador local usa constructor inyectado con clave sintetica; NO prueba custodia POSIX productiva. `ERP4_LIVE_BANKING_ENABLED` debe continuar desactivado sin acreditacion.
+4. Completar matriz A01-A50 vinculada a evidencias, incluidos 200 recibos por el recorrido de dominio, fallos de artefacto y ACL documental por todos los accesos. El catalogo existente ahora tiene metadatos sin ruta/texto bancario y archivo en vault; no crear gestor documental paralelo.
+5. Recorrer la app completa con login/navegacion y contexto comunidad/propiedad/propietario en escritorio/movil. El harness de componente prueba HTML/CSS/HTTP/servicios reales aislados, pero no sustituye al shell completo de `index.js`.
+6. Checkpoint, backup/restauracion con esquema 18, regresiones de cierre tras ultimos cambios, publicacion SOLO con aceptacion completa y smoke test Ubuntu (integridad, permisos, rutas y flujos). No publicar el estado parcial, no abrir ERP 5.
 
 No hay nueva decision funcional material que requiera al usuario. Configuraciones bancarias reales y seguridad de implantacion siguen siendo puertas obligatorias del contrato, no autorizacion para operar con datos reales ahora.
+
+## Continuacion operativa 14/09/2026
+
+Este apartado y los pendientes anteriores sustituyen las afirmaciones de ausencia de UI/archivo de los checkpoints historicos de abajo; no invalidan sus evidencias de prueba.
+
+- Checkpoint previo de esta ampliacion: `erp4-pre-operational-closure-20260911`, sobre `7aa3ecdf96a89c9000f6ae79e90bf59776d51d52`. Backup sintetico `backups/erp4-pre-operational-closure-20260911/erp0-backup-20260911-222810`, restaurado en `%TEMP%/organizador-erp0-restore-ox69i427`, clave separada `%TEMP%/erp4-checkpoint-custody-mzgsdhr4`. 201 tablas identicas y descifrado verificado; no custodia productiva.
+- Migracion 17: instrucciones externas con reserva/guardas, eventos de revision inmutables, sucesion referencial de mandatos. Migracion 18: extension de almacenamiento/ACL del catalogo `documentos_importados`; metadatos genericos sin ruta ni texto extraido, archivo cifrado en vault, referencias de comunidad, catalogo inmutable. Probadas sobre copias, no produccion.
+- Corte externo masivo y cierre acreditado sin modificar deuda; enlace de mandato sucesor sin heredar domiciliaciones; caducidad conservadora; reintento puntual solo con perfil y prueba de fallo; revision de conflicto que conserva hechos economicos; inversion como solicitud, sin XML ni fondos; retorno terminal sin cobro conocido conserva incidencia de historico y no inventa devolucion ERP 3.
+- `pain.002`: expansion fichero/grupo/linea, parcial con rechazo concreto, referencia desconocida pendiente y contradicciones del mismo nivel bloqueadas. Idempotencia de fuente conservada.
+- Selectores de personas/propiedades/configuraciones usan ERP 1/2; elegibilidad y cobros/imputaciones consultan ERP 3. La domiciliacion especifica suspendida no recae silenciosamente en una generica.
+- Importacion `.xlsx`/CSV con archivo y staging cifrados, mapeo por indices, muestras enmascaradas, limites de ZIP/XML, DTD/XXE/formulas rechazados, duplicados y confirmacion revisable. Dependencias adicionales fijadas: openpyxl 3.1.5 y defusedxml 0.7.1.
+- UI `banking-ui.js`, incluida en shell existente: remesas, cuentas/mandatos, resultados, instrucciones externas y configuracion. Seleccion masiva, revision/edicion, reautenticacion y descarga no cacheable. Accesos contextuales a ERP 1 y recibo ERP 3, sin mover reglas economicas al navegador. Nuevos valores monetarios usan cadenas/BigInt solo para presentacion/sumas, servicios ERP para efectos.
+- Documentos PDF/PNG/JPEG cifrados, sin extraccion automatica ni IA; descarga dedicada exige `export` + `reveal`, permiso documental y reautenticacion. Referenciar un documento interno no protegido desde un comando bancario se rechaza; se puede aportar referencia externa acreditada o incorporarlo por el almacen protegido. El archivo nunca se publica en rutas genericas.
+- `ERP4_LIVE_BANKING_ENABLED` independiente de disponibilidad tecnica: modo real bloqueado si no vale `1`, incluso si se ha guardado la configuracion de comunidad. No se activa en esta continuacion.
+
+### Evidencias de esta ampliacion
+
+- Nucleo **82/82**, 106,315 s: `%TEMP%/organizador-erp4-foundations-1axhj9j2`. Integridad/FK e historicos intactos por caso. Casos 65-82 son nuevos; su numeracion NO representa A01-A50.
+- Navegador Edge/Playwright con HTTPS local y servicio Python/SQLite real aislado: `%TEMP%/organizador-erp4-foundations-30w3lz15/test_74_operational_selectors_use_same_domain_and_tenant`. Flujo masivo de 3 recibos, preparar/generar/exportar/presentar, acuse sin fondos, importacion CSV/mapeo/confirmacion, documento cifrado subido/descargado y cobro/imputacion/devolucion con ERP 3. Viewports 1440/1920/390, sin overflow ni errores JS. Evidencia visual en PNG junto al fixture; pantalla movil inspeccionada realmente.
+- Regresiones ERP 0: 11 comprobaciones (`organizador-erp0-foundations-8eoiyhn0`); ERP 1: 26 (`organizador-erp1-master-data-qu_gcwoz`); ERP 2 completo 40/16 (`organizador-erp2-complete-jg8jsvpv`); ERP 3 **42/42**, 32,112 s (`organizador-erp3-foundations-gdrrik7r`). Transporte HTTP simulado repetido correctamente. Caso 52 de acuerdo de prenotificacion repetido tras validar evidencia protegida, correcto (`organizador-erp4-foundations-z1pzd353`).
+- Consulta SSH de solo lectura: `organizador-web.service` activo. No es smoke test de ERP 4 ni publicacion. No se ha tocado Marbella UNO.
+
+MEJORAS AUTONOMAS IMPLEMENTADAS: guardia de especificidad de domiciliacion; contradicciones pain.002 sin seleccion arbitraria; selectores ERP 3 en vez de IDs manuales; bloqueo de doble clic/confirmacion; alerta visible de modo real deshabilitado; catalogo documental sin copia PII en texto/IA. Pruebas indicadas arriba. El restore verifica ahora tambien correspondencia de checksums del esquema con el codigo archivado.
 
 ## Restauracion del checkpoint parcial
 

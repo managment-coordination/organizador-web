@@ -7330,6 +7330,7 @@ finally:
 
 function homePage() {
   const receivablesScript=fs.readFileSync(path.join(__dirname,'receivables-ui.js'),'utf8');
+  const bankingScript=fs.readFileSync(path.join(__dirname,'banking-ui.js'),'utf8');
   const workspaceStyle=fs.readFileSync(path.join(__dirname,'workspace-ui.css'),'utf8');
   const workspaceIcons=Object.fromEntries(['house','list-checks','building-2','calendar-days','folder-kanban','bell','files','file-chart-column','sparkles','upload','shield-check','search','settings-2','landmark','users','clipboard-check','circle-check','refresh-cw','filter-x','log-out','x'].map(name=>[name,fs.readFileSync(path.join(__dirname,'node_modules/lucide-static/icons',name+'.svg'),'utf8').replace('<svg','<svg aria-hidden="true" focusable="false"')]));
   return `<!doctype html>
@@ -8598,6 +8599,7 @@ function homePage() {
                     <button class="tab hidden" id="masterDataTab" data-view="master-data"><span>Datos de la comunidad</span></button>
                     <button class="tab hidden" id="budgetTab" data-view="budgets"><span>Presupuestos</span></button>
                     <button class="tab hidden" id="receivablesTab" data-view="receivables"><span>Ingresos y recibos</span></button>
+                    <button class="tab hidden" id="bankingTab" data-view="banking"><span>Bancos y remesas</span></button>
                   </div>
                 </details>
                 <button class="tab" id="assemblyTab" data-view="assemblies"><span>Asambleas</span><span id="assemblyTabCount">0</span></button>
@@ -8920,6 +8922,8 @@ function homePage() {
   <script>
     ${receivablesScript}
     const receivablesUI=createReceivablesUI({api,html:value=>html(value),moneyLabel,moneyCents,moneyInput,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='receivables',navigate:()=>switchView('receivables')});
+    ${bankingScript}
+    const bankingUI=createBankingUI({api,html:value=>html(value),moneyLabel,moneyCents,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='banking',navigate:()=>switchView('banking'),isSuperuser:()=>state.usuario?.rol==='Superusuario',openReceipt:(community,id)=>receivablesUI.openReceipt(community,id)});
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "home";
@@ -9195,6 +9199,7 @@ function homePage() {
 
     async function logout() {
       receivablesUI.reset();
+      bankingUI.reset();
       await api("/api/logout", { method: "POST", body: JSON.stringify({}) }).catch(() => {});
       state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
       importAnalysis = null;
@@ -10009,7 +10014,7 @@ function homePage() {
       {area:'home',label:'Resumen',items:[['homeTab','house']]},
       {area:'tasks',label:'Trabajo',items:[['mapTab','calendar-days'],['taskTab','list-checks'],['projectTab','folder-kanban'],['workTab','clipboard-check'],['reviewTab','circle-check'],['notificationTab','bell']]},
       {area:'tasks',label:'Recursos',items:[['documentsTab','files'],['reportsTab','file-chart-column'],['aiTab','sparkles'],['importTab','upload'],['securityTab','shield-check']]},
-      {area:'management',label:'Comunidad',items:[['masterDataTab','building-2'],['budgetTab','landmark'],['receivablesTab','landmark'],['assemblyTab','users']]},
+      {area:'management',label:'Comunidad',items:[['masterDataTab','building-2'],['budgetTab','landmark'],['receivablesTab','landmark'],['bankingTab','landmark'],['assemblyTab','users']]},
       {area:'global',label:'General',items:[['globalSearchTab','search'],['adminTab','settings-2']]}
     ];
     function initializeWorkspaceNavigation(){
@@ -10039,10 +10044,11 @@ function homePage() {
     }
     function setActiveNavigation(view) {
       $('receivablesTab').classList.toggle('active',view==='receivables');
+      $('bankingTab').classList.toggle('active',view==='banking');
       ["homeTab", "projectTab", "taskTab", "assemblyTab", "securityTab", "mapTab", "workTab", "reviewTab", "globalSearchTab", "documentsTab", "masterDataTab", "budgetTab", "reportsTab", "importTab", "notificationTab", "aiTab", "adminTab"].forEach(id => $(id).classList.remove("active"));
       const target = ({ home: "homeTab", projects: "projectTab", tasks: "taskTab", assemblies: "assemblyTab", security: "securityTab", map: "mapTab", work: "workTab", review: "reviewTab", "global-search": "globalSearchTab", documents: "documentsTab", "master-data":"masterDataTab", budgets:"budgetTab", reports: "reportsTab", imports: "importTab", notifications: "notificationTab", ai: "aiTab", admin: "adminTab" })[view];
       if (target) $(target).classList.add("active");
-      const targetArea=view==='receivables'?'management':target?$(target).closest('[data-nav-area]')?.dataset.navArea:'home';
+      const targetArea=['receivables','banking'].includes(view)?'management':target?$(target).closest('[data-nav-area]')?.dataset.navArea:'home';
       const area=targetArea==='global'?'global':targetArea||'home';
       const areaLabel={home:'Inicio',tasks:'Tareas',management:'Gestion',global:'General'}[area];
       document.querySelectorAll('.tabs [data-nav-area]').forEach(group=>{
@@ -10054,7 +10060,7 @@ function homePage() {
         const available=workspaceNavigation.filter(g=>g.area===button.dataset.workspaceArea).flatMap(g=>g.items).some(([id])=>!$(id).classList.contains('hidden'));
         button.classList.toggle('hidden',!available);button.classList.toggle('active',button.dataset.workspaceArea===area);button.setAttribute('aria-pressed',String(button.dataset.workspaceArea===area));
       });
-      const trail=view==='receivables'?[areaLabel,'Ingresos y recibos']:target?[areaLabel,$(target).querySelector('span').textContent]:[];
+      const trail=view==='receivables'?[areaLabel,'Ingresos y recibos']:view==='banking'?[areaLabel,'Bancos y remesas']:target?[areaLabel,$(target).querySelector('span').textContent]:[];
       $('navigationTrail').textContent=trail.join(' / ');
       $('navigationTrail').classList.toggle('hidden', view==='home'||(state.usuario||{}).rol==='Seguridad');
       $("appView").dataset.view = view;
@@ -12190,6 +12196,9 @@ function homePage() {
         const property=masterData.section==='properties'?masterData.property:null,owner=masterData.section==='owners'?masterData.owner:null;
         financialLink.onclick=()=>receivablesUI.open(masterData.communityId,property?{property_id:property.id_propiedad}:owner?{owner_id:owner.id_propietario}:{},property?.codigo_propiedad||owner?.nombre||'Comunidad');
         (root.querySelector('.masterToolbar')||root).append(financialLink);
+        const bankingLink=document.createElement('button');bankingLink.type='button';bankingLink.textContent='Domiciliaciones y remesas';
+        bankingLink.onclick=()=>bankingUI.open(masterData.communityId,property?{property_id:property.id_propiedad}:owner?{owner_id:owner.id_propietario}:{},property?.codigo_propiedad||owner?.nombre||'Comunidad');
+        (root.querySelector('.masterToolbar')||root).append(bankingLink);
       }
       root.querySelector('#masterCommunity')?.addEventListener('change',event=>{masterData.communityId=Number(event.target.value);masterData.onboarding={kind:masterData.onboarding.kind,upload:null,preview:null,message:''};masterData.property=null;masterData.owner=null;masterData.group=null;masterData.structure=null;masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();});
       root.querySelectorAll('[data-master-section]').forEach(button=>button.addEventListener('click',()=>{masterData.section=button.dataset.masterSection;masterData.search='';masterData.proposal=null;masterData.ownershipEditing=false;masterData.groupManaging=false;masterData.groupDraft=null;masterData.groupReview=null;masterData.structureManaging=false;masterData.structureDraft=null;masterData.structureReview=null;loadMasterData();}));
@@ -12322,11 +12331,19 @@ function homePage() {
     }
 
     function render() {
-      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin", "master-data", "budgets", "receivables"].includes(currentView);
+      const specialView = ["home", "assemblies", "security", "map", "work", "review", "global-search", "documents", "reports", "imports", "notifications", "ai", "admin", "master-data", "budgets", "receivables", "banking"].includes(currentView);
       $("copilotFab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes((state.usuario || {}).rol));
       $("listFilters").classList.toggle("hidden", specialView);
       $("cards").className = specialView ? "specialPanel" : "cards";
       setActiveNavigation(currentView);
+      if (currentView === 'banking') {
+        $('contentTitle').textContent='Bancos y remesas';
+        $('contentSubtitle').textContent='';
+        $('visibleCount').textContent='';
+        $('viewActions').classList.add('hidden');
+        bankingUI.render();
+        return;
+      }
       if (currentView === 'receivables') {
         $('contentTitle').textContent='Ingresos y recibos';
         $('contentSubtitle').textContent='';
@@ -14224,6 +14241,7 @@ function homePage() {
         $("masterDataTab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario"].includes(user.rol));
         $("budgetTab").classList.toggle("hidden", !["Superusuario", "Administrador", "Usuario", "Consulta"].includes(user.rol));
         $('receivablesTab').classList.toggle('hidden',!['Superusuario','Administrador','Usuario','Consulta'].includes(user.rol));
+        $('bankingTab').classList.toggle('hidden',!['Superusuario','Administrador','Usuario','Consulta'].includes(user.rol));
         $("reportsTab").classList.toggle("hidden", user.rol === "Presidente");
         $("importTab").classList.toggle("hidden", !canWrite());
         $("adminTab").classList.toggle("hidden", user.rol !== "Superusuario");
@@ -14276,6 +14294,7 @@ function homePage() {
       if (view === "master-data" && !masterData.loaded) loadMasterData();
       if (view === "budgets" && !budgetData.loaded) loadBudgetData();
       if (view === 'receivables') receivablesUI.ensure();
+      if (view === 'banking') bankingUI.ensure();
       if (view === "security" && (securityData.access || {}).can_manage && !securityData.overview) loadSecurityData();
     }
 
@@ -14293,6 +14312,7 @@ function homePage() {
     $("masterDataTab").addEventListener("click", () => switchView("master-data"));
     $("budgetTab").addEventListener("click", () => switchView("budgets"));
     $('receivablesTab').addEventListener('click',()=>switchView('receivables'));
+    $('bankingTab').addEventListener('click',()=>switchView('banking'));
     $("reportsTab").addEventListener("click", () => switchView("reports"));
     $("importTab").addEventListener("click", () => switchView("imports"));
     $("notificationTab").addEventListener("click", () => switchView("notifications"));

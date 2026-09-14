@@ -113,8 +113,8 @@ class BankingTests(unittest.TestCase):
         before = list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations'))
         apply_all(self.conn)
         self.assertEqual(before, list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations')))
-        self.assertEqual(before[-1][0], 16)
-        self.assertEqual(len(MIGRATIONS), 16)
+        self.assertEqual(before[-1][0], 18)
+        self.assertEqual(len(MIGRATIONS), 18)
         for name in ('erp_cuentas_pagador', 'erp_mandatos', 'erp_remesa_reservas', 'erp_banco_operaciones'):
             self.assertEqual(self.conn.execute('SELECT count(*) FROM ' + name).fetchone()[0], 0)
 
@@ -942,6 +942,335 @@ class BankingTests(unittest.TestCase):
         for table in ('erp_command_log','erp_audit_events','erp_outbox','auditoria'):
             self.assertNotIn(IBAN,repr([tuple(r) for r in self.conn.execute('SELECT * FROM '+table)]))
 
+
+    def test_65_external_cutover_blocks_until_evidenced_closure(self):
+        p,_=self.remittance_setup()
+        command=self.envelope('external.register',{'receipt_ids':p['receipt_ids'],'source':'Previous bank file',
+            'reference':'CONFIDENTIAL-EXTERNAL-REF','cutoff_on':date.today().isoformat()})
+        registered=self.service.external_register(self.session,command)['entity']
+        self.assertTrue(self.service.external_register(self.session,command)['idempotent_replay'])
+        again=self.service.external_register(self.session,self.envelope('external.register',command.payload))['entity']
+        self.assertEqual(registered['ids'],again['ids'])
+        with self.assertRaises(ConflictError):
+            self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',p))
+        for eid in registered['ids']:
+            with self.assertRaises(ContractError):
+                self.service.external_close(self.session,self.envelope('external.close',{'id':eid,
+                    'effective_on':date.today().isoformat(),'terminal_confirmed':False},version=1))
+            self.service.external_close(self.session,self.envelope('external.close',{'id':eid,
+                'effective_on':date.today().isoformat(),'terminal_confirmed':True},version=1))
+        self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',p))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_banca_control_eventos').fetchone()[0],3)
+        self.assertNotIn('CONFIDENTIAL-EXTERNAL-REF',repr(list(self.conn.execute('SELECT * FROM erp_audit_events'))))
+
+    def test_66_external_registration_rolls_back_if_local_reserved(self):
+        p,_=self.remittance_setup()
+        only={**p,'receipt_ids':[p['receipt_ids'][1]]}
+        pv=self.service.remittance_preview(self.session,self.envelope('remittance.preview',only))['entity']
+        self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',{**only,'preview_hash':pv['preview_hash']}))
+        with self.assertRaises(ConflictError):
+            self.service.external_register(self.session,self.envelope('external.register',{
+                'receipt_ids':p['receipt_ids'],'cutoff_on':date.today().isoformat(),'source':'Previous','reference':'Pending'}))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_banca_instrucciones_externas').fetchone()[0],0)
+
+    def test_67_successor_keeps_original_identity_and_authorizations(self):
+        _,old,p=self.mandate_setup()
+        new=self.service.mandate_create(self.session,self.envelope('mandate.create',{**p,'rum':'SUCCESSOR-RUM'}))['entity']
+        self.service.mandate_transition(self.session,self.envelope('mandate.transition',{'id':new['id'],'state':'activo','effective_on':'2026-01-01'},version=1))
+        before=[tuple(r) for r in self.conn.execute('SELECT * FROM erp_mandatos')]
+        cmd=self.envelope('mandate.succeed',{'predecessor_id':old['id'],'successor_id':new['id'],
+            'successor_version':2,'effective_on':date.today().isoformat()},version=1)
+        self.service.mandate_succeed(self.session,cmd)
+        self.assertTrue(self.service.mandate_succeed(self.session,cmd)['idempotent_replay'])
+        self.assertEqual(before,[tuple(r) for r in self.conn.execute('SELECT * FROM erp_mandatos')])
+        with self.assertRaises(ConflictError):
+            self.service.mandate_create(self.session,self.envelope('mandate.create',p))
+
+    def test_68_confirmed_conflict_review_preserves_economic_history(self):
+        self.allow_economic_changes=True
+        *_,line=self.bank_result_fixture()
+        result,row=self.stage_bank_result(line,'settlement')
+        self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        result,row=self.stage_bank_result(line,'rejected',event='LATE-TECHNICAL-REJECTION')
+        self.confirm_result(result,row,'none')
+        self.assertEqual(self.service._line_status(self.conn,self.community,line['id']),'conflict')
+        event=self.conn.execute("SELECT * FROM erp_banca_linea_eventos WHERE kind='conflict'").fetchone()
+        rem=self.conn.execute('SELECT * FROM erp_remesas').fetchone()
+        before=[tuple(r) for r in self.conn.execute('SELECT * FROM erp_cobros')]
+        cmd=self.envelope('conflict.review',{'event_id':event['id'],'keep_economic_history':True,
+            'effective_on':date.today().isoformat()},version=rem['version'])
+        self.service.conflict_review(self.session,cmd)
+        self.assertTrue(self.service.conflict_review(self.session,cmd)['idempotent_replay'])
+        self.assertEqual(self.service._line_status(self.conn,self.community,line['id']),'settlement')
+        self.assertEqual(before,[tuple(r) for r in self.conn.execute('SELECT * FROM erp_cobros')])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_banca_linea_eventos WHERE kind='conflict'").fetchone()[0],1)
+
+    def test_69_reversal_request_is_not_money_or_local_cancel(self):
+        self.allow_economic_changes=True
+        *_,line=self.bank_result_fixture()
+        payload={'line_id':line['id'],'effective_on':date.today().isoformat()}
+        with self.assertRaises(ContractError):
+            self.service.reversal_request(self.session,self.envelope('reversal.request',payload))
+        result,row=self.stage_bank_result(line,'settlement')
+        self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        request=self.service.reversal_request(self.session,self.envelope('reversal.request',payload))['entity']
+        self.assertFalse(request['xml_enabled'])
+        self.assertFalse(request['economic_effect'])
+        again=self.service.reversal_request(self.session,self.envelope('reversal.request',payload))['entity']
+        self.assertEqual(request['id'],again['id'])
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'0')
+
+
+    def test_70_terminal_return_without_cash_preserves_gap_and_debt(self):
+        p,_,rem,_,line=self.bank_result_fixture()
+        result=self.service.results_import(self.session,self.envelope('results.import',{'format':'manual',
+            'effective_on':date.today().isoformat(),'data':[{'attempt_key':line['attempt_key'],
+                'kind':'returned','terminal':False}]}))['entity']
+        row=self.conn.execute('SELECT id FROM erp_resultado_lineas WHERE result_id=?',(result['id'],)).fetchone()[0]
+        with self.assertRaises(ContractError):
+            self.confirm_result(result,row,'terminal_without_collection')
+        result=self.service.results_import(self.session,self.envelope('results.import',{'format':'manual',
+            'effective_on':date.today().isoformat(),'data':[{'attempt_key':line['attempt_key'],
+                'kind':'returned','terminal':True}]}))['entity']
+        row=self.conn.execute('SELECT id FROM erp_resultado_lineas WHERE result_id=?',(result['id'],)).fetchone()[0]
+        self.confirm_result(result,row,'terminal_without_collection')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'10000')
+        self.assertEqual(self.service._line_status(self.conn,self.community,line['id']),'cancelled')
+        self.assertEqual(self.conn.execute('SELECT state FROM erp_remesa_reservas WHERE line_id=?',(line['id'],)).fetchone()[0],'liberada')
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_banca_control_eventos WHERE kind='terminal_history_gap'").fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT needs_review FROM erp_remesas WHERE id=?',(rem['id'],)).fetchone()[0],1)
+
+    def test_71_terminal_gap_cannot_hide_known_collection(self):
+        self.allow_economic_changes=True
+        *_,line=self.bank_result_fixture()
+        result,row=self.stage_bank_result(line,'settlement')
+        self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        result=self.service.results_import(self.session,self.envelope('results.import',{'format':'manual',
+            'effective_on':date.today().isoformat(),'data':[{'attempt_key':line['attempt_key'],
+                'kind':'returned','terminal':True}]}))['entity']
+        row=self.conn.execute('SELECT id FROM erp_resultado_lineas WHERE result_id=?',(result['id'],)).fetchone()[0]
+        with self.assertRaises(ConflictError):self.confirm_result(result,row,'terminal_without_collection')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'0')
+
+    def test_72_oneoff_retry_needs_profile_and_specific_evidence(self):
+        p,mandate=self.remittance_setup()
+        # Set the synthetic mandate kind before any instruction, to reuse the same fixture setup.
+        self.conn.execute("UPDATE erp_mandatos SET kind='puntual' WHERE id=?",(mandate['id'],))
+        one={**p,'receipt_ids':p['receipt_ids'][:1]}
+        preview=self.service.remittance_preview(self.session,self.envelope('remittance.preview',one))['entity']
+        rem=self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',{**one,'preview_hash':preview['preview_hash']}))['entity']
+        built=self.service.remittance_build(self.session,self.envelope('remittance.build',{'id':rem['id']},version=1))['entity']
+        self.grant('export');self.grant('results')
+        self.service.remittance_export(self.session,self.envelope('remittance.export',{'file_id':built['file_id'],'acknowledge_bank_data':True},version=2))
+        self.service.presentation_record(self.session,self.envelope('presentation.record',{'file_id':built['file_id'],'effective_on':date.today().isoformat(),'bank_reference':'SYNTHETIC-ONEOFF'},version=3))
+        line=self.conn.execute('SELECT * FROM erp_remesa_lineas').fetchone()
+        result,row=self.stage_bank_result(line,'rejected')
+        self.confirm_result(result,row,'none')
+        payload={'line_id':line['id'],'effective_on':date.today().isoformat()}
+        with self.assertRaises(ContractError):
+            self.service.mandate_authorize_retry(self.session,self.envelope('mandate.authorize_retry',payload,version=2))
+        configrow,config=self.service._bank_profile(self.conn,self.community,p['creditor_id'])
+        self.service.profile_configure(self.session,self.envelope('profile.configure',{'creditor_id':p['creditor_id'],
+            'config':{**config,'allow_failed_oneoff_retry':True}},version=configrow['version']))
+        retry=self.retry_payload(p,line)
+        with self.assertRaises(ConflictError):self.service.retry_preview(self.session,self.envelope('retry.preview',retry))
+        self.service.mandate_authorize_retry(self.session,self.envelope('mandate.authorize_retry',payload,version=2))
+        proposed=self.service.retry_preview(self.session,self.envelope('retry.preview',retry))['entity']
+        self.assertEqual(proposed['lines'][0]['sequence'],'OOFF')
+        new=self.service.retry_confirm(self.session,self.envelope('retry.confirm',{**retry,'preview_hash':proposed['preview_hash']}))['entity']
+        self.service.remittance_build(self.session,self.envelope('remittance.build',{'id':new['id']},version=1))
+
+    def test_73_inactive_mandate_cannot_be_reactivated(self):
+        _,_,p=self.mandate_setup()
+        stale=self.service.mandate_create(self.session,self.envelope('mandate.create',{
+            **p,'rum':'EXPIRED-SYNTHETIC','signed_on':'2020-01-01','effective_from':'2020-01-01'}))['entity']
+        with self.assertRaises(ContractError):
+            self.service.mandate_transition(self.session,self.envelope('mandate.transition',{
+                'id':stale['id'],'state':'activo','effective_on':date.today().isoformat()},version=1))
+        self.service.mandate_transition(self.session,self.envelope('mandate.transition',{
+            'id':stale['id'],'state':'caducado','effective_on':date.today().isoformat()},version=1))
+        with self.assertRaises(ContractError):
+            self.service.mandate_transition(self.session,self.envelope('mandate.transition',{
+                'id':stale['id'],'state':'activo','effective_on':date.today().isoformat()},version=2))
+
+
+    def test_74_operational_selectors_use_same_domain_and_tenant(self):
+        p,m=self.remittance_setup();self.grant('read_masked')
+        properties=self.service.reference_list(self.session,self.query('reference.list',{'kind':'properties'}))['entity']
+        self.assertGreater(properties['total'],0)
+        billing=self.service.reference_list(self.session,self.query('reference.list',{'kind':'billing','mandate_id':m['id']}))['entity']
+        self.assertEqual(len(billing['items']),3)
+        rows=self.service.receipt_candidates(self.session,self.query('receipt.candidates',{
+            'creditor_id':p['creditor_id'],'requested_on':p['requested_on'],'notification_id':p['notification_id']}))['entity']['items']
+        found=[r for r in rows if r['id'] in p['receipt_ids']]
+        self.assertEqual(len(found),3)
+        self.assertTrue(all(r['validated'] and not r['issues'] for r in found))
+        for r in found:self.assertEqual(r['pending_cents'],'10000')
+        self.assertNotIn(IBAN,json.dumps([properties,billing,rows]))
+        with self.assertRaises(PermissionError):
+            self.service.reference_list(self.session,replace(self.query('reference.list',{'kind':'owners'}),community_id=self.community+900000))
+
+    def test_75_suspended_specific_direct_debit_does_not_fall_back(self):
+        p,m=self.remittance_setup()
+        direct=self.conn.execute('SELECT * FROM erp_domiciliaciones ORDER BY id LIMIT 1').fetchone()
+        generic=direct['id']
+        self.conn.execute("UPDATE erp_domiciliaciones SET concept_key='bank-test' WHERE id=?",(generic,))
+        self.service.direct_debit_state(self.session,self.envelope('direct_debit.state',{
+            'id':generic,'state':'suspendida','effective_from':date.today().isoformat()},version=1))
+        receipt=self.conn.execute('SELECT * FROM erp_recibos WHERE id=?',(p['receipt_ids'][0],)).fetchone()
+        with self.assertRaises(ContractError):
+            self.service._direct_for_receipt(self.conn,self.community,receipt,p['requested_on'])
+
+
+    def test_76_excel_mapping_is_masked_revisable_and_idempotent(self):
+        import io
+        import openpyxl
+        self.grant('manage_accounts')
+        workbook=openpyxl.Workbook();sheet=workbook.active
+        sheet.append(['Propiedad','Cuenta bancaria','Nombre'])
+        sheet.append(['VILLA-TEST',IBAN,'Propietario de prueba'])
+        sheet.append(['VILLA-TEST-2',IBAN,'Misma cuenta'])
+        raw=io.BytesIO();workbook.save(raw)
+        payload={'filename':'cuentas.xlsx','file_base64':base64.b64encode(raw.getvalue()).decode()}
+        analyze=self.service.import_analyze(self.session,self.envelope('import.analyze',payload))['entity']
+        self.assertNotIn(IBAN,json.dumps(analyze))
+        self.assertEqual(analyze['row_count'],2)
+        mapping={'source_id':analyze['source_id'],'mapping':{'iban':1,'alias':2,'observed_property_reference':0},
+            'source':'Libro original','cutoff':date.today().isoformat()}
+        preview=self.service.import_file_preview(self.session,self.envelope('import.file_preview',mapping))['entity']
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cuentas_pagador').fetchone()[0],0)
+        self.assertTrue(preview['items'][1]['issues'])
+        command=self.envelope('import.confirm',{'id':preview['id'],'rows':[1],'acknowledge_observed_mandates':True},version=1)
+        self.service.import_confirm(self.session,command)
+        again=self.service.import_file_preview(self.session,self.envelope('import.file_preview',mapping))['entity']
+        self.assertEqual(again['id'],preview['id'])
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cuentas_pagador').fetchone()[0],1)
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_mandatos').fetchone()[0],0)
+        with self.assertRaises(PermissionError):
+            self.service.import_file_preview(self.session,self.envelope('import.file_preview',mapping,community=self.community+999999))
+
+    def test_77_spreadsheet_parser_rejects_dtd_and_excess(self):
+        from erp_core.banking_tabular import parse_workbook
+        import io,zipfile
+        buf=io.BytesIO()
+        with zipfile.ZipFile(buf,'w') as archive:archive.writestr('doc.xml','<!DOCTYPE doc [<!ENTITY secret SYSTEM "file:///test">]><doc>&secret;</doc>')
+        with self.assertRaises(ContractError):parse_workbook(base64.b64encode(buf.getvalue()).decode(),'bad.xlsx')
+        content='IBAN\n'+'\n'.join([IBAN]*1017)
+        with self.assertRaises(ContractError):parse_workbook(base64.b64encode(content.encode()).decode(),'big.csv')
+        content='Propiedad;Cuenta\nVILLA-TEST;'+IBAN
+        parsed=parse_workbook(base64.b64encode(content.encode()).decode(),'original.csv')
+        self.assertEqual(parsed['rows'][0]['values'][1],IBAN)
+
+    def test_78_mapping_must_be_exact_and_formulas_are_not_values(self):
+        import io,openpyxl
+        self.grant('manage_accounts')
+        workbook=openpyxl.Workbook();sheet=workbook.active;sheet.append(['IBAN']);sheet.append(['="'+IBAN+'"'])
+        buf=io.BytesIO();workbook.save(buf)
+        result=self.service.import_analyze(self.session,self.envelope('import.analyze',{
+            'filename':'formula.xlsx','file_base64':base64.b64encode(buf.getvalue()).decode()}))['entity']
+        payload={'source_id':result['source_id'],'mapping':{'iban':0},'source':'Formula','cutoff':date.today().isoformat()}
+        preview=self.service.import_file_preview(self.session,self.envelope('import.file_preview',payload))['entity']
+        self.assertTrue(preview['items'][0]['issues'])
+        with self.assertRaises(ContractError):
+            self.service.import_file_preview(self.session,self.envelope('import.file_preview',{**payload,'mapping':{'iban':0,'alias':0}}))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cuentas_pagador').fetchone()[0],0)
+
+
+    def pain002(self, built, status='PART', details=''):
+        from erp_core.banking_adapter import STATUS_NS
+        file=self.conn.execute('SELECT message_id FROM erp_remesa_ficheros WHERE id=?',(built['file_id'],)).fetchone()
+        return f'''<Document xmlns="{STATUS_NS}"><CstmrPmtStsRpt><GrpHdr><MsgId>SYNTHETIC-STATUS</MsgId>
+            <CreDtTm>2026-09-11T12:00:00Z</CreDtTm><InitgPty><Nm>Banco sintetico</Nm></InitgPty></GrpHdr>
+            <OrgnlGrpInfAndSts><OrgnlMsgId>{file['message_id']}</OrgnlMsgId><OrgnlMsgNmId>pain.008.001.08</OrgnlMsgNmId>
+            <GrpSts>{status}</GrpSts></OrgnlGrpInfAndSts>{details}</CstmrPmtStsRpt></Document>'''.encode()
+
+    def test_79_pain002_partial_file_and_unknown_reference_are_reviewable(self):
+        *_,built,line=self.bank_result_fixture()
+        detail=f'''<OrgnlPmtInfAndSts><OrgnlPmtInfId>SYNTHETIC-GROUP</OrgnlPmtInfId>
+            <TxInfAndSts><OrgnlEndToEndId>{line['attempt_key']}</OrgnlEndToEndId><TxSts>RJCT</TxSts></TxInfAndSts>
+            <TxInfAndSts><OrgnlEndToEndId>UNKNOWN-REFERENCE</OrgnlEndToEndId><TxSts>RJCT</TxSts></TxInfAndSts>
+            </OrgnlPmtInfAndSts>'''
+        raw=self.pain002(built,details=detail)
+        p={'format':'pain002','data':base64.b64encode(raw).decode(),'effective_on':date.today().isoformat()}
+        imported=self.service.results_import(self.session,self.envelope('results.import',p))['entity']
+        self.assertEqual(imported['unmatched'],1)
+        rows=list(self.conn.execute('SELECT * FROM erp_resultado_lineas WHERE result_id=?',(imported['id'],)))
+        rejected=next(r for r in rows if r['line_id']==line['id'])
+        data=self.vault.get(self.conn,self.community,rejected['secret_id'],'bank-result-line')
+        self.assertEqual(data['kind'],'rejected')
+        self.assertFalse(data['contradictory'])
+        self.confirm_result(imported,rejected['id'],'none')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'10000')
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_remesa_reservas WHERE state='activa'").fetchone()[0],2)
+        repeated=self.service.results_import(self.session,self.envelope('results.import',p))['entity']
+        self.assertEqual(repeated['id'],imported['id'])
+
+    def test_80_pain002_peer_contradiction_blocks_and_group_rejection_expands(self):
+        *_,built,line=self.bank_result_fixture()
+        detail=f'''<OrgnlPmtInfAndSts><OrgnlPmtInfId>SYNTHETIC-GROUP</OrgnlPmtInfId>
+            <TxInfAndSts><OrgnlEndToEndId>{line['attempt_key']}</OrgnlEndToEndId><TxSts>RJCT</TxSts></TxInfAndSts>
+            <TxInfAndSts><OrgnlEndToEndId>{line['attempt_key']}</OrgnlEndToEndId><TxSts>PDNG</TxSts></TxInfAndSts>
+            </OrgnlPmtInfAndSts>'''
+        rows=self.service._stage_status_rows(self.conn,self.community,self.pain002(built,details=detail))
+        row=next(r for r in rows if r.get('attempt_key')==line['attempt_key'])
+        self.assertEqual(row['kind'],'pending');self.assertTrue(row['contradictory'])
+        file=self.conn.execute('SELECT * FROM erp_remesa_ficheros WHERE id=?',(built['file_id'],)).fetchone()
+        meta=self.vault.get(self.conn,self.community,file['secret_id'],'remittance-file')['metadata']
+        group=meta['payment_groups'][0]
+        detail=f"<OrgnlPmtInfAndSts><OrgnlPmtInfId>{group['id']}</OrgnlPmtInfId><PmtInfSts>RJCT</PmtInfSts></OrgnlPmtInfAndSts>"
+        rows=self.service._stage_status_rows(self.conn,self.community,self.pain002(built,details=detail))
+        self.assertEqual({r['attempt_key'] for r in rows if r['kind']=='rejected'},set(group['attempt_keys']))
+        rows=self.service._stage_status_rows(self.conn,self.community,self.pain002(built,'RJCT'))
+        self.assertEqual(len(rows),3);self.assertTrue(all(r['kind']=='rejected' for r in rows))
+
+    def test_81_result_choices_reuse_erp3_and_live_profile_is_explicitly_gated(self):
+        from unittest.mock import patch
+        self.allow_economic_changes=True
+        p,m,rem,built,line=self.bank_result_fixture()
+        result,row=self.stage_bank_result(line,'settlement')
+        paid,_=self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        collection=paid['entity']['applied'][0]['collection_id']
+        returned,row=self.stage_bank_result(line,'returned',event='CHOICES-RETURN')
+        choices=self.service.results_choices(self.session,QueryEnvelope('erp4.results.choices',self.community,{'result_line_id':row}))['entity']
+        self.assertEqual([c['id'] for c in choices['collections']],[collection])
+        self.assertEqual(str(choices['collections'][0]['allocations'][0]['remaining_cents']),'10000')
+        profile=self.service.profile_get(self.session,QueryEnvelope('erp4.profile.get',self.community,{'creditor_id':p['creditor_id']}))['entity']
+        self.assertEqual(profile['version'],1)
+        config={**profile['config'],'mode':'live','bank_profile_accepted':True,'external_instructions_reviewed':True}
+        with patch.dict(os.environ,{'ERP4_LIVE_BANKING_ENABLED':'0'}):
+            self.service.profile_configure(self.session,self.envelope('profile.configure',{'creditor_id':p['creditor_id'],'config':config},version=1))
+            with self.assertRaises(ContractError):
+                self.service._bank_profile(self.conn,self.community,p['creditor_id'])
+
+    def test_82_bank_documents_reuse_catalogue_without_plaintext_or_generic_path(self):
+        self.grant('manage_mandates');self.grant('read_masked')
+        raw=b'%PDF-1.7\nSynthetic bank evidence '+IBAN.encode()+b'\n%%EOF'
+        p={'purpose':'mandate','filename':IBAN+'.pdf','data':base64.b64encode(raw).decode()}
+        document=self.service.document_upload(self.session,self.envelope('document.upload',p))['entity']
+        repeated=self.service.document_upload(self.session,self.envelope('document.upload',p))['entity']
+        self.assertEqual(document['id'],repeated['id'])
+        row=self.conn.execute('SELECT * FROM documentos_importados WHERE id_documento=?',(document['id'],)).fetchone()
+        self.assertEqual(row['ruta_archivo'],'');self.assertEqual(row['texto_extraido'],'')
+        self.assertNotIn(IBAN,json.dumps(dict(row)))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute('UPDATE documentos_importados SET ruta_archivo=? WHERE id_documento=?',('plain-file.pdf',document['id']))
+        with self.assertRaises(PermissionError):
+            self.service.document_download(self.session,self.community,document['id'],'Consulta autorizada')
+        self.grant('export');self.grant('reveal')
+        with self.assertRaises(PermissionError):
+            self.service.document_download({**self.session,'banking_reauthenticated_at':None},self.community,document['id'],'Consulta autorizada')
+        result=self.service.document_download(self.session,self.community,document['id'],'Consulta autorizada '+IBAN)
+        self.assertEqual(base64.b64decode(result['content_base64']),raw)
+        with self.assertRaises(PermissionError):
+            self.service.document_download(self.session,999999,document['id'],'Consulta autorizada')
+        for table in ('erp_command_log','erp_audit_events','erp_outbox'):
+            self.assertNotIn(IBAN,json.dumps([dict(r) for r in self.conn.execute('SELECT * FROM '+table)]))
+        self.grant('manage_accounts')
+        env=replace(self.envelope('account.create',{'iban':IBAN}),evidence=CommandEnvelope.from_value({
+            'command':'erp4.account.create','id_comunidad':self.community,'payload':{},'idempotency_key':'protected-evidence',
+            'reason':'Test','origin':'test','evidence':{'type':'imported_document','id':document['id']}}).evidence)
+        self.service.account_create(self.session,env)
+        self.assertEqual(self.service.document_list(self.session,QueryEnvelope('erp4.document.list',self.community,{}))['entity']['total'],1)
 
 if __name__ == '__main__':
     print('Isolated ERP4 workspace:', WORK, flush=True)
