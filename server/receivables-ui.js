@@ -34,7 +34,7 @@ function createReceivablesUI(ctx) {
     const token=generation,community=s.community;
     const signature=JSON.stringify([s.community,name,payload,version,reason,evidence]);
     if (!s.keys.has(signature)) s.keys.set(signature,uid());
-    const result=await api('/api/erp/command',{method:'POST',body:JSON.stringify({command:'erp3.'+name,
+    const result=await api('/api/erp/command',{method:'POST',body:JSON.stringify({command:/^erp[23]\./.test(name)?name:'erp3.'+name,
       id_comunidad:s.community,payload,expected_version:version??null,idempotency_key:s.keys.get(signature),reason,
       evidence:evidence||null,origin:'web'})});
     if(token!==generation||community!==s.community)throw new Error('La operacion termino en la comunidad anterior. Actualiza su ficha para consultar el resultado.');
@@ -51,8 +51,9 @@ function createReceivablesUI(ctx) {
       const workspace=refs.capabilities.sensitive_read?(await q('erp3.workspace.get',scoped())).entity:null;
       const documents=refs.capabilities.sensitive_read?(await q('erp3.evidence.list')).entity.items:[];
       const statement=refs.capabilities.sensitive_read?(await q('erp3.account.statement',scoped())).entity:null;
+      const plans=(await q('erp2.quota_plan.list',{effective_at:s.cut})).entity;
       if(token!==generation)return;
-      Object.assign(s,{refs,receipts,summary,workspace,documents,statement,loaded:true});
+      Object.assign(s,{refs,receipts,summary,workspace,documents,statement,plans,loaded:true});
     } catch(error) {if(token===generation)s.error=error.message;}
     finally {if(token===generation){s.loading=false;render();}}
   }
@@ -60,7 +61,7 @@ function createReceivablesUI(ctx) {
     return `<div class="finTableWrap"><table class="masterDataTable finTable"><thead><tr>${headers.map(x=>`<th>${h(x)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map((cell,i)=>`<td data-label="${h(headers[i])}">${cell}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}">No hay registros para esta seleccion.</td></tr>`}</tbody></table></div>`;
   }
   function header() {
-    const tabs=[['receipts','Recibos'],['collections','Cobros y saldos'],['debt','Deuda e historico'],['adjustments','Ajustes y gastos'],['imports','Importacion historica'],['settings','Configuracion']];
+    const tabs=[['receipts','Recibos'],['plans','Planes de cuotas'],['collections','Cobros y saldos'],['debt','Deuda e historico'],['adjustments','Ajustes y gastos'],['imports','Importacion historica'],['settings','Configuracion']];
     return `<div class="budgetToolbar">${select('community','Comunidad',communities().map(c=>[c.id_comunidad,c.nombre]),s.community,true)}${input('cut','A fecha de','date',s.cut)}${buttonHtml('reload','Actualizar')}${can('sensitive_read')?`<details><summary>Exportar</summary>${buttonHtml('export-csv','CSV')}${buttonHtml('export-xlsx','Excel')}</details>`:''}</div>
       <div class="budgetTabs finTabs">${tabs.filter(([key])=>key!=='imports'||can('import_history')).filter(([key])=>key!=='settings'||can('configure')||can('resolve_responsibility')).map(([key,label])=>buttonHtml('section',label,`data-section="${key}"`,s.section===key?'active':'')).join('')}</div>
       ${s.filters.property_id||s.filters.owner_id?`<div class="finScope">${h(s.scopeLabel||'Ficha seleccionada')} ${buttonHtml('clear-scope','Ver toda la comunidad')}</div>`:''}`;
@@ -117,10 +118,72 @@ function createReceivablesUI(ctx) {
   }
   function settings() {
     const users=s.workspace?.permission_users||[];
-    const labels={read:'Consultar recibos',sensitive_read:'Consultar datos personales',prepare_emission:'Preparar emisiones',confirm_emission:'Confirmar emisiones',record_collection:'Registrar cobros',allocate:'Imputar cobros',reverse_allocation:'Desimputar',return_collection:'Registrar devoluciones',credit:'Abonar',void:'Anular',adjust:'Gastos y ajustes',refund:'Reintegrar saldos',claim:'Gestionar reclamaciones',import_history:'Importar historico',approve_opening:'Confirmar aperturas',resolve_responsibility:'Configurar obligados',classify_uncollectible:'Clasificar incobrables',transfer_responsibility:'Reasignar deuda',configure:'Configurar politicas'};
+    const labels={read:'Consultar recibos y planes',plan_create:'Crear planes de cuotas',plan_modify:'Modificar planes de cuotas',plan_activate:'Activar o desactivar planes',sensitive_read:'Consultar datos personales',prepare_emission:'Preparar emisiones',confirm_emission:'Confirmar emisiones',record_collection:'Registrar cobros',allocate:'Imputar cobros',reverse_allocation:'Desimputar',return_collection:'Registrar devoluciones',credit:'Abonar',void:'Anular',adjust:'Gastos y ajustes',refund:'Reintegrar saldos',claim:'Gestionar reclamaciones',import_history:'Importar historico',approve_opening:'Confirmar aperturas',resolve_responsibility:'Configurar obligados',classify_uncollectible:'Clasificar incobrables',transfer_responsibility:'Reasignar deuda',configure:'Configurar politicas'};
     return `${can('resolve_responsibility')?`<section><h3>Obligados economicos</h3>${buttonHtml('responsibility','Configurar desde una propiedad')}</section>`:''}
       ${can('configure')?`<details><summary>Fuente de emision y corte de puesta en marcha</summary>${table(['Concepto','Desde','Hasta','Fuente',''],(s.refs.coverages||[]).map(c=>[h(c.concept_key),h(c.effective_from),h(c.effective_until),c.activation_id?'Historico revisado':c.authority==='erp3'?'Emision ERP':'Historico por revisar',c.authority==='legacy_observed'&&!c.activation_id?buttonHtml('activate-coverage','Revisar correspondencias',`data-id="${c.id}"`):'']))}${buttonHtml('coverage','Registrar cobertura')}</details><details><summary>Gastos de devolucion</summary>${buttonHtml('policy','Configurar politica')}</details>`:''}
       ${users.length?`<details><summary>Permisos de recibos por usuario</summary><form data-fin-form="permissions">${select('user','Usuario',users.map(u=>[u.id_usuario,u.nombre]),s.permissionUser||users[0].id_usuario)}<div class="finPermissions">${Object.keys(labels).map(key=>`<label class="finCheck"><input type="checkbox" name="${key}" ${(users.find(u=>u.id_usuario===Number(s.permissionUser))||users[0]).capabilities[key]?'checked':''}>${labels[key]}</label>`).join('')}</div><button>Guardar permisos</button></form></details>`:''}`;
+  }
+  function plansHtml() {
+    const items=s.plans?.items||[],caps=s.plans?.capabilities||{};
+    return `<h3>Planes de cuotas</h3><div class="toolbar">${caps.plan_create?buttonHtml('plan-new','Nuevo plan'):''}${caps.prepare_emission?buttonHtml('period-emission','Generar recibos por periodo','','green'):''}</div>`+
+      table(['Plan','Importe / frecuencia','Grupo / vigencia','Estado / proxima emision',''],items.map(p=>[
+        `<strong>${h(p.name)}</strong><br>${p.origin_type==='presupuesto'?'Presupuesto aprobado':'Importe manual'}`,
+        p.configured?money(p.amount_cents)+'<br>'+h(p.amount_mode==='total_anual'?'Total anual':'Cada periodo')+' · '+h(p.frequency):'Cuotas del presupuesto',
+        p.configured?h(p.config.group_name||'Grupos del presupuesto')+'<br>'+h(p.effective_from)+(p.effective_until?' hasta '+h(p.effective_until):''):'Pendiente de configurar',
+        p.configured?(p.active?'Activo':'Inactivo / fuera de vigencia')+'<br>'+h(p.next_issue||'Sin proxima emision'):'Sin activar',
+        (p.configured?(caps.plan_modify?buttonHtml('plan-edit','Editar',`data-id="${p.id}"`):'')+(caps.plan_activate?buttonHtml('plan-state',p.active?'Desactivar':'Activar',`data-id="${p.id}"`):'')+buttonHtml('plan-history','Historico',`data-id="${p.id}"`)+(caps.plan_modify?buttonHtml('plan-regularize','Regularizar',`data-id="${p.id}"`):'')+(can('configure')?buttonHtml('plan-coverage','Fuente de emision',`data-id="${p.id}"`):''):
+          caps.plan_create?buttonHtml('plan-edit','Configurar y activar',`data-id="${p.id}"`):'')
+      ]))+(s.planHistory?`<section><h3>Historico de ${h(s.planHistory.name)}</h3>${table(['Desde','Nombre / concepto','Importe','Periodicidad'],s.planHistory.history.map(v=>[h(v.efectiva_desde),h(v.nombre)+'<br>'+h(v.concepto),money(v.importe_centimos),h(v.periodicidad)]))}${table(['Fecha efectiva','Estado','Motivo'],s.planHistory.activity_history.map(v=>[h(v.efectiva_desde),v.activa?'Activo':'Inactivo',h(v.motivo)]))}${s.planHistory.emissions.length?`<details><summary>Recibos generados (${s.planHistory.emissions.length})</summary>${s.planHistory.emissions.map(v=>buttonHtml('receipt','Abrir recibo',`data-id="${v.receipt_id}"`)).join('')}</details>`:''}</section>`:'');
+  }
+  function planForm(plan) {
+    const refs=s.plans.references,c=plan?.config||{};
+    if(!refs.exercises.length)throw new Error('Crea primero un ejercicio desde Datos de la comunidad o Presupuestos.');
+    const exercise=c.exercise_id||plan?.exercise_id||refs.exercises[0].id_ejercicio;
+    const erow=refs.exercises.find(x=>x.id_ejercicio===Number(exercise));
+    const origin=c.origin_type||plan?.origin_type||'importe_manual';
+    const fields=input('name','Nombre','text',c.name||plan?.name||'')+input('concept','Concepto del recibo','text',c.concept||plan?.name||'')+
+      select('exercise_id','Ejercicio',refs.exercises.map(x=>[x.id_ejercicio,x.codigo]),exercise,true)+select('origin_type','Origen',[['presupuesto','Presupuesto aprobado'],['importe_manual','Importe manual']],origin,true)+
+      `<div class="finWide" id="planBudget">${select('budget_id','Presupuesto',refs.budgets.map(x=>[x.id_presupuesto,x.denominacion]),c.budget_id||plan?.budget_id||'',true)}<small>Se conserva el reparto y calendario aprobados de todas las partidas.</small></div>`+
+      `<div class="masterFormGrid finWide" id="planManual">${input('amount','Importe','text',moneyInput(c.amount_cents||'0'))}${select('amount_mode','El importe corresponde a',[['total_anual','Total anual'],['por_periodo','Cada periodo']],c.amount_mode||'total_anual',true)}${select('frequency','Periodicidad',[['mensual','Mensual'],['trimestral','Trimestral'],['semestral','Semestral'],['anual','Anual']],c.frequency||'mensual',true)}${select('group_id','Grupo de reparto',refs.groups.map(x=>[x.id_grupo,x.nombre]),c.group_id||'',true)}${select('rule_type','Como se reparte',[['coeficiente','Por coeficiente / peso'],['porcentaje_especial','Coeficiente especial'],['partes_iguales','A partes iguales'],['importe_fijo','Importe fijo por propiedad'],['unidades','Unidades']],c.rule_type||'coeficiente',true)}${select('series','Coeficiente / serie',refs.series.map(x=>[x.finalidad+'|'+x.unidad,x.finalidad+' · '+x.unidad]),(c.series_purpose||'general')+'|'+(c.series_unit||'porcentaje'))}<div id="planFixed">${input('fixed','Importe por propiedad (ejercicio)','text',moneyInput(c.rule_parameters?.fixed_cents||'0'))}</div><div class="finWide" id="planUnits">${input('tariff','Tarifa por unidad','text',c.rule_parameters?.tariff_decimal||'')}<label>Propiedad y unidades<textarea name="quantities" rows="4" placeholder="Codigo propiedad | unidades">${h(Object.entries(c.rule_parameters?.quantities||{}).map(([pid,value])=>(refs.properties.find(x=>x.id_propiedad===Number(pid))?.codigo_propiedad||'')+' | '+value).join('\n'))}</textarea></label></div></div>`+
+      input('effective_from','Vigente desde','date',c.effective_from||erow.fecha_inicio)+input('effective_until','Fin de vigencia (opcional)','date',c.effective_until||'',false)+
+      `<details class="finWide"><summary>Descripcion adicional</summary>${input('description','Descripcion','text',c.description||'',false)}</details>`;
+    setForm(plan?.configured?'Editar plan de cuotas':'Nuevo plan de cuotas',fields,d=>{
+      const payload={name:d.name,concept:d.concept,exercise_id:Number(d.exercise_id),origin_type:d.origin_type,effective_from:d.effective_from,
+        ...(d.effective_until?{effective_until:d.effective_until}:{}),...(d.description?{description:d.description}:{}),...(plan?.configured?{plan_id:plan.id}:{})};
+      if(d.origin_type==='presupuesto')payload.budget_id=Number(d.budget_id);
+      else {
+        const [purpose,unit]=String(d.series||'general|porcentaje').split('|');
+        const params={};
+        if(d.rule_type==='importe_fijo')params.fixed_cents=parseMoney(d.fixed);
+        if(d.rule_type==='unidades') {
+          params.tariff_decimal=String(d.tariff).replace(',','.');params.quantities={};
+          for(const row of String(d.quantities).split(/\r?\n/).filter(x=>x.trim())) {
+            const [code,value,...extra]=row.split('|').map(x=>x.trim());
+            const matches=refs.properties.filter(x=>x.codigo_propiedad===code);
+            if(extra.length||matches.length!==1||params.quantities[matches[0].id_propiedad]!=null)throw new Error('Codigo de propiedad inexistente o duplicado en unidades.');
+            params.quantities[matches[0].id_propiedad]=String(value).replace(',','.');
+          }
+        }
+        Object.assign(payload,{amount_cents:parseMoney(d.amount),amount_mode:d.amount_mode,frequency:d.frequency,group_id:Number(d.group_id),rule_type:d.rule_type,series_purpose:purpose,series_unit:unit,rule_parameters:params});
+      }
+      return {name:'erp2.quota_plan.preview',payload,version:plan?.configured?plan.version:0};
+    });
+    function updateFields() {
+      const form=root().querySelector('[data-fin-form="operation"]');if(!form)return;
+      const manual=form.elements.origin_type.value==='importe_manual';
+      for(const [id,show] of [['planBudget',!manual],['planManual',manual],['planFixed',manual&&form.elements.rule_type.value==='importe_fijo'],['planUnits',manual&&form.elements.rule_type.value==='unidades']]){
+        const area=form.querySelector('#'+id);area.hidden=!show;area.querySelectorAll('input,select,textarea').forEach(el=>el.disabled=!show);
+      }
+      const group=Number(form.elements.group_id.value),series=refs.series.filter(x=>x.id_grupo===group);
+      const fixed=form.querySelector('#planFixed label');
+      fixed.firstChild.textContent=form.elements.amount_mode.value==='por_periodo'?'Importe por propiedad (cada periodo)':'Importe por propiedad (ejercicio)';
+      const previous=form.elements.series.value;
+      form.elements.series.innerHTML=series.map(x=>`<option value="${h(x.finalidad+'|'+x.unidad)}">${h(x.finalidad+' · '+x.unidad)}</option>`).join('');
+      if(series.some(x=>x.finalidad+'|'+x.unidad===previous))form.elements.series.value=previous;
+      form.elements.series.parentElement.hidden=!manual||!['coeficiente','porcentaje_especial'].includes(form.elements.rule_type.value);
+    }
+    s.form.afterBind=()=>{for(const name of ['origin_type','group_id','rule_type','amount_mode'])root().querySelector(`[name="${name}"]`).onchange=updateFields;updateFields();};
+    s.form.afterBind();
   }
   function review() {
     const r=s.review;if(!r)return '';
@@ -129,7 +192,7 @@ function createReceivablesUI(ctx) {
   function render() {
     if (!active()) return;
     root().innerHTML=`<div class="finWorkspace">${header()}${s.error?`<div role="alert" class="finWarning">${h(s.error)}</div>`:''}${s.message?`<div role="status">${h(s.message)}</div>`:''}
-      ${s.loading?'<p role="status">Cargando recibos y saldos...</p>':s.loaded?(s.review?review():s.form?formHtml():s.detail?detailHtml():({receipts:receipts,collections:collections,debt:debt,adjustments,imports:imports,settings:settings}[s.section]||receipts)()):''}</div>`;
+      ${s.loading?'<p role="status">Cargando recibos y saldos...</p>':s.loaded?(s.review?review():s.form?formHtml():s.detail?detailHtml():({receipts:receipts,plans:plansHtml,collections:collections,debt:debt,adjustments,imports:imports,settings:settings}[s.section]||receipts)()):''}</div>`;
     bind();
   }
   function formHtml() {
@@ -185,6 +248,17 @@ function createReceivablesUI(ctx) {
     if(action==='coverage') setForm('Registrar fuente de emision',input('concept','Concepto','text','ordinario')+input('effective_from','Desde','date','')+input('effective_until','Hasta','date','')+select('authority','Contenido del intervalo',[['erp3','Nuevas emisiones ERP'],['legacy_observed','Recibos del programa anterior por revisar']]),d=>({name:'coverage.confirm',payload:{concept_key:d.concept,effective_from:d.effective_from,effective_until:d.effective_until,authority:d.authority}}),{evidenceRequired:true});
   }
   function describe(object) {
+    if(object.config&&object.result) {
+      const c=object.config,r=object.result;
+      return table(['Plan','Origen','Importe','Periodicidad'],[[h(c.name),c.origin_type==='presupuesto'?'Presupuesto aprobado':'Importe manual',money(c.amount_cents)+' · '+(c.amount_mode==='por_periodo'?'cada periodo':'total anual'),h(c.frequency)]])+
+        table(['Propiedades','Total del ejercicio','Vigente desde'],[[h(r.property_totals.length),money(r.result_total_cents),h(c.effective_from)]])+
+        table(['Periodo','Importe objetivo'],r.periods.map(p=>[h(p.date_start),money(r.property_totals.reduce((sum,x)=>sum+BigInt(x.periods.find(v=>v.key===p.key).cents),0n).toString())]))+
+        (c.previous_version?'<div class="finWarning">Se guarda una nueva version. Los recibos anteriores se conservan; los cambios retroactivos requieren regularizacion.</div>':'')+
+        '<p>El plan quedara activo desde la fecha indicada. No se emiten recibos al guardar.</p>';
+    }
+    if(object.plans&&object.already_issued) return table(['Periodo','Recibos nuevos','Ya emitidos','Total'],[[h(object.period_from),h(String(object.receipt_count)),h(String(object.already_issued.length)),money(object.total_cents)]])+
+      object.errors.map(x=>`<div class="finWarning" role="alert">${h(x.name)}: ${h(x.message)}</div>`).join('')+
+      object.plans.map(p=>`<h4>${h(p.name)}</h4>${describe(p.preview)}`).join('');
     if(object.collections)return table(['Cobro','Recibo','Importe','Pendiente anterior'],object.collections.flatMap(c=>c.allocations.map(r=>[h(c.reference),h(r.number),money(r.amount_cents),money(r.before_cents)])));
     if(object.historical_receipts_reissued===false)return `<div class="finWarning">No se crean cobros ni se vuelven a emitir recibos. La calidad de las fuentes historicas se conserva.</div>${table(['Referencia','Propiedad','Concepto','Periodo','Emitido original'],object.lines.map(r=>[h(r.reference),h(s.workspace?.properties.find(p=>p.id_propiedad===r.property_id)?.codigo_propiedad||'Sin propiedad'),h(r.concept_key),h(r.period_from)+' a '+h(r.period_until),money(r.net_emitted_cents)]))}`;
     const rows=[];
@@ -241,15 +315,40 @@ function createReceivablesUI(ctx) {
       const request=await s.form.build(d);s.form.reason=d.reason;s.form.document=d.document;s.form.evidence=d.evidence;
       const selected=(s.documents||[]).find(x=>x.type+':'+x.id===d.document);
       const evidence=selected?{type:selected.type,id:String(selected.id)}:d.evidence?{type:'external_reference',id:d.evidence}:null;
-      if(request.name.endsWith('.preview')) {
+      if(request.name==='erp2.regularization.preview') {
+        const result=await command(request.name,request.payload,request.version,d.reason,evidence);
+        const codes=new Map((s.plans.references.properties||[]).map(p=>[p.id_propiedad,p.codigo_propiedad]));
+        s.review={title:s.form.title,content:table(['Propiedad','Periodo','Correspondia','Emitido neto','Ajuste previo','Diferencia'],result.lines.map(l=>[h(codes.get(l.property_id)||'Propiedad'),h(l.period_key),money(l.due_cents),money(l.net_emitted_cents),money(l.previous_adjustments_cents),money(l.difference_cents)]))+'<p>La aprobacion prepara la regularizacion. Los cargos y abonos se revisan despues en Ajustes; no se modifican los recibos originales.</p>',name:'erp2.regularization.approve',payload:{id_regularizacion:result.id_regularizacion,confirm_pending_recipients:true},version:1,reason:d.reason,evidence};
+      }else if(request.name.endsWith('.preview')) {
         const proposal=await command(request.name,request.payload,request.version,d.reason,evidence);
-        s.review={title:s.form.title,content:describe(proposal.preview),name:request.name.replace(/\.preview$/,'.confirm'),payload:{proposal_id:proposal.id},version:proposal.version,reason:d.reason,evidence};
+        s.review={title:s.form.title,content:describe(proposal.preview),name:request.name.replace(/\.preview$/,'.confirm'),payload:{proposal_id:proposal.id,...(proposal.configuration_version!=null?{configuration_version:proposal.configuration_version}:{})},version:proposal.version,reason:d.reason,evidence};
       }else s.review={title:s.form.title,content:describe(request.payload),...request,reason:d.reason,evidence};
       render();
     }
   }
   async function action(button) {
     const name=button.dataset.finAction;
+    if(name==='plan-new'){planForm();return;}
+    if(name==='plan-coverage') {
+      const plan=s.plans.items.find(x=>x.id===Number(button.dataset.id)),exercise=s.plans.references.exercises.find(x=>x.id_ejercicio===plan.exercise_id);
+      if(!exercise)throw new Error('El ejercicio no esta disponible para nuevas emisiones.');
+      setForm('Empezar a emitir '+plan.name,input('effective_from','Primer periodo gestionado en esta app','date',exercise.fecha_inicio)+input('effective_until','Ultimo periodo','date',exercise.fecha_fin),d=>({name:'coverage.confirm',payload:{concept_key:plan.origin_type==='presupuesto'?'ordinario':'cuota_plan:'+plan.id,effective_from:d.effective_from,effective_until:d.effective_until,authority:'erp3'}}),{evidenceRequired:true});return;
+    }
+    if(name==='plan-edit'){planForm(s.plans.items.find(x=>x.id===Number(button.dataset.id)));return;}
+    if(name==='plan-history'){s.planHistory=s.plans.items.find(x=>x.id===Number(button.dataset.id));render();return;}
+    if(name==='plan-state') {
+      const plan=s.plans.items.find(x=>x.id===Number(button.dataset.id));
+      setForm((plan.active?'Desactivar':'Activar')+' '+plan.name,input('effective_from','Efectivo desde','date',s.cut),d=>({name:'erp2.quota_plan.activity',payload:{plan_id:plan.id,active:!plan.active,effective_from:d.effective_from},version:plan.activity_version}));return;
+    }
+    if(name==='period-emission') {
+      const refs=s.plans.references;
+      if(!refs.exercises.length)throw new Error('Esta comunidad no tiene ejercicios disponibles.');
+      setForm('Generar recibos por periodo',select('exercise_id','Ejercicio',refs.exercises.map(x=>[x.id_ejercicio,x.codigo]),refs.exercises[0].id_ejercicio,true)+input('period_from','Inicio del periodo','date',refs.exercises[0].fecha_inicio)+input('issued_on','Fecha efectiva de emision','date',s.cut)+input('due_on','Vencimiento (opcional)','date','',false),d=>({name:'period.emission.preview',payload:{exercise_id:Number(d.exercise_id),period_from:d.period_from,issued_on:d.issued_on,...(d.due_on?{due_on:d.due_on}:{})}}));return;
+    }
+    if(name==='plan-regularize') {
+      const plan=s.plans.items.find(x=>x.id===Number(button.dataset.id));
+      setForm('Regularizar '+plan.name,input('coverage_start','Primer periodo a revisar','date',plan.effective_from)+input('coverage_end','Hasta','date',s.cut)+input('cutoff_date','Fecha de corte de emitidos','date',s.cut),d=>({name:'erp2.regularization.preview',payload:{id_plan:plan.id,coverage_start:d.coverage_start,coverage_end:d.coverage_end,cutoff_date:d.cutoff_date,emitted_source:'erp3',reason:d.reason}}),{evidenceRequired:true});return;
+    }
     if(name==='select-visible') {
       const area=root().querySelector(button.dataset.target);
       area.querySelectorAll('label').forEach(label=>{const input=label.querySelector('input[type=checkbox]');if(input&&!label.hidden)input.checked=button.dataset.checked==='1';});return;
@@ -307,8 +406,8 @@ function createReceivablesUI(ctx) {
     if(name==='clear-scope'){s.filters={};s.offset=0;return load();}
     if(name==='confirm') {
       if(!root().querySelector('#finAck')?.checked)throw new Error('Revisa y marca la confirmacion antes de continuar.');
-      const r=s.review;await command(r.name,r.payload,r.version,r.reason,r.evidence);
-      s.review=null;s.form=null;s.detail=null;s.message='Operacion confirmada y registrada en el historico.';return load();
+      const r=s.review,result=await command(r.name,r.payload,r.version,r.reason,r.evidence);
+      s.review=null;s.form=null;s.detail=null;s.message=result.regularization_required?'Nueva version guardada. Los recibos anteriores no cambian; revisa una regularizacion para los periodos afectados.':r.name==='erp2.regularization.approve'?'Regularizacion aprobada. Abre Ajustes para revisar y emitir sus cargos o abonos.':'Operacion confirmada y registrada en el historico.';return load();
     }
     if(name==='receipt'){s.detail={type:'receipt',data:(await q('erp3.receipt.get',{receipt_id:Number(button.dataset.id),effective_at:s.cut})).entity,timeline:(await q('erp3.receipt.timeline',{receipt_id:Number(button.dataset.id),effective_at:s.cut})).entity};render();return;}
     if(name==='collection'){s.detail={type:'collection',data:(await q('erp3.collection.get',{collection_id:Number(button.dataset.id),effective_at:s.cut})).entity};render();return;}
@@ -389,6 +488,7 @@ function createReceivablesUI(ctx) {
     finally{s.busy=false;root().inert=false;if(element?.isConnected)element.disabled=false;}
   }
   function bind() {
+    if(s.form&&!s.review)s.form.afterBind?.();
     root().querySelectorAll('[data-fin-filter]').forEach(el=>el.oninput=()=>{
       root().querySelector(el.dataset.finFilter)?.querySelectorAll('label').forEach(label=>label.hidden=!label.textContent.toLocaleLowerCase().includes(el.value.toLocaleLowerCase()));
     });
@@ -413,5 +513,5 @@ function createReceivablesUI(ctx) {
     if(s.error)throw new Error(s.error);const filters={receipt_id:id,effective_at:s.cut};
     const data=(await q('erp3.receipt.get',filters)).entity;
     const timeline=(await q('erp3.receipt.timeline',filters)).entity;s.detail={type:'receipt',data,timeline};ctx.navigate();render();
-  },open(community,filters={},label=''){reset();s.community=community;s.filters=filters;s.scopeLabel=label;s.section=Object.keys(filters).length?'debt':'receipts';ctx.navigate();},ensure(){if(!s.loaded&&!s.loading)load();}};
+  },openPlans(community){reset();s.community=community;s.section='plans';ctx.navigate();},open(community,filters={},label=''){reset();s.community=community;s.filters=filters;s.scopeLabel=label;s.section=Object.keys(filters).length?'debt':'receipts';ctx.navigate();},ensure(){if(!s.loaded&&!s.loading)load();}};
 }

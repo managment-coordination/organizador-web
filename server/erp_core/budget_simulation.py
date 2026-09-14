@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from contextlib import nullcontext
 
 from .budget_contracts import CONTRACT_VERSION, MOTOR_VERSION, ROUNDING_VERSION
 from .budget_engine import simulate_budget
@@ -47,7 +48,7 @@ def load_simulation(database_path, community_id, simulation_id):
         conn.close()
 
 
-def persist_simulation(database_path, manifest, *, actor_id, origin="system", simulate_failure=False):
+def persist_simulation(database_path, manifest, *, actor_id, origin="system", simulate_failure=False, connection=None):
     """Calculate outside the write lock, then store the complete snapshot atomically."""
     result = simulate_budget(manifest)
     community_id = int(result.get("community_id") or manifest.get("community_id") or 0)
@@ -58,9 +59,16 @@ def persist_simulation(database_path, manifest, *, actor_id, origin="system", si
         input_hash = hashlib.sha256(canonical_json(manifest).encode("utf-8")).hexdigest()
     result_hash = _result_hash(result)
     now = utc_now()
-    conn = connect(database_path)
+    conn = connection if connection is not None else connect(database_path)
+    if connection is not None and not conn.in_transaction:
+        raise ValueError("El snapshot compuesto requiere una transaccion activa.")
+    if connection is not None:
+        from pathlib import Path
+        database = next((r[2] for r in conn.execute('PRAGMA database_list') if r[1] == 'main'), '')
+        if not database or Path(database).resolve() != Path(database_path).resolve():
+            raise ValueError("La conexion del snapshot no corresponde a esta base de datos.")
     try:
-        with write_transaction(conn):
+        with (nullcontext() if connection is not None else write_transaction(conn)):
             existing = conn.execute("""SELECT id_simulacion FROM erp_simulaciones
                 WHERE id_comunidad=? AND hash_entradas=? AND version_motor=?""",
                 (community_id, input_hash, MOTOR_VERSION)).fetchone()
@@ -165,4 +173,5 @@ def persist_simulation(database_path, manifest, *, actor_id, origin="system", si
             stored["idempotent_replay"] = False
             return stored
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()

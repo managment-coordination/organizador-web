@@ -479,6 +479,8 @@ def _serialize_trace(trace):
 def calculate_budget(manifest):
     if not isinstance(manifest, dict):
         _block("INVALID_MANIFEST", "La simulacion requiere un manifiesto estructurado.")
+    if manifest.get('plan_amount_mode') == 'por_periodo':
+        return _calculate_recurring_plan(manifest)
     if manifest.get("contract_version") not in {None, CONTRACT_VERSION}:
         _block("CONTRACT_VERSION_MISMATCH", "La version del contrato no es compatible.")
     community_id = _positive_id(manifest.get("community_id"), "community_id")
@@ -623,6 +625,56 @@ def calculate_budget(manifest):
         "receipt_emission": False,
     }
     result["result_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
+    return result
+
+
+def _calculate_recurring_plan(manifest):
+    """A periodic target repeats the certified allocation, rather than an annual target."""
+    import copy
+    frequency,periods=_validate_periods(manifest)
+    amount=_cents(manifest.get('period_target_cents'),'importe por periodo')
+    if len(manifest.get('items',[]))!=1 or len(manifest['items'][0].get('assignments',[]))!=1:
+        _block('RECURRING_PLAN_SHAPE','El plan periodico requiere una asignacion estructurada.')
+    child=copy.deepcopy(manifest);child.pop('plan_amount_mode');child.pop('period_target_cents')
+    child['periodicity']='personalizada';child['periods']=[{**manifest['periods'][0],'weight':'1'}]
+    child['items'][0]['amount_cents']=str(amount);child['items'][0]['assignments'][0]['value']=str(amount)
+    one=calculate_budget(child);result=copy.deepcopy(one);count=len(periods)
+    def multiply_exact(value):
+        exact=Fraction(int(value['numerator']),int(value['denominator']))*count
+        return _fraction_dict(exact)
+    for line in result['lines']:
+        line['recurring_period_calculation']={key:copy.deepcopy(line[key]) for key in ('exact','base_cents','adjustment_cents','final_cents','components')}
+        original_period=line['periods'][0]
+        line['periods']=[{**copy.deepcopy(original_period),'key':p['key'],'order':p['order']} for p in periods]
+        line['exact']=multiply_exact(line['exact'])
+        annual_exact=Fraction(int(line['exact']['numerator']),int(line['exact']['denominator']))
+        line['final_cents']=str(int(line['final_cents'])*count)
+        line['base_cents']=str(_signed_floor_magnitude(annual_exact))
+        line['adjustment_cents']=str(int(line['final_cents'])-int(line['base_cents']))
+        line['rounding_criterion']='sum-of-recurring-periods;'+line['rounding_criterion']
+        for component in line['components']:
+            component['exact']=multiply_exact(component['exact'])
+            exact=Fraction(int(component['exact']['numerator']),int(component['exact']['denominator']))
+            component['final_cents']=int(component['final_cents'])*count
+            component['base_cents']=_signed_floor_magnitude(exact)
+            component['adjustment_cents']=component['final_cents']-component['base_cents']
+            component['remainder']=_fraction_dict(abs(exact)-abs(component['base_cents']))
+            component['rounding_criterion']='recurring-period;'+component['rounding_criterion']
+        line['period_mode']='por_periodo'
+    for prop in result['property_totals']:
+        target=prop['periods'][0]['cents'];prop['annual_cents']=str(int(target)*count)
+        prop['periods']=[{'key':p['key'],'cents':target} for p in periods]
+    for key in ('budget_total_cents','financing_total_cents','quota_target_cents','result_total_cents'):
+        result[key]=str(int(result[key])*count)
+    for item in result['items']:
+        for key in tuple(item):
+            if key.endswith('_cents'):item[key]=str(int(item[key])*count)
+    result.update(periodicity=frequency,periods=[{'key':p['key'],'order':p['order'],'weight':_fraction_decimal(p['weight']),
+        'date_start':p['date_start'],'date_end':p['date_end']} for p in periods],
+        plan_amount_mode='por_periodo',period_target_cents=str(amount),plan_engine_version='erp2-periodic-plan-v1',
+        input_hash=hashlib.sha256(canonical_json(manifest).encode()).hexdigest())
+    result.pop('result_hash',None)
+    result['result_hash']=hashlib.sha256(canonical_json(result).encode()).hexdigest()
     return result
 
 

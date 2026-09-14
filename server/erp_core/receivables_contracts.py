@@ -15,6 +15,7 @@ CAPABILITIES = frozenset({
     'allocate', 'reverse_allocation', 'return_collection', 'credit', 'void', 'adjust',
     'refund', 'claim', 'import_history', 'approve_opening', 'resolve_responsibility',
     'classify_uncollectible', 'transfer_responsibility', 'configure',
+    'plan_create', 'plan_modify', 'plan_activate',
 })
 
 

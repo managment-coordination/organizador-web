@@ -23,6 +23,7 @@ parser.add_argument('--commit',required=True)
 parser.add_argument('--bank-python',type=Path,required=True)
 parser.add_argument('--recovery-key-sha256',required=True)
 parser.add_argument('--publish',action='store_true')
+parser.add_argument('--quota-plans',action='store_true',help='Verify the additive ERP 2/3 active-plan extension and full ERP 4 regression.')
 parser.add_argument('--validated-stage',type=Path,help='Reuse the explicitly verified domain gate from a previous attempt; only banking UI/docs/test tooling may differ.')
 args=parser.parse_args()
 assert os.name=='posix' and Path.home()==Path('/home/coordinador') and APP.is_dir()
@@ -79,7 +80,16 @@ for script,parameters in (
         'BankingTests.test_82_bank_documents_reuse_catalogue_without_plaintext_or_generic_path',
         'BankingTests.test_83_bulk_200_domain_notifications_and_result_confirmation',
         'BankingTests.test_86_bank_partial_return_and_locked_exercise_keep_economic_boundary'])):
-    if not args.validated_stage:subprocess.run([str(runtime),str(stage/'scripts'/script),*parameters],cwd=stage,env=env,check=True)
+    if not args.validated_stage:
+        if args.quota_plans and script=='verify-erp2-complete.py':
+            report=subprocess.check_output([str(runtime),str(stage/'scripts'/script),*parameters,'--keep'],cwd=stage,env=env,text=True)
+            print(report,flush=True)
+            fixture=Path(next(line.removeprefix('workspace=') for line in report.splitlines() if line.startswith('workspace=')))/'database.db'
+            subprocess.run([str(runtime),str(stage/'scripts/verify-quota-plans.py'),str(fixture)],cwd=stage,env=env,check=True)
+            subprocess.run([str(runtime),str(stage/'scripts/verify-erp2b-engine.py'),str(source)],cwd=stage,env=env,check=True)
+        else:
+            if args.quota_plans and script=='verify-erp4-foundations.py':parameters=[str(source)]
+            subprocess.run([str(runtime),str(stage/'scripts'/script),*parameters],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-erp4-http.mjs')],cwd=stage,check=True)
 print(json.dumps({'stage_validated':str(stage),'migration_preserves_existing_tables':len(before)}),flush=True)
 if not args.publish:raise SystemExit(0)
@@ -137,5 +147,6 @@ final=checkpoint(args.commit)
 proof={'published':True,'commit':args.commit,'before':backup,'after':final,'stage':str(stage),
     'integrity':'ok','foreign_keys':'ok','historical_data_preserved':True,'banking_enabled':False,'live_enabled':False,
     'custody_key_sha256':args.recovery_key_sha256,'https_activation_pending':True}
+if args.quota_plans:proof['active_quota_plans']=True
 (Path(final['backup'])/'erp4-publication-proof.json').write_text(json.dumps(proof,indent=2))
 print(json.dumps(proof),flush=True)

@@ -1109,7 +1109,7 @@ class BudgetService:
                 WHERE r.id_comunidad=? AND r.id_plan_esperado=? AND r.estado='aprobada'
                 GROUP BY l.id_propiedad,l.periodo_clave""",(env.community_id,plan_id)):
                 previous_adjustments[(int(row['id_propiedad']),row['periodo_clave'])]=int(row['total'] or 0)
-            signature=hashlib.sha256(canonical_json({"plan":plan_id,"cutoff":p.get("cutoff_date"),"coverage_start":coverage_start,
+            signature=hashlib.sha256(canonical_json({"plan":plan_id,"calculation":result.get('stored_result_hash'),"cutoff":p.get("cutoff_date"),"coverage_start":coverage_start,
                 "coverage_end":coverage_end,"emitted":sorted((key[0],key[1],value) for key,value in emitted_map.items()),
                 "approved_adjustments":sorted((key[0],key[1],value) for key,value in previous_adjustments.items() if value)}).encode()).hexdigest()
             existing=conn.execute("SELECT id_regularizacion,estado FROM erp_regularizaciones WHERE id_comunidad=? AND hash_calculo=?",(env.community_id,signature)).fetchone()

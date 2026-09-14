@@ -1608,6 +1608,10 @@ from .banking_documents_schema import STATEMENTS as BANKING_DOCUMENT_STATEMENTS
 
 MIGRATIONS += (Migration(18, "erp4_protected_document_storage", BANKING_DOCUMENT_STATEMENTS),)
 
+from .quota_plans_schema import STATEMENTS as QUOTA_PLAN_STATEMENTS
+
+MIGRATIONS += (Migration(19, "erp2_3_active_quota_plans", QUOTA_PLAN_STATEMENTS),)
+
 
 def _bootstrap(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS erp_schema_migrations (

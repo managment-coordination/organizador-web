@@ -113,8 +113,8 @@ class BankingTests(unittest.TestCase):
         before = list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations'))
         apply_all(self.conn)
         self.assertEqual(before, list(self.conn.execute('SELECT version,checksum FROM erp_schema_migrations')))
-        self.assertEqual(before[-1][0], 18)
-        self.assertEqual(len(MIGRATIONS), 18)
+        self.assertEqual(before[-1][0], MIGRATIONS[-1].version)
+        self.assertEqual(len(before), len(MIGRATIONS))
         for name in ('erp_cuentas_pagador', 'erp_mandatos', 'erp_remesa_reservas', 'erp_banco_operaciones'):
             self.assertEqual(self.conn.execute('SELECT count(*) FROM ' + name).fetchone()[0], 0)
 

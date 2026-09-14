@@ -149,4 +149,8 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 ## Siguiente entrega recomendada
 
+### Ampliacion posterior ERP 2/3 - Planes de cuotas activos
+
+Autorizada 14/09/2026. Estado PRUEBAS; cierre y publicacion pendientes. Seguimiento independiente: [implementacion](ERP_02_03_PLANES_CUOTAS_IMPLEMENTACION.md). No cambia los cierres/porcentajes certificados de ERP 2/3/4 ni inicia ERP 5. Reutiliza sus planes, motor, snapshots, regularizaciones, recibos y elegibilidad de remesas. La certificacion final exige regresion completa, publicacion y restauracion.
+
 ERP 0/1/2/3/4 completados tecnicamente. ERP 4 **100% certificado**, publicado y restaurable; ninguna decision funcional material pendiente. HTTPS, recuperacion organizativa de claves y configuracion bancaria por comunidad siguen siendo puertas de activacion real, no autorizacion implicita. ERP 5 puede comenzar tecnicamente con autorizacion nueva; no iniciado. No avanzar automaticamente a ERP 5/6.

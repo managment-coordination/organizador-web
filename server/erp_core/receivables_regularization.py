@@ -69,7 +69,8 @@ class RegularizationOperations:
                 raise ConflictError('Esta regularizacion ya se ha materializado.')
             decision=decisions[row['id_linea']];amount=cents(row['diferencia_centimos']);period=periods.get(row['periodo_clave'])
             if not period:raise ConflictError('No se puede resolver el periodo de la regularizacion.')
-            coverage=self._require_coverage(conn,community,'ordinario',period['fecha_inicio'],period['fecha_fin'])
+            concept='cuota_plan:'+str(plan['id_plan']) if plan['origen_tipo']=='importe_manual' else 'ordinario'
+            coverage=self._require_coverage(conn,community,concept,period['fecha_inicio'],period['fecha_fin'])
             require_fields(decision,('line_id','subjects'),('credit_beneficiary',))
             if not isinstance(decision['subjects'],list) or (amount and not decision['subjects']):raise ContractError('Acredita los obligados del ajuste sin deducirlos del titular actual.')
             subjects=[self._subject(conn,community,x) for x in decision['subjects']]
@@ -136,7 +137,8 @@ class RegularizationOperations:
             p=require_fields(q.filters,('plan_id','effective_at'),('period_keys','known_at'))
             effective=day(p['effective_at']);known=known_time(p.get('known_at'))
             plan=conn.execute("SELECT * FROM erp_planes_cuota WHERE id_comunidad=? AND id_plan=? AND estado='aprobado'",(q.community_id,identity(p['plan_id']))).fetchone()
-            if not plan or plan['tipo']!='ordinario':raise NotFoundError('Selecciona un plan ordinario aprobado.')
+            if not plan or (plan['tipo']!='ordinario' and plan['origen_tipo']!='importe_manual'):raise NotFoundError('Selecciona un plan aprobado compatible con regularizacion.')
+            concept='cuota_plan:'+str(plan['id_plan']) if plan['origen_tipo']=='importe_manual' else 'ordinario'
             version=conn.execute("SELECT * FROM erp_plan_versiones WHERE id_comunidad=? AND id_plan=? AND estado='aprobada' ORDER BY version DESC LIMIT 1",(q.community_id,plan['id_plan'])).fetchone()
             result=_load_by_id(conn,q.community_id,version['id_simulacion'])
             periods={r['clave_periodo']:dict(r) for r in conn.execute('SELECT * FROM erp_plan_periodos WHERE id_comunidad=? AND id_plan_version=?',(q.community_id,version['id_plan_version']))}
@@ -147,16 +149,16 @@ class RegularizationOperations:
             for quota in result['property_totals']:
                 pid=int(quota['property_id'])
                 for key in selected:
-                    period=periods[key];coverage=self._require_coverage(conn,q.community_id,'ordinario',period['fecha_inicio'],period['fecha_fin'])
+                    period=periods[key];coverage=self._require_coverage(conn,q.community_id,concept,period['fecha_inicio'],period['fecha_fin'])
                     if coverage['registered_at']>known:raise ConflictError('La cobertura no estaba acreditada en esa fecha de conocimiento.')
                     base=0;materialized=0;adjustments=0;collected=0;references=[]
-                    if conn.execute('''SELECT 1 FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=? AND concept_key='ordinario'
+                    if conn.execute('''SELECT 1 FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=? AND concept_key=?
                         AND period_from<=? AND period_until>=? AND (period_from<>? OR period_until<>?) AND registered_at<=?''',
-                        (q.community_id,pid,period['fecha_fin'],period['fecha_inicio'],period['fecha_inicio'],period['fecha_fin'],known)).fetchone():
+                        (q.community_id,pid,concept,period['fecha_fin'],period['fecha_inicio'],period['fecha_inicio'],period['fecha_fin'],known)).fetchone():
                         raise ConflictError('Los periodos historicos no coinciden con el plan. Requieren revision explicita, no prorrateo.')
                     for historic in conn.execute('''SELECT * FROM erp_historico_obligaciones WHERE id_comunidad=? AND id_propiedad=?
-                        AND concept_key='ordinario' AND period_from=? AND period_until=? AND registered_at<=?''',
-                        (q.community_id,pid,period['fecha_inicio'],period['fecha_fin'],known)):
+                        AND concept_key=? AND period_from=? AND period_until=? AND registered_at<=?''',
+                        (q.community_id,pid,concept,period['fecha_inicio'],period['fecha_fin'],known)):
                         original=json.loads(historic['snapshot_json'])
                         if original['issued_on']>effective:raise ConflictError('La obligacion historica no estaba emitida en ese corte.')
                         base+=historic['net_emitted_cents']
@@ -167,8 +169,8 @@ class RegularizationOperations:
                             base-=sum(r['amount_cents']*(-1 if r['kind']=='reverse_credit' else 1) for r in corrections)
                         references.append({'legacy_receipt_id':historic['legacy_receipt_id'],'opening_id':historic['opening_id'],'net_cents':str(historic['net_emitted_cents']),'type':'activated_history'})
                     receipts=conn.execute('''SELECT * FROM erp_recibos WHERE id_comunidad=? AND id_propiedad=?
-                        AND period_from=? AND period_until=? AND issued_on<=? AND registered_at<=? AND concept_key IN ('ordinario','regularizacion')''',
-                        (q.community_id,pid,period['fecha_inicio'],period['fecha_fin'],effective,known))
+                        AND period_from=? AND period_until=? AND issued_on<=? AND registered_at<=? AND concept_key IN (?,'regularizacion')''',
+                        (q.community_id,pid,period['fecha_inicio'],period['fecha_fin'],effective,known,concept))
                     for r in receipts:
                         balance=receipt_balance(conn,q.community_id,r['id'],effective,known)
                         reductions=int(balance['reduced_cents']);collected+=int(balance['paid_cents'])
@@ -180,7 +182,9 @@ class RegularizationOperations:
                             if not link:raise ConflictError('Ajuste materializado sin correspondencia acreditada.')
                             if link['id_plan_esperado']==plan['id_plan']:
                                 materialized+=r['amount_cents'];base-=reductions
-                            else:base+=r['amount_cents']-reductions
+                            elif concept=='ordinario':
+                                other_plan=conn.execute('SELECT origen_tipo FROM erp_planes_cuota WHERE id_comunidad=? AND id_plan=?',(q.community_id,link['id_plan_esperado'])).fetchone()
+                                if other_plan and other_plan[0]!='importe_manual':base+=r['amount_cents']-reductions
                         else:base+=r['amount_cents']-reductions
                         references.append({'receipt_id':r['id'],'net_cents':str(r['amount_cents']-reductions),'type':r['source_type']})
                     prior=conn.execute('''SELECT l.*,m.credit_id,m.amount_cents AS materialized_cents,m.effective_on,m.registered_at AS materialized_at
@@ -201,11 +205,12 @@ class RegularizationOperations:
                         JOIN erp_regularizaciones g ON g.id_comunidad=l.id_comunidad AND g.id_regularizacion=l.id_regularizacion
                         JOIN erp_planes_cuota p ON p.id_comunidad=g.id_comunidad AND p.id_plan=g.id_plan_esperado
                         WHERE m.id_comunidad=? AND l.id_propiedad=? AND g.id_plan_esperado<>? AND m.credit_id IS NOT NULL
+                            AND p.origen_tipo<>'importe_manual' AND ?='ordinario'
                             AND m.effective_on<=? AND m.registered_at<=? AND EXISTS (
                                 SELECT 1 FROM erp_plan_versiones v JOIN erp_plan_periodos pp ON pp.id_plan_version=v.id_plan_version AND pp.id_comunidad=v.id_comunidad
                                 WHERE v.id_comunidad=p.id_comunidad AND v.id_plan=p.id_plan AND v.estado='aprobada'
                                     AND pp.clave_periodo=l.periodo_clave AND pp.fecha_inicio=? AND pp.fecha_fin=?)''',
-                        (q.community_id,pid,plan['id_plan'],effective,known,period['fecha_inicio'],period['fecha_fin'])):
+                        (q.community_id,pid,plan['id_plan'],concept,effective,known,period['fecha_inicio'],period['fecha_fin'])):
                         base+=r['amount_cents']
                         references.append({'credit_id':r['credit_id'],'net_cents':str(r['amount_cents']),'type':'other_plan_regularization'})
                     total=base+materialized;reserved=adjustments-materialized

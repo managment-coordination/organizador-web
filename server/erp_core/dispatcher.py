@@ -10,6 +10,14 @@ from .onboarding_service import OnboardingService
 from .budget_service import BudgetService
 from .budget_contracts import contract_catalog as budget_contract_catalog
 from .receivables_service import ReceivablesService
+from .quota_plans import QuotaPlanService
+
+PLAN_COMMANDS = {
+    'erp2.quota_plan.preview':'plan_preview', 'erp2.quota_plan.confirm':'plan_confirm',
+    'erp2.quota_plan.activity':'plan_activity',
+    'erp3.period.emission.preview':'period_preview','erp3.period.emission.confirm':'period_confirm',
+}
+PLAN_QUERIES = {'erp2.quota_plan.list':'plan_list'}
 
 
 COMMANDS = {
@@ -147,6 +155,8 @@ ERP3_QUERIES = {
 
 def execute_command(database_path, session, value):
     envelope = CommandEnvelope.from_value(value)
+    if envelope.command in PLAN_COMMANDS:
+        return getattr(QuotaPlanService(database_path),PLAN_COMMANDS[envelope.command])(session,envelope)
     if envelope.command in ERP3_COMMANDS:
         return getattr(ReceivablesService(database_path),ERP3_COMMANDS[envelope.command])(session,envelope)
     if envelope.command in ONBOARDING_COMMANDS:
@@ -162,6 +172,8 @@ def execute_command(database_path, session, value):
 
 def execute_query(database_path, session, value):
     query = QueryEnvelope.from_value(value)
+    if query.query in PLAN_QUERIES:
+        return getattr(QuotaPlanService(database_path),PLAN_QUERIES[query.query])(session,query)
     if query.query in ERP3_QUERIES:
         return getattr(ReceivablesService(database_path),ERP3_QUERIES[query.query])(session,query)
     if query.query in ONBOARDING_QUERIES:
@@ -178,8 +190,8 @@ def execute_query(database_path, session, value):
 def catalog():
     return {
         "contract_version": "erp_internal_v1",
-        "queries": ["erp0.foundation.get_status", *sorted(QUERIES), *sorted(ONBOARDING_QUERIES), *sorted(ERP2_QUERIES), *sorted(ERP3_QUERIES)],
-        "commands": sorted(COMMANDS) + sorted(ONBOARDING_COMMANDS) + sorted(ERP2_COMMANDS) + sorted(ERP3_COMMANDS) + (["erp0.foundation.set_status"] if os.environ.get("ERP0_REFERENCE_COMMANDS") == "1" else []),
+        "queries": ["erp0.foundation.get_status", *sorted(QUERIES), *sorted(ONBOARDING_QUERIES), *sorted(ERP2_QUERIES), *sorted(ERP3_QUERIES), *sorted(PLAN_QUERIES)],
+        "commands": sorted(COMMANDS) + sorted(ONBOARDING_COMMANDS) + sorted(ERP2_COMMANDS) + sorted(ERP3_COMMANDS) + sorted(PLAN_COMMANDS) + (["erp0.foundation.set_status"] if os.environ.get("ERP0_REFERENCE_COMMANDS") == "1" else []),
         "erp2a": budget_contract_catalog(),
         "arbitrary_sql": False,
     }
