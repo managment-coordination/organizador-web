@@ -87,13 +87,14 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 ## ERP 5 - Banco y conciliacion
 
 - Objetivo: registrar una sola vez cada movimiento y reconciliarlo contra cobros/pagos verificables.
-- Dependencias: 0, 1 y 3; gastos/pagos de 7 se incorporan progresivamente.
-- Componentes: cuentas de banco y caja separadas, extractos, transferencias internas, imputaciones N:M, propuesta/revision/confirmacion, partidas a revisar, saldo conciliado.
-- Reutiliza: `cf_extractos_banco_importaciones`, `cf_extractos_banco_lineas`, `cf_equivalencias_banco`, `cf_conciliacion_gasto_banco`.
-- Estado inicial: PENDIENTE. Implantacion certificada: 0%.
-- Aceptacion: movimiento repetido no duplica; transferencias no generan ingresos/gastos ficticios; asignacion parcial y multiples facturas; suma imputada no supera disponible; deshacer deja trazabilidad y no borra evidencia bancaria.
-- Riesgos: `line_hash` global y conciliacion gasto-banco sin importe imputado no bastan para todos los pagos parciales; texto parecido solo permite proponer.
-- Decisiones pendientes: formato de extractos por cuenta; algoritmo de deduplicacion con identificadores bancarios y casos sin ID. Conexion bancaria automatica fuera del primer alcance.
+- Dependencias: 0/1/3/4; cuotas y planes ERP 2 como origen explicativo. ERP 7 consumira salidas documentadas y las aplicara a facturas sin duplicar pagos.
+- Contrato: [ERP 5 - Banco y conciliacion](ERP_05_BANCO_CONCILIACION.md), v1.0, 14/09/2026. **Diseno 100%, COMPLETADO y cerrado**. Implementacion PENDIENTE, **0% certificado**; aceptacion funcional de implementacion pendiente. Listo para implementar tras autorizacion, sin conceder hitos por documentacion.
+- Componentes: movimientos y evidencia protegida, CSV/Excel/manual/Cuaderno 43/camt versionados, identidad y deduplicacion revisable, correspondencias N:M, propuestas deterministas con confirmacion humana, pagos/comisiones documentados, transferencias propias, saldos y cierres versionados. Ninguna tolerancia monetaria silenciosa ni contabilidad definitiva.
+- Reutiliza: ERP 0 transacciones/permisos/idempotencia/auditoria; maestros y bloqueos ERP 1; cuotas/snapshots ERP 2 y planes; cobros/devoluciones/fondos ERP 3; cuentas, identidades, remesas y custodia ERP 4. Tablas legacy `cf_extractos_banco_importaciones`, `cf_extractos_banco_lineas`, `cf_equivalencias_banco`, `cf_conciliacion_gasto_banco` se migran por cobertura acreditada, sin doble fuente activa.
+- Aceptacion: matriz A01-A64 del contrato, pendiente de ejecucion. Cobros existentes no se duplican; netos/brutos documentados cuadran; saldos sin fuente no se inventan; permisos, precision, atomicidad, historicos, escritorio/movil y restauracion probados antes de publicar. Eventos ERP 6 distinguen evidencia de hecho monetario.
+- Decision de cierre ratificada 14/09/2026: **permitir pendientes documentados si el saldo bancario cuadra**, con responsable/fecha, snapshot y reapertura trazada; cierre contable independiente. Condiciones de cobertura/identidad y saldos comparables definidas en contrato.
+- Riesgos: `line_hash` global, enlaces legacy sin importe, identidades ambiguas, extractos incompletos, netos sin detalle y custodia. Se tratan con staging/evidencia/pendientes, sin reinterpretar historia.
+- Decisiones funcionales bloqueantes: **ninguna dentro del contrato cerrado**. Banco/perfil, cuentas, permisos, fuentes/cortes/saldos, TLS y recuperacion de claves son configuraciones de implantacion. Agregador, automatizacion economica general y politica contable ERP 6 quedan fuera del alcance inicial.
 
 ## ERP 6 - Contabilidad integrada
 
@@ -153,4 +154,4 @@ La numeracion no obliga a duplicar cobros en 3 y 5 ni a emitir operaciones sin i
 
 Autorizada 14/09/2026. **COMPLETADO, 100% certificado**: migracion 19 validada (25/25), servicios exactos/transaccionales (25/25), recorrido web integrado escritorio/movil (25/25), aceptacion/regresion/publicacion/restauracion (25/25). Seguimiento independiente: [implementacion](ERP_02_03_PLANES_CUOTAS_IMPLEMENTACION.md). No cambia los cierres/porcentajes certificados de ERP 2/3/4 ni inicia ERP 5. Reutiliza sus planes, motor, snapshots, regularizaciones, recibos y elegibilidad de remesas. Caso 40/16: enero 56 recibos, febrero 40 tras desactivar el especial, historico intacto. Codigo publicado `b2329cd`; checkpoint `planes-cuotas-completed-20260914`. Backups previos/posteriores restaurados con arranque, migracion preserva 203 tablas de negocio anteriores; SQLite/FK correctas. Permisos/cobertura acreditados siguen siendo puertas de activacion por comunidad, no pendientes de implementacion.
 
-ERP 0/1/2/3/4 completados tecnicamente. ERP 4 **100% certificado**, publicado y restaurable; ninguna decision funcional material pendiente. HTTPS, recuperacion organizativa de claves y configuracion bancaria por comunidad siguen siendo puertas de activacion real, no autorizacion implicita. ERP 5 puede comenzar tecnicamente con autorizacion nueva; no iniciado. No avanzar automaticamente a ERP 5/6.
+ERP 0/1/2/3/4 y ampliacion de planes completados tecnicamente. ERP 5: **diseno cerrado 100%, implementacion 0%**, contrato especifico listo y cierre con pendientes ratificado. Siguiente entrega: implementar ERP 5 previa autorizacion; no iniciada en esta entrega documental. HTTPS, recuperacion organizativa de claves y configuracion bancaria por comunidad siguen siendo puertas de activacion real. No avanzar automaticamente a implementacion ERP 5/6.
