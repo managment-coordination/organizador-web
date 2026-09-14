@@ -37,7 +37,6 @@ class RemittanceOperations:
             raise ContractError('Falta una domiciliacion inequivoca y vigente para el recibo.')
         return matches[0]
     def _attempt_evidence(self, conn, session, env):
-        from .receivables_service import ReceivablesService
         authorizations = env.payload.get('third_party_authorizations', {})
         if not isinstance(authorizations, dict):
             raise ContractError('Revisa las autorizaciones de pago de terceros.')
@@ -46,7 +45,7 @@ class RemittanceOperations:
             evidence = EvidenceRef.from_value(item['evidence'])
             if evidence is None:
                 raise ContractError('El pago de un tercero requiere evidencia especifica.')
-            ReceivablesService(self.database_path)._validate_evidence(conn,session,replace(env,evidence=evidence))
+            self._protected_context(conn,replace(env,evidence=evidence),session)
 
     def notification_record(self, session, env):
         def op(conn, actor, e, now):

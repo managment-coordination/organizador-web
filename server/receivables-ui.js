@@ -405,7 +405,11 @@ function createReceivablesUI(ctx) {
     root().querySelector('[name=cut]')?.addEventListener('change',e=>{s.cut=e.target.value;s.detail=null;s.form=null;s.review=null;load();});
     root().querySelector('[data-fin-form=permissions] [name=user]')?.addEventListener('change',e=>{s.permissionUser=Number(e.target.value);render();});
   }
-  return {load,render,reset,async openReceipt(community,id){reset();s.community=community;await load();
+  return {load,render,reset,async openReturnFee(community,id){reset();s.community=community;s.section='adjustments';await load();
+    if(s.error)throw new Error(s.error);if(!can('adjust'))throw new Error('No tienes permiso para gestionar gastos.');
+    if(!s.workspace.returns.some(r=>r.id===id))throw new Error('Consulta el historico de devoluciones en Ingresos y recibos.');
+    ctx.navigate();await action({dataset:{finAction:'return-fee',id:String(id)}});render();
+  },async openReceipt(community,id){reset();s.community=community;await load();
     if(s.error)throw new Error(s.error);const filters={receipt_id:id,effective_at:s.cut};
     const data=(await q('erp3.receipt.get',filters)).entity;
     const timeline=(await q('erp3.receipt.timeline',filters)).entity;s.detail={type:'receipt',data,timeline};ctx.navigate();render();

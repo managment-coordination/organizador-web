@@ -138,14 +138,19 @@ class BankingControl:
 
     def control_list(self, session, query):
         def op(conn, q):
-            require_fields(q.filters, (), ('property_id','offset','limit'))
+            require_fields(q.filters, (), ('property_id','offset','limit','search'))
             offset,limit = q.filters.get('offset',0),q.filters.get('limit',100)
             if type(offset) is not int or offset<0 or type(limit) is not int or not 1<=limit<=200:
                 raise ContractError('Paginacion no valida.')
             prop = identity(q.filters['property_id']) if q.filters.get('property_id') else None
-            rows = conn.execute('''SELECT x.id,x.receipt_id,r.number,r.id_propiedad,x.cutoff_on,x.state,x.version
-                FROM erp_banca_instrucciones_externas x JOIN erp_recibos r ON r.id_comunidad=x.id_comunidad AND r.id=x.receipt_id
-                WHERE x.id_comunidad=? AND (? IS NULL OR r.id_propiedad=?) ORDER BY x.id DESC LIMIT ? OFFSET ?''',
-                (q.community_id,prop,prop,limit,offset)).fetchall()
-            return {'external_instructions':[dict(r) for r in rows]}
+            search=q.filters.get('search','')
+            if not isinstance(search,str) or len(search)>200:raise ContractError('Busqueda no valida.')
+            pattern='%'+search.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
+            sql=""" FROM erp_banca_instrucciones_externas x JOIN erp_recibos r ON r.id_comunidad=x.id_comunidad AND r.id=x.receipt_id
+                JOIN cf_propiedades p ON p.id_comunidad=r.id_comunidad AND p.id_propiedad=r.id_propiedad
+                WHERE x.id_comunidad=? AND (? IS NULL OR r.id_propiedad=?) AND (r.number LIKE ? ESCAPE '\\' OR p.codigo_propiedad LIKE ? ESCAPE '\\')"""
+            args=(q.community_id,prop,prop,pattern,pattern)
+            total=conn.execute('SELECT count(*)'+sql,args).fetchone()[0]
+            rows=conn.execute('SELECT x.id,x.receipt_id,r.number,r.id_propiedad,p.codigo_propiedad AS property_code,x.cutoff_on,x.state,x.version'+sql+' ORDER BY x.id DESC LIMIT ? OFFSET ?',(*args,limit,offset)).fetchall()
+            return {'external_instructions':[dict(r) for r in rows],'total':total}
         return self._read(session,query,'read_masked',op)

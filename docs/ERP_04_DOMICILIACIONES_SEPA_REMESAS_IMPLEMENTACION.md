@@ -8,15 +8,15 @@ Dependencia economica: [cierre ERP 3](ERP_03_RECIBOS_COBROS_DEUDA_IMPLEMENTACION
 
 ## Estado verificable
 
-DESARROLLO. Diseno 100%. Implementacion **25% certificado**; aceptacion funcional completa pendiente.
+PRUEBAS. Diseno 100%. Implementacion **75% certificado**; cierre de publicacion pendiente.
 No publicado. Interfaz bancaria integrada en codigo y recorridos HTTPS sobre copia verificados; falta la aceptacion completa y custodia productiva. La operativa bancaria real permanece deshabilitada.
 No se han tratado datos bancarios reales ni migrado produccion.
 
 | Hito | Evidencia | Certificacion |
 | --- | --- | --- |
 | 4A Fundamentos y migracion | Migraciones 13-15 aditivas sobre copia, integridad/FK, permisos bancarios explicitos, cifrado, regresiones y restauracion de codigo/datos/secretos comprobada | 25 puntos |
-| 4B Servicios deterministas | 82 pruebas de nucleo superadas; corte externo, sucesion, excepciones y almacen documental cifrado incorporados; falta cerrar toda la evidencia de servicio/seguridad | Sin puntos |
-| 4C Recorrido integrado | UI y contexto integrados; navegador HTTPS sintetico, seleccion/exportacion, importacion, cobro/devolucion y documentos comprobados; quedan acciones y recorrido de app completa | Sin puntos |
+| 4B Servicios deterministas | 84/84 del nucleo; 17/17 del adaptador; servicios restantes, lote 200, rollback de artefacto, resultados ERP 3, custodia POSIX y restauracion sintetica acreditados. Casos adicionales 85-88 de seleccion, parcial, ejercicio cerrado y gasto independiente superados | 25 puntos |
+| 4C Recorrido integrado | Aplicacion completa con login HTTPS/POSIX: propiedad/propietario/comunidad, mandato, seleccion, XML, rechazo masivo, reenvio y gasto ERP 3. Navegador con 200 recibos, dos paginas, documentos y Excel revisado; 1440/1920/390 sin desbordamiento | 25 puntos |
 | 4D Aceptacion y publicacion | No implementado; las pruebas del nucleo/adaptador no equivalen a los 50 casos integrales del contrato | Sin puntos |
 
 ## Checkpoint y recuperacion previa
@@ -124,16 +124,91 @@ Ampliacion final del checkpoint de acceso: **64/64** pruebas del nucleo correcta
 
 Continuar desde estos servicios, sin reiniciar migraciones ni repetir el diseno:
 
-1. Completar UX de excepciones ya implementadas: revision de conflicto confirmado, autorizacion puntual fallida, tercero para recibo, prenotificacion generable y enlace directo al gasto independiente ERP 3. No repetir corte externo, sucesion, inactividad, retorno con hueco documental, inversion ni parser de resultados, que ya estan implementados y probados.
-2. Verificar los ultimos formularios de cambio de cuenta y sucesion, aclaracion de referencias y sus queries `mandate.edit`/`instruction.find`. Revisar guardas visuales de estado, gestion completa de paginacion/filtros en instrucciones externas y cambio de hoja Excel sin obligar a mapear la hoja anterior. Confirmacion de lotes de resultados sigue pendiente de recorrido masivo.
-3. Cerrar seguridad integrada: comprobar `from_runtime` y gateway HTTPS reales en Ubuntu, custodia/provisionado y recuperacion separada duradera, rotacion/retencion segura de indices. El navegador local usa constructor inyectado con clave sintetica; NO prueba custodia POSIX productiva. `ERP4_LIVE_BANKING_ENABLED` debe continuar desactivado sin acreditacion.
-4. Completar matriz A01-A50 vinculada a evidencias, incluidos 200 recibos por el recorrido de dominio, fallos de artefacto y ACL documental por todos los accesos. El catalogo existente ahora tiene metadatos sin ruta/texto bancario y archivo en vault; no crear gestor documental paralelo.
-5. Recorrer la app completa con login/navegacion y contexto comunidad/propiedad/propietario en escritorio/movil. El harness de componente prueba HTML/CSS/HTTP/servicios reales aislados, pero no sustituye al shell completo de `index.js`.
-6. Checkpoint, backup/restauracion con esquema 18, regresiones de cierre tras ultimos cambios, publicacion SOLO con aceptacion completa y smoke test Ubuntu (integridad, permisos, rutas y flujos). No publicar el estado parcial, no abrir ERP 5.
+1. Checkpoint de aceptacion, backup/restauracion con el codigo final y esquema 18. Los servicios, acciones UX y recorridos descritos anteriormente estan terminados; no reiniciarlos.
+2. Preparar runtime bancario independiente de los ERP anteriores, ejecutar las regresiones finales en copia Ubuntu, publicar el candidato solo si pasan las puertas y verificar restauracion posterior, rutas, aislamiento e integridad productiva.
+3. Mantener bancaria real y acceso sensible deshabilitados hasta HTTPS acreditado y configuracion bancaria por comunidad. Esto no bloquea el cierre tecnico autorizado, pero no equivale a una remesa aceptada por el banco.
 
 No hay nueva decision funcional material que requiera al usuario. Configuraciones bancarias reales y seguridad de implantacion siguen siendo puertas obligatorias del contrato, no autorizacion para operar con datos reales ahora.
 
 ## Continuacion operativa 14/09/2026
+
+### Candidato de aceptacion integral
+
+Este apartado prevalece sobre los estados parciales historicos de este documento.
+
+- Nucleo final: **91/91**, 143,477 s, `%TEMP%/organizador-erp4-foundations-f2due_p1`. Los casos 85-91 cubren seleccion paginada/subconjunto, devolucion parcial, ejercicio cerrado, cobro manual con remesa exportada, gasto ERP 3 independiente, saldo parcial/cero/anulado, fuente observada separada, domiciliacion ambigua/especifica y representante/cuenta conjunta/RUM con extension comercial. Casos 90-91 repetidos tras ampliar las variantes: `organizador-erp4-foundations-blg54qb0`.
+- Web masiva **200 recibos** con dos paginas, confirmacion sin incorporar filas nuevas, XML 200 lineas, cobro/devolucion y reenvio de una sola linea, cancelacion y corte externo: `organizador-erp4-foundations-uf0guquh/test_74_operational_selectors_use_same_domain_and_tenant`. `node scripts/verify-erp4-web.mjs --bulk`, HTTPS y servicios reales sobre copia.
+- Aplicacion completa en Ubuntu aislado: `node scripts/verify-erp4-app.mjs`, evidencia `%TEMP%/erp4-full-app-ABuP3K`; login/cookie Secure, propiedad -> mandato -> seleccion -> exportacion -> rechazo por lote -> reenvio -> cancelacion, contexto propietario/comunidad y acceso al gasto independiente ERP 3. 1440/1920/390; sin errores JS ni overflow. Clave POSIX real del entorno de prueba, no inyeccion de constructor.
+- Ubuntu aislado: `/home/coordinador/apps/organizador-web-erp4-validation-20260914-0912`. `linux-proof.json` acredita `from_runtime`, descifrado/restauracion y permisos POSIX. No se ha usado el servicio ni datos bancarios productivos para estas operaciones.
+- `notification.draft` no registra envio; la UI exige confirmar envio ya realizado antes de `notification.record`. Cambiar seleccion/fecha/autorizacion invalida ese reconocimiento. Acuses/rechazos masivos pasan por los mismos preview/confirm. Excepciones conservan evidencia y no trasladan deuda.
+- MEJORA UX AUTONOMA: instrucciones anteriores reutilizan busqueda/seleccion/paginacion, sin exigir un acreedor nuevo para documentar un corte externo. Reglas y reservas intactas; prueba 85 y navegador masivo.
+- MEJORA AUTONOMA IMPLEMENTADA: runtime bancario configurable con `ERP4_PYTHON_BIN`, separado del Python usado por los modulos previos. Dependencias criptograficas no requieren sustituir su entorno. Sesiones Secure cuando se active ERP 4; activar exige direccion HTTPS para el login.
+- Checkpoint anterior recuperable: `erp4-progress-ui-documents-20260914`, codigo `36b3a5e4c215b56614a3cf721164fa3fc0cb1fbf`; backup `backups/erp4-progress-ui-documents-20260914/erp0-backup-20260914-091031`, restore `organizador-erp0-restore-svz8_vdf`, 205 tablas iguales/secretos/checksums de migracion/17 pruebas de adaptador/transporte. Clave sintetica separada `erp4-checkpoint-custody-25d4cbv1`.
+
+### Matriz A01-A50
+
+Evidencia de dominio: numero `N` = `test_N` de `scripts/verify-erp4-foundations.py`, no numero de caso contractual. AD = `verify-erp4-adapter.py`; HTTP = `verify-erp4-http.mjs`; WEB = recorrido masivo anterior; APP = recorrido completo Ubuntu anterior. Todas las filas acreditan alcance tecnico sintetico/controlado. A40/A44 se completan ademas con restauracion/regresion de publicacion; ningun caso acredita aceptacion comercial por un PSP real.
+
+| Caso | Evidencia verificable |
+| --- | --- |
+| A01 | 10,20,22,83; cuenta compartida, tres propiedades |
+| A02 | 19,55,91; representante, cotitular y obligado separados |
+| A03 | 55,75,90; prioridad temporal/concepto y ambiguedad; ERP 2/3 conserva copropiedad |
+| A04 | 18,27,51; revisiones y otras propiedades intactas |
+| A05 | 16,18,61,67,73; ciclo, sucesion e inactividad |
+| A06 | 17,91; RUM normalizada y extension comercial, aislamiento 13 |
+| A07 | 29,72; puntual y excepcion acreditada |
+| A08 | 83,85; WEB 200/dos paginas/subconjunto de reenvio |
+| A09 | 89; recibos acreditados, cero/anulado/parcial; aperturas y legacy no son recibos remesables |
+| A10 | 23; concurrencia con un solo ganador |
+| A11 | 4,22,23,32; claves de comando y reserva exclusiva |
+| A12 | 24,25,33,87; entrada/cobro obsoleto detectados |
+| A13 | 87; dinero manual conservado, incidencia visible, fichero historico no reescrito |
+| A14 | 26,22; guarda ERP 3 y liberacion |
+| A15 | 22,24,66,92; cancelacion atomica y fallo inyectado en segunda liberacion; rollback completo y reintento seguro; WEB |
+| A16 | 35,46,47; entrega incierta y retirada acreditada |
+| A17 | 45,46,53,56,79,80; resultados por linea, parciales/tardios |
+| A18 | 30,35,38,83; exportacion y acuses sin fondos; WEB/APP |
+| A19 | AD 17/17,30,31,83; XSD, totales y bytes |
+| A20 | 84,42; fallo de artefacto/operacion atomico |
+| A21 | AD calendario,52; aviso/acuerdo; 83 y WEB no consideran borrador enviado |
+| A22 | AD prueba de frontera 15/11/2026 y direccion insuficiente |
+| A23 | 58,79,80,83; fichero/grupo/linea y desconocidos |
+| A24 | 36,39,81; ERP 3 unico; WEB |
+| A25 | 38,40,57,80; acuse/insuficiencia/contradiccion sin fabricar fondos |
+| A26 | 39,86,88; parcial/total/gasto separado; WEB/APP |
+| A27 | 40,70,71; hueco documental conservado |
+| A28 | 37,59; identidad canonica preparada para ERP 5, no implementacion ERP 5 |
+| A29 | 41,58,59,84; identificacion exacta/colision |
+| A30 | 45,48,56; recepcion tardia y conflicto sin borrar hechos |
+| A31 | 44,45,72; WEB/APP reenvio confirmado |
+| A32 | 27,31; fichero/sujetos cifrados e inmutables |
+| A33 | 55,91; autorizacion especifica, deuda no trasladada; regresion ERP 1/3 |
+| A34 | 43,48; fondos excedentes disponibles, no autoimputacion |
+| A35 | 86; ejercicio cerrado conserva evidencia pendiente y no crea cobro |
+| A36 | 2,9,34,54,60,64; HTTP reautenticacion y revocacion |
+| A37 | 13,19,54,74,82; aislamiento de consultas/archivos/sujetos |
+| A38 | 3,14,60,64,76,82; secretos fuera de catalogo generico/log/outbox; HTTP no-store |
+| A39 | AD XXE/DTD/limites,77,78; parser tabular acotado |
+| A40 | 6-8,28; restore checkpoint con 205 tablas/secretos; POSIX y recuperacion DPAPI separada |
+| A41 | 1,62,63,76; aditiva, staging/reimportacion, sin mandatos inferidos |
+| A42 | 65,66,85; WEB corte y cierre externo |
+| A43 | APP y WEB: 1440/1920/390, recorrido completo contextual |
+| A44 | ERP 0 11, ERP 1 26, ERP 2 completo 40/16, ERP 3 42; repeticion Ubuntu en gate de publicacion |
+| A45 | 42,49; rollback ERP 3, reserva e identidad bancaria |
+| A46 | 31,33,81; perfiles versionados, historico desde artefacto original |
+| A47 | 69,39; inversion pendiente, efecto solo con resultado ERP 3, sin XML inverso |
+| A48 | 82 y HTTP; catalogo sin ruta/texto, descarga privada y permiso documental; APP HTTPS |
+| A49 | 45,48,56; reserva nueva intacta y fondos tardios conservados |
+| A50 | 6,28,30,31; integridad del ciphertext/descarga y replay tras rotacion |
+
+### Custodia y puertas de activacion
+
+- Provisionado explicito mediante `scripts/erp4-custody.py`: `/home/coordinador/.config/organizador-web/erp4-keys.json`, directorio 0700/archivo 0600, fuera de app/repositorio/backup ordinario. No activa el modulo ni inserta datos.
+- Copia separada cifrada para usuario Windows: `C:/Users/EQUIPO/.ssh/organizador-web-erp4-recovery-20260914-095046.dpapi`. `backup-erp4-key.ps1` verifica checksum y descifrado DPAPI antes de eliminar el temporal en claro. SHA-256 del fichero de claves: `f2ee4b8f204d03014814d2debabaad2d3f16d5928e7d0422bcae7ffa520bb4e3`. No incluir claves en Git ni en informes.
+- Recuperacion: restaurar backup ERP 0; recuperar claves con `ProtectedData.Unprotect` como el mismo usuario Windows, transferir por SSH al archivo privado del usuario Ubuntu; comprobar hash/permisos/descifrado en copia antes de iniciar. El runtime bancario se reconstruye de `server/requirements-erp4.txt`. La copia DPAPI requiere conservar perfil/credenciales Windows: no equivale a custodia externa ante perdida simultanea de ambos equipos. Antes del uso real acreditar esa retencion organizativa.
+- Retener todas las KEK/indices historicos necesarios: no borrar claves antiguas ni regenerar fichero por un fallo de lectura. Rotacion de cifrado y lookup HMAC conservan identidad y bytes; retirada de claves requiere migracion/ensayo separado.
+- Tailscale actual: sin certificado HTTPS configurado (`CertDomains: null`, serve vacio). No se habilita HTTPS con certificado de pruebas ni se cambia la entrada HTTP existente. `ERP4_BANKING_ENABLED=0`, `ERP4_HTTPS_READY=0`, `ERP4_LIVE_BANKING_ENABLED=0` hasta acreditar acceso HTTPS y banco/comunidad. UI y dominio estan probados en HTTPS aislado; el usuario productivo recibira bloqueo explicito de acceso bancario sensible. No se declara aceptacion bancaria real.
 
 Este apartado y los pendientes anteriores sustituyen las afirmaciones de ausencia de UI/archivo de los checkpoints historicos de abajo; no invalidan sus evidencias de prueba.
 

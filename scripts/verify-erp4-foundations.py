@@ -1272,6 +1272,228 @@ class BankingTests(unittest.TestCase):
         self.service.account_create(self.session,env)
         self.assertEqual(self.service.document_list(self.session,QueryEnvelope('erp4.document.list',self.community,{}))['entity']['total'],1)
 
+    def seed_extra_receipts(self,p,count):
+        source=dict(self.conn.execute('SELECT * FROM erp_recibos WHERE id=?',(p['receipt_ids'][0],)).fetchone())
+        subjects=[dict(r) for r in self.conn.execute('SELECT * FROM erp_recibo_sujetos WHERE receipt_id=?',(source['id'],))]
+        for index in range(count):
+            row={k:v for k,v in source.items() if k!='id'}
+            row.update(number='BANK-BULK-'+str(index),source_key='BANK-BULK-'+str(index),obligation_key='BANK-BULK-'+str(index),period_key='BULK-'+str(index))
+            rid=self.conn.execute('INSERT INTO erp_recibos ('+','.join(row)+') VALUES ('+','.join('?' for _ in row)+')',tuple(row.values())).lastrowid
+            self.synthetic_receipts.add(rid);p['receipt_ids'].append(rid)
+            for old in subjects:
+                item={k:v for k,v in old.items() if k!='id'};item['receipt_id']=rid
+                self.conn.execute('INSERT INTO erp_recibo_sujetos ('+','.join(item)+') VALUES ('+','.join('?' for _ in item)+')',tuple(item.values()))
+
+    def test_83_bulk_200_domain_notifications_and_result_confirmation(self):
+        p,m=self.remittance_setup()
+        self.seed_extra_receipts(p,197)
+        before=self.conn.execute('SELECT count(*) FROM erp_prenotificaciones').fetchone()[0]
+        draft=self.service.notification_draft(self.session,QueryEnvelope('erp4.notification.draft',self.community,{'receipt_ids':p['receipt_ids'],'requested_on':p['requested_on']}))['entity']
+        self.assertFalse(draft['sent']);self.assertNotIn(IBAN,json.dumps(draft))
+        self.assertEqual(before,self.conn.execute('SELECT count(*) FROM erp_prenotificaciones').fetchone()[0])
+        notice=self.service.notification_record(self.session,self.envelope('notification.record',{'sent_on':date.today().isoformat(),
+            'lines':[{'receipt_id':rid,'amount_cents':'10000','requested_on':p['requested_on'],'mandate_id':m['id']} for rid in p['receipt_ids']]}))['entity']
+        p['notification_id']=notice['id'];p.pop('preview_hash')
+        preview=self.service.remittance_preview(self.session,self.envelope('remittance.preview',p))['entity']
+        self.assertEqual(preview['total_cents'],'2000000')
+        rem=self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',{**p,'preview_hash':preview['preview_hash']}))['entity']
+        self.assertEqual(rem['count'],200)
+        built=self.service.remittance_build(self.session,self.envelope('remittance.build',{'id':rem['id']},version=1))['entity']
+        self.grant('results');self.grant('export')
+        exported=self.service.remittance_export(self.session,self.envelope('remittance.export',{'file_id':built['file_id'],'acknowledge_bank_data':True},version=2))['entity']
+        xml=self.service.download_bytes(self.session,self.community,exported['download_token'])
+        self.assertEqual(xml.count(b'<DrctDbtTxInf>'),200)
+        self.assertIn(b'<CtrlSum>20000.00</CtrlSum>',xml)
+        raw=self.pain002(built,'RJCT')
+        imported=self.service.results_import(self.session,self.envelope('results.import',{'format':'pain002','data':base64.b64encode(raw).decode(),'effective_on':date.today().isoformat()}))['entity']
+        decisions=[{'result_line_id':r[0],'action':'none'} for r in self.conn.execute('SELECT id FROM erp_resultado_lineas WHERE result_id=?',(imported['id'],))]
+        plan={'result_id':imported['id'],'decisions':decisions}
+        pv=self.service.results_preview(self.session,self.envelope('results.preview',plan))['entity']
+        self.service.results_confirm(self.session,self.envelope('results.confirm',{**plan,'preview_hash':pv['preview_hash']},version=pv['version']))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_remesa_reservas WHERE state='activa'").fetchone()[0],0)
+        self.assertEqual(sum(int(receipt_balance(self.conn,self.community,r)['pending_cents']) for r in p['receipt_ids']),2000000)
+
+    def test_84_artifact_failure_is_atomic_and_new_edit_queries_are_scoped(self):
+        from unittest.mock import patch
+        p,m=self.remittance_setup()
+        edit=self.service.mandate_edit(self.session,QueryEnvelope('erp4.mandate.edit',self.community,{'id':m['id']}))['entity']
+        self.assertEqual(edit['payload']['id'],m['id']);self.assertNotIn(IBAN,json.dumps(edit))
+        rem=self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',p))['entity']
+        original=self.service.vault.put
+        def broken(conn,community,purpose,value,now):
+            if purpose=='remittance-file':raise RuntimeError('Synthetic artifact persistence failure')
+            return original(conn,community,purpose,value,now)
+        with patch.object(self.service.vault,'put',side_effect=broken):
+            with self.assertRaises(RuntimeError):self.service.remittance_build(self.session,self.envelope('remittance.build',{'id':rem['id']},version=1))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_remesa_ficheros').fetchone()[0],0)
+        self.assertEqual(self.conn.execute('SELECT version FROM erp_remesas WHERE id=?',(rem['id'],)).fetchone()[0],1)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_remesa_reservas WHERE state='activa'").fetchone()[0],3)
+        self.grant('results')
+        line=self.conn.execute('SELECT id,attempt_key FROM erp_remesa_lineas ORDER BY id LIMIT 1').fetchone()
+        found=self.service.instruction_find(self.session,QueryEnvelope('erp4.instruction.find',self.community,{'attempt_key':line['attempt_key']}))['entity']
+        self.assertEqual(found['id'],line['id'])
+        with self.assertRaises(NotFoundError):self.service.instruction_find(self.session,QueryEnvelope('erp4.instruction.find',self.community,{'attempt_key':line['attempt_key'][:-1]}))
+
+    def erp3_command(self,name,payload,version=None):
+        env=replace(self.envelope('unused',payload,version=version),command='erp3.'+name)
+        return getattr(ReceivablesService(self.db),name.replace('.','_'))(self.session,env)['entity']
+
+    def test_85_external_selection_search_pages_and_confirmed_subset(self):
+        p,m=self.remittance_setup();self.grant('read_masked')
+        page=self.service.reference_list(self.session,QueryEnvelope('erp4.reference.list',self.community,{'kind':'receipts','limit':2}))['entity']
+        second=self.service.reference_list(self.session,QueryEnvelope('erp4.reference.list',self.community,{'kind':'receipts','limit':2,'offset':2}))['entity']
+        self.assertGreaterEqual(page['total'],3);self.assertFalse(set(r['id'] for r in page['items'])&set(r['id'] for r in second['items']))
+        row=page['items'][0]
+        found=self.service.reference_list(self.session,QueryEnvelope('erp4.reference.list',self.community,{'kind':'receipts','search':row['number']}))['entity']
+        self.assertIn(row['id'],[r['id'] for r in found['items']])
+        self.service.external_register(self.session,self.envelope('external.register',{'receipt_ids':[row['id']],
+            'source':'Synthetic cutover','reference':'SYN-85','cutoff_on':date.today().isoformat()}))
+        control=self.service.control_list(self.session,QueryEnvelope('erp4.control.list',self.community,{'search':row['number'],'limit':1}))['entity']
+        self.assertEqual(control['total'],1);self.assertEqual(control['external_instructions'][0]['receipt_id'],row['id'])
+        found=self.service.reference_list(self.session,QueryEnvelope('erp4.reference.list',self.community,{'kind':'receipts','search':row['number']}))['entity']
+        self.assertTrue(next(r for r in found['items'] if r['id']==row['id'])['issues'])
+        empty=self.service.control_list(self.session,QueryEnvelope('erp4.control.list',self.community,{'offset':1}))['entity']
+        self.assertEqual(empty['external_instructions'],[]);self.assertEqual(empty['total'],1)
+
+    def test_86_bank_partial_return_and_locked_exercise_keep_economic_boundary(self):
+        self.allow_economic_changes=True
+        *_,line=self.bank_result_fixture()
+        result,row=self.stage_bank_result(line,'settlement')
+        paid,_=self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        collection=paid['entity']['applied'][0]['collection_id']
+        allocation=self.conn.execute('SELECT id FROM erp_imputaciones WHERE collection_id=?',(collection,)).fetchone()[0]
+        result,row=self.stage_bank_result(line,'returned',event='BANK-PARTIAL-RETURN',amount='4000')
+        returned,env=self.confirm_result(result,row,'return',collection_id=collection,
+            return_spec={'free_cents':'0','reversals':[{'allocation_id':allocation,'amount_cents':'4000'}]})
+        self.assertTrue(self.service.results_confirm(self.session,env)['idempotent_replay'])
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'4000')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['original_cents'],'10000')
+        exercise=self.conn.execute('SELECT id_ejercicio,estado FROM erp_ejercicios WHERE id_comunidad=? AND fecha_inicio<=? AND fecha_fin>=?',(self.community,date.today().isoformat(),date.today().isoformat())).fetchone()
+        self.assertIsNotNone(exercise)
+        self.conn.execute("UPDATE erp_ejercicios SET estado='cerrado' WHERE id_ejercicio=?",(exercise['id_ejercicio'],))
+        other=dict(self.conn.execute('SELECT * FROM erp_remesa_lineas WHERE id!=? LIMIT 1',(line['id'],)).fetchone())
+        result,row=self.stage_bank_result(other,'settlement',event='BANK-LOCKED')
+        before=self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0]
+        with self.assertRaises(ConflictError):self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_cobros').fetchone()[0],before)
+        self.assertEqual(self.conn.execute('SELECT state FROM erp_resultado_lineas WHERE id=?',(row,)).fetchone()[0],'pendiente')
+        self.assertEqual(self.conn.execute('SELECT estado FROM erp_ejercicios WHERE id_ejercicio=?',(exercise['id_ejercicio'],)).fetchone()[0],'cerrado')
+
+    def test_87_manual_collection_after_export_keeps_funds_and_flags_snapshot(self):
+        self.allow_economic_changes=True
+        p,m,rem,built,line=self.bank_result_fixture()
+        original_file=self.conn.execute('SELECT secret_id FROM erp_remesa_ficheros WHERE id=?',(built['file_id'],)).fetchone()[0]
+        cash=self.erp3_command('collection.record',{'amount_cents':'4000','currency':'EUR','effective_on':date.today().isoformat(),
+            'method':'transferencia','external_source':'synthetic-manual','external_key':'MANUAL-87'})
+        proposal=self.erp3_command('allocation.preview',{'collection_id':cash['id'],'effective_on':date.today().isoformat(),
+            'allocations':[{'receipt_id':line['receipt_id'],'amount_cents':'4000'}]})
+        self.erp3_command('allocation.confirm',{'proposal_id':proposal['id']},1)
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'6000')
+        current=self.conn.execute('SELECT * FROM erp_remesas WHERE id=?',(rem['id'],)).fetchone()
+        self.assertEqual(current['needs_review'],1)
+        self.assertEqual(self.conn.execute('SELECT secret_id FROM erp_remesa_ficheros WHERE id=?',(built['file_id'],)).fetchone()[0],original_file)
+        self.assertEqual(self.conn.execute('SELECT state FROM erp_remesa_reservas WHERE line_id=?',(line['id'],)).fetchone()[0],'activa')
+        redownload=self.service.remittance_export(self.session,self.envelope('remittance.export',{'file_id':built['file_id'],'acknowledge_bank_data':True},version=current['version']))['entity']
+        self.assertIn(b'<InstdAmt Ccy="EUR">100.00</InstdAmt>',self.service.download_bytes(self.session,self.community,redownload['download_token']))
+        self.assertEqual(self.conn.execute('SELECT count(*) FROM erp_remesa_ficheros').fetchone()[0],1)
+
+    def test_88_partial_return_fee_uses_existing_policy_and_original_receipt(self):
+        self.allow_economic_changes=True
+        *_,line=self.bank_result_fixture()
+        result,row=self.stage_bank_result(line,'settlement')
+        paid,_=self.confirm_result(result,row,'record_collection',allocate_cents='10000')
+        cid=paid['entity']['applied'][0]['collection_id']
+        aid=self.conn.execute('SELECT id FROM erp_imputaciones WHERE collection_id=?',(cid,)).fetchone()[0]
+        result,row=self.stage_bank_result(line,'returned',event='BANK-RETURN-FEE',amount='4000')
+        returned,_=self.confirm_result(result,row,'return',collection_id=cid,return_spec={'free_cents':'0','reversals':[{'allocation_id':aid,'amount_cents':'4000'}]})
+        did=returned['entity']['applied'][0]['return_id']
+        self.erp3_command('policy.save',{'effective_from':date.today().isoformat(),'return_fee_mode':'actual','fixed_cents':'0'},0)
+        exercise=self.conn.execute('SELECT id_ejercicio FROM erp_recibos WHERE id=?',(line['receipt_id'],)).fetchone()[0]
+        proposal=self.erp3_command('return.fee.preview',{'return_id':did,'receipt_id':line['receipt_id'],'effective_on':date.today().isoformat(),
+            'cost_cents':'500','cost_reference':'BANK-FEE-88','exercise_id':exercise})
+        fee=self.erp3_command('return.fee.confirm',{'proposal_id':proposal['id']},1)
+        self.synthetic_receipts.add(fee['receipt_id'])
+        self.assertNotEqual(fee['receipt_id'],line['receipt_id'])
+        self.assertEqual(receipt_balance(self.conn,self.community,fee['receipt_id'])['pending_cents'],'500')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['original_cents'],'10000')
+        self.assertEqual(receipt_balance(self.conn,self.community,line['receipt_id'])['pending_cents'],'4000')
+
+    def test_89_partial_zero_void_and_observed_sources_are_not_mixed(self):
+        self.allow_economic_changes=True
+        p,m=self.remittance_setup();self.grant('read_masked')
+        rid,zero,void=p['receipt_ids']
+        cash=self.erp3_command('collection.record',{'amount_cents':'14000','currency':'EUR','effective_on':date.today().isoformat(),
+            'method':'transferencia','external_source':'synthetic-selection','external_key':'SELECT-89'})
+        proposal=self.erp3_command('allocation.preview',{'collection_id':cash['id'],'effective_on':date.today().isoformat(),
+            'allocations':[{'receipt_id':rid,'amount_cents':'4000'},{'receipt_id':zero,'amount_cents':'10000'}]})
+        self.erp3_command('allocation.confirm',{'proposal_id':proposal['id']},1)
+        proposal=self.erp3_command('void.preview',{'receipt_id':void,'effective_on':date.today().isoformat()})
+        self.erp3_command('void.confirm',{'proposal_id':proposal['id']},1)
+        rows=self.service.receipt_candidates(self.session,QueryEnvelope('erp4.receipt.candidates',self.community,{'creditor_id':p['creditor_id'],'requested_on':p['requested_on']}))['entity']['items']
+        mapped={r['id']:r for r in rows}
+        self.assertEqual(mapped[rid]['pending_cents'],'6000');self.assertFalse(mapped[rid]['issues'])
+        self.assertTrue(mapped[zero]['issues']);self.assertTrue(mapped[void]['issues'])
+        # Legacy observed receipts and aggregate openings have no remittable receipt identity.
+        self.assertEqual({r['id'] for r in rows},{r[0] for r in self.conn.execute('SELECT id FROM erp_recibos WHERE id_comunidad=?',(self.community,))})
+        notice=self.service.notification_record(self.session,self.envelope('notification.record',{'sent_on':date.today().isoformat(),
+            'lines':[{'receipt_id':rid,'amount_cents':'6000','requested_on':p['requested_on'],'mandate_id':m['id']}]}))['entity']
+        preview=self.service.remittance_preview(self.session,self.envelope('remittance.preview',{**p,'receipt_ids':[rid],'notification_id':notice['id']}))['entity']
+        self.assertEqual(preview['total_cents'],'6000')
+
+    def test_90_ambiguous_generic_and_suspended_specific_do_not_fall_back(self):
+        p,m=self.remittance_setup()
+        receipt=self.conn.execute('SELECT * FROM erp_recibos WHERE id=?',(p['receipt_ids'][0],)).fetchone()
+        old=dict(self.conn.execute('SELECT * FROM erp_domiciliaciones WHERE property_id=?',(receipt['id_propiedad'],)).fetchone())
+        new={k:v for k,v in old.items() if k!='id'};new['scope']='second-test-scope'
+        did=self.conn.execute('INSERT INTO erp_domiciliaciones ('+','.join(new)+') VALUES ('+','.join('?' for _ in new)+')',tuple(new.values())).lastrowid
+        version=dict(self.conn.execute('SELECT * FROM erp_domiciliacion_versiones WHERE direct_debit_id=?',(old['id'],)).fetchone())
+        row={k:v for k,v in version.items() if k!='id'};row['direct_debit_id']=did
+        self.conn.execute('INSERT INTO erp_domiciliacion_versiones ('+','.join(row)+') VALUES ('+','.join('?' for _ in row)+')',tuple(row.values()))
+        with self.assertRaises(ContractError):self.service._direct_for_receipt(self.conn,self.community,receipt,p['requested_on'])
+        self.conn.execute('UPDATE erp_domiciliaciones SET concept_key=? WHERE id=?',(receipt['concept_key'],did))
+        self.assertEqual(self.service._direct_for_receipt(self.conn,self.community,receipt,p['requested_on'])['id'],did)
+        self.service.direct_debit_state(self.session,self.envelope('direct_debit.state',{'id':did,'state':'suspendida','effective_from':date.today().isoformat()},version=1))
+        with self.assertRaises(ContractError):self.service._direct_for_receipt(self.conn,self.community,receipt,p['requested_on'])
+
+    def test_91_representative_shared_account_and_creditor_business_rum_collision(self):
+        p,m=self.remittance_setup(third_party=True);self.grant('read_masked')
+        edit=self.service.mandate_edit(self.session,QueryEnvelope('erp4.mandate.edit',self.community,{'id':m['id']}))['entity']
+        payload=edit['payload'];debtor=payload['debtor']
+        representative=self.conn.execute('SELECT id_propietario FROM cf_propietarios WHERE id_comunidad=? AND id_propietario!=? LIMIT 1',(self.community,debtor['id'])).fetchone()[0]
+        self.service.account_link(self.session,self.envelope('account.link',{'account_id':payload['account_id'],'subject':debtor,'role':'titular','effective_from':'2026-01-01'},version=1))
+        account=self.conn.execute('SELECT version FROM erp_cuentas_pagador WHERE id=?',(payload['account_id'],)).fetchone()
+        self.service.account_link(self.session,self.envelope('account.link',{'account_id':payload['account_id'],'subject':{'type':'owner','id':representative},'role':'titular','effective_from':'2026-01-01'},version=account['version']))
+        payload['signers']=[{'subject':{'type':'owner','id':representative},'capacity':'Representante acreditado de cotitulares'}]
+        payload['effective_from']=date.today().isoformat()
+        amended=self.service.mandate_amend(self.session,self.envelope('mandate.amend',payload,version=edit['version']))['entity']
+        self.service.mandate_transition(self.session,self.envelope('mandate.transition',{'id':m['id'],'state':'activo','effective_on':date.today().isoformat()},version=amended['version']))
+        p['third_party_authorizations']={str(r):{'mandate_id':m['id'],'evidence':{'type':'external_reference','id':'AUTHORIZED-REPRESENTATIVE'}} for r in p['receipt_ids']}
+        preview=self.service.remittance_preview(self.session,self.envelope('remittance.preview',p))['entity']
+        self.assertEqual(len(preview['lines']),3)
+        self.assertTrue(all(l['third_party'] for l in preview['lines']))
+        creditor=self.service.creditor_list(self.session,QueryEnvelope('erp4.creditor.list',self.community,{}))['entity']['items'][0]
+        cid=creditor['creditor_identifier'];alternate=cid[:4]+'ABC'+cid[7:]
+        new=self.service.creditor_create(self.session,self.envelope('creditor.create',{'name':'Comunidad sintetica','creditor_identifier':alternate,'iban':IBAN,
+            'address':{'country':'ES','town':'Madrid'},'effective_from':'2026-01-01'}))['entity']
+        creation={k:v for k,v in payload.items() if k!='id'}
+        creation.update(creditor_id=new['id'],kind='recurrente',rum='synthetic-mandate')
+        with self.assertRaises(ConflictError):self.service.mandate_create(self.session,self.envelope('mandate.create',creation))
+
+    def test_92_cancel_midway_rolls_back_every_reservation(self):
+        p,m=self.remittance_setup()
+        rem=self.service.remittance_prepare(self.session,self.envelope('remittance.prepare',p))['entity']
+        self.conn.execute("""CREATE TRIGGER synthetic_cancel_failure AFTER UPDATE OF state ON erp_remesa_reservas
+            WHEN NEW.state='liberada' BEGIN
+            SELECT CASE WHEN (SELECT count(*) FROM erp_remesa_reservas WHERE state='liberada')=2
+            THEN RAISE(ABORT,'synthetic midway failure') END; END""")
+        env=self.envelope('remittance.cancel_local',{'id':rem['id']},version=1)
+        with self.assertRaises((ConflictError,sqlite3.IntegrityError)):self.service.remittance_cancel_local(self.session,env)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_remesa_reservas WHERE state='activa'").fetchone()[0],3)
+        self.assertEqual(self.conn.execute('SELECT version FROM erp_remesas WHERE id=?',(rem['id'],)).fetchone()[0],1)
+        self.conn.execute('DROP TRIGGER synthetic_cancel_failure')
+        self.service.remittance_cancel_local(self.session,env)
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM erp_remesa_reservas WHERE state='activa'").fetchone()[0],0)
+
 if __name__ == '__main__':
     print('Isolated ERP4 workspace:', WORK, flush=True)
     unittest.main(verbosity=2)

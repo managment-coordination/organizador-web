@@ -11,11 +11,13 @@ sys.path.insert(0,str(ROOT/'server'))
 def main():
     if sys.argv[1]=='create':
         source=sys.argv[2]
+        bulk='--bulk' in sys.argv[3:]
         sys.argv=[str(ROOT/'scripts/verify-erp4-foundations.py'),source]
         tests=runpy.run_path(str(ROOT/'scripts/verify-erp4-foundations.py'))
         fixture=tests['BankingTests']('test_74_operational_selectors_use_same_domain_and_tenant')
         fixture.setUp()
         p,m=fixture.remittance_setup()
+        if bulk:fixture.seed_extra_receipts(p,197)
         for cap in tests['CAPABILITIES']:
             if not fixture.conn.execute('SELECT 1 FROM erp_banca_permisos WHERE id_comunidad=? AND id_usuario=? AND capability=?',(fixture.community,fixture.uid,cap)).fetchone():fixture.grant(cap)
         target=fixture.work/'browser-fixture.json'

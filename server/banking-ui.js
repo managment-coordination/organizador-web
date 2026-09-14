@@ -8,7 +8,7 @@ function createBankingUI(ctx) {
   const can=k=>Boolean(s.permissions?.[k]);
   const labels={activa:'Activa',activo:'Activo',pendiente:'Pendiente de revision',suspendido:'Suspendido',suspendida:'Suspendida',
     revocado:'Revocado',caducado:'Caducado',agotado:'Agotado',recurrente:'Recurrente',puntual:'Puntual',
-    preparada:'Preparada',archivo_disponible:'Lista para exportar',exportada:'Exportada',presentada:'Presentada',
+    preparada:'Preparada',fichero_disponible:'Lista para exportar',cancelacion_solicitada:'Retirada solicitada',exportada:'Exportada',presentada:'Presentada',
     seguimiento:'En seguimiento',finalizada:'Finalizada',cancelada:'Cancelada',confirmada:'Confirmada',confirmado:'Confirmado',
     technical:'Acuse tecnico',pending:'Pendiente',rejected:'Rechazado',settlement:'Cobro acreditado',returned:'Devuelto',cancelled:'Cerrado',conflict:'Revisar contradiccion'};
   const label=x=>labels[x]||x||'';
@@ -63,7 +63,7 @@ function createBankingUI(ctx) {
       if(s.section==='mandates'){s.accounts=await all('account.list');s.list=await q('mandate.list',{...s.filters,offset:s.offset,limit:50});s.domiciles=s.filters.property_id?(await q('direct_debit.list',{property_id:s.filters.property_id})).items:null;}
       if(s.section==='results'&&can('results'))s.list=await q('results.list',{offset:s.offset,limit:50});
       if(s.section==='settings'&&ctx.isSuperuser?.())s.permissionUsers=(await q('permissions.get')).users;
-      if(s.section==='external')s.control=await q('control.list',s.filters.property_id?{property_id:s.filters.property_id}:{});
+      if(s.section==='external'){s.control=await q('control.list',{...(s.filters.property_id?{property_id:s.filters.property_id}:{}),search:s.externalSearch||'',offset:s.offset,limit:50});s.list={total:s.control.total};}
       s.loaded=true;
     }catch(error){if(token===generation)s.error=error.message;}
     finally{if(token===generation){s.loading=false;render();}}
@@ -91,7 +91,8 @@ function createBankingUI(ctx) {
   function resultsHtml(){return `<div class="toolbar">${button('result-upload','Importar respuesta bancaria')}${button('result-manual','Registrar resultado acreditado')}</div>
     ${table(['Registrado','Origen','Estado',''],(s.list?.items||[]).map(r=>[h(r.registered_at.slice(0,10)),r.profile_id==='pain002'?'Respuesta del banco':'Evidencia revisada',h(label(r.state)),button('result-detail','Revisar',`data-id="${r.id}"`)]))}${paging()}`;}
   function externalHtml(){return `<div class="toolbar">${can('prepare')?button('external','Registrar instrucciones anteriores'):''}</div>
-    ${table(['Recibo','Corte','Estado',''],(s.control?.external_instructions||[]).map(r=>[h(r.number),h(r.cutoff_on),h(label(r.state)),r.state==='activa'&&can('present_cancel')?button('external-close','Acreditar cierre',`data-id="${r.id}"`):'']))}`;}
+    <form data-bank-form="external-search" class="toolbar">${field('search','Buscar recibo o propiedad','search',s.externalSearch||'',false)}<button>Buscar</button></form>
+    ${table(['Recibo / propiedad','Corte','Estado',''],(s.control?.external_instructions||[]).map(r=>[h(r.number+' · '+r.property_code),h(r.cutoff_on),h(label(r.state)),r.state==='activa'&&can('present_cancel')?button('external-close','Acreditar cierre',`data-id="${r.id}"`):'']))}${paging()}`;}
   function settingsHtml(){return `<div class="toolbar">${can('configure_creditor')?button('creditor','Configurar acreedor'):''}</div>
     <details><summary>Documentos bancarios protegidos</summary>${button('bank-document-upload','Adjuntar documento')}${table(['Documento','Fecha',''],(s.documents||[]).map(d=>[h(d.label),h(d.registered_at.slice(0,10)),can('export')&&can('reveal')?button('bank-document-download','Descargar',`data-id="${d.id}"`):'']))}</details>
     ${table(['Comunidad / acreedor','Cuenta de ingreso','Identificador','Configuracion',''],(s.creditors||[]).map(c=>[h(c.name),h(c.masked),h(c.creditor_identifier),c.profile?'Configurada':'Pendiente',can('configure_creditor')?button('profile','Revisar configuracion',`data-id="${c.id}"`):'']))}
@@ -111,21 +112,21 @@ function createBankingUI(ctx) {
     <div class="toolbar">${button('select-visible','Seleccionar visibles')}${button('deselect','Deseleccionar todas')}<strong>${s.selected.size} seleccionadas${sel.kind==='receipts'?' · '+money(total(selectedRows())):''}</strong></div>
     ${table(sel.kind==='receipts'?['Seleccionar','Recibo / propiedad','Pendiente','Revision']:['Seleccionar','Propiedad','Configuracion'],sel.rows.map(r=>[
       `<input type="checkbox" data-bank-select="${r.id}" aria-label="Seleccionar ${h(r.label||r.number)}" ${s.selected.has(r.id)?'checked':''} ${r.issues?.length?'disabled':''}>`,
-      h(r.label||r.number+' · '+r.property_code),sel.kind==='receipts'?money(r.pending_cents):h(r.alcance||''),
-      ...(sel.kind==='receipts'?[h(r.issues?.join(' ')||(r.retry_of?'Reenvio: requiere confirmacion':'Pendiente de validacion final'))]:[])]))}
+      h(r.label||r.number+' · '+r.property_code),sel.kind==='receipts'?money(r.pending_cents):h(r.issues?.join(' ')||r.alcance||''),
+      ...(sel.kind==='receipts'?[h(r.issues?.join(' ')||(r.retry_of?'Reenvio: requiere confirmacion':'Pendiente de validacion final'))+(r.requires_third_party_authorization?button('third-party',sel.authorizations?.[r.id]?'Autorizacion incorporada':'Autorizar pagador distinto',`data-id="${r.id}"`):'')]:[])]))}
     <div class="toolbar">${button('selection-prev','Anterior',sel.offset?'':'disabled')}<span>${sel.total} registros</span>${button('selection-next','Siguiente',sel.offset+100<sel.total?'':'disabled')}</div>
-    ${sel.kind==='receipts'?`<p class="finWarning">La seleccion se valida de nuevo antes de reservar. La prenotificacion debe estar ya enviada y cubrir estos importes y la fecha de cargo.</p>${field('sent_on','Prenotificacion enviada el','date',today())}`:''}
+    ${sel.kind==='receipts'?`${button('notice-draft','Preparar avisos de domiciliacion',s.selected.size?'':'disabled')}${sel.drafts?sel.drafts.map((d,i)=>`<details><summary>${h(d.recipient)}</summary><label>Borrador de aviso<textarea readonly rows="8">${h(d.text)}</textarea></label>${button('copy-notice','Copiar texto',`data-index="${i}"`)}</details>`).join(''):''}<p class="finWarning">La prenotificacion debe estar ya enviada y cubrir estos importes y la fecha de cargo.</p>${field('sent_on','Prenotificacion enviada el','date',sel.sentOn||today())}${check('sent_ack','Confirmo que estos avisos ya se han enviado y conservo la evidencia.',!!sel.sentAck)}`:''}
     <div class="toolbar">${button('selection-review','Revisar seleccion',s.selected.size?'':'disabled','green')}${button('close','Cancelar')}</div>`;}
   function detailHtml(){const d=s.detail,x=d.data;
     if(d.type==='account')return `${button('close','Volver')}<h3>${h(x.masked)}</h3><p>${h(label(x.state))}</p><div class="toolbar">${can('manage_accounts')?button('account-link','Vincular pagador / titular')+button('account-state','Cambiar estado'):''}${can('reveal')?button('reveal','Consultar IBAN'):''}</div>${s.revealed?`<div role="status" class="bankRevealed">${h(s.revealed)} ${button('hide-iban','Ocultar')}</div>`:''}`;
     if(d.type==='mandate')return `${button('close','Volver')}<h3>${h(d.summary?.debtor_name||'Mandato')}</h3><p>${h(label(x.state))} · ${h(label(x.kind))}</p><div class="toolbar">${can('manage_mandates')?button('mandate-state','Cambiar estado')+(x.state==='activo'?button('domicile','Gestionar propiedades'):'')+(['activo','pendiente','suspendido'].includes(x.state)?button('mandate-account','Cambiar cuenta'):'')+button('mandate-successor','Vincular mandato sucesor'):''}</div>
       ${table(['Desde','Hasta','Cuenta','Firma'],x.revisions.map(r=>[h(r.effective_from),h(r.effective_until||'Actualidad'),h(r.account.masked),h(r.signed_on)]))}<details><summary>Historico</summary>${table(['Fecha','Actuacion'],x.events.map(e=>[h(e.effective_on),h(label(e.event_type))]))}</details>`;
-    if(d.type==='result')return `${button('close','Volver')}<h3>Revision de resultado</h3>${table(['Fecha','Resultado','Correspondencia','Importe','Estado',''],x.lines.map(r=>[h(r.effective_on),h(label(r.kind)),r.matched?'Recibo vinculado':'Pendiente de identificar',r.amount_cents?money(r.amount_cents):'No acredita fondos',h(label(r.state)),r.state!=='confirmada'?button('result-line','Revisar',`data-id="${r.id}"`):'']))}`;
+    if(d.type==='result')return `${button('close','Volver')}<h3>Revision de resultado</h3>${table(['Seleccionar','Fecha','Resultado','Correspondencia','Importe','Estado',''],x.lines.map(r=>[r.state!=='confirmada'&&r.matched&&!r.contradictory&&['technical','rejected','cancelled'].includes(r.kind)?`<input type="checkbox" name="result_row" value="${r.id}" aria-label="Seleccionar resultado del ${h(r.effective_on)}">`:'',h(r.effective_on),h(label(r.kind)),r.matched?'Recibo vinculado':'Pendiente de identificar',r.amount_cents?money(r.amount_cents):'No acredita fondos',h(label(r.state)),r.state!=='confirmada'?button('result-line','Revisar',`data-id="${r.id}"`):'']))}${button('result-batch','Revisar acuses y rechazos seleccionados')}`;
     if(d.type==='import')return `${button('close','Volver')}<h3>Importacion de cuentas</h3><p class="finWarning">Los mandatos y las referencias de propietarios permanecen pendientes de acreditacion.</p>${table(['Fila','Cuenta','Revision'],x.items.map(r=>[h(r.row),h(r.masked),h(r.issues.join(' ')||'Sin incidencias de formato')]))}${x.state==='pendiente'?button('import-confirm','Revisar filas validas','','green'):'Confirmada'}`;
     const file=x.files?.at(-1);
     return `${button('close','Volver')}<h3>Remesa · ${h(x.requested_on)}</h3><div class="toolbar"><strong>${money(total(x.lines))}</strong><span>${h(label(x.state))}</span></div>${x.needs_review?'<p class="finWarning" role="alert">La remesa requiere revision. No presentes otro intento mientras exista incertidumbre.</p>':''}
-      <div class="toolbar">${can('prepare')&&!file?button('build','Validar fichero'):''}${can('export')&&file?button('export','Exportar XML','','green'):''}${can('present_cancel')&&file?button('present','Registrar presentacion')+button('withdraw','Solicitar retirada')+button('not-presented','Acreditar no presentacion'):''}${can('present_cancel')&&!file?button('cancel-local','Cancelar remesa'):''}${can('results')?button('result-manual','Registrar resultado'):''}</div>
-      ${table(['Recibo','Pagador','Cuenta','Importe','Situacion',''],x.lines.map(r=>[h(r.concept),h(r.debtor_name),h(r.masked),money(r.amount_cents),h(label(r.state)),button('economic','Ver recibo',`data-id="${r.receipt_id}"`)+(can('present_cancel')&&r.state==='settlement'?button('reversal','Solicitar inversion',`data-id="${r.id}"`):'')]))}
+      <div class="toolbar">${can('prepare')&&!file&&x.state==='preparada'?button('build','Validar fichero'):''}${can('export')&&file?button('export','Exportar XML','','green'):''}${can('present_cancel')&&file&&x.state==='exportada'?button('present','Registrar presentacion')+button('not-presented','Acreditar no presentacion'):''}${can('present_cancel')&&file&&['exportada','presentada','seguimiento'].includes(x.state)?button('withdraw','Solicitar retirada'):''}${can('present_cancel')&&['preparada','validada','fichero_disponible'].includes(x.state)?button('cancel-local','Cancelar remesa'):''}${can('results')?button('result-manual','Registrar resultado'):''}</div>
+      ${table(['Recibo','Pagador','Cuenta','Importe','Situacion',''],x.lines.map(r=>[h(r.concept),h(r.debtor_name),h(r.masked),money(r.amount_cents),h(label(r.state)),button('economic','Ver recibo',`data-id="${r.receipt_id}"`)+(r.state==='returned'&&r.events.some(e=>e.return_id)?button('return-fee','Revisar gasto independiente',`data-id="${r.events.filter(e=>e.return_id).at(-1).return_id}"`):'')+(can('results')&&r.state==='conflict'?r.events.filter(e=>e.kind==='conflict').map(e=>button('conflict-review','Revisar contradiccion',`data-id="${e.id}"`)).join(''):'')+(can('manage_mandates')&&r.mandate?.kind==='puntual'&&['rejected','cancelled'].includes(r.state)?button('oneoff-retry','Acreditar fallo puntual',`data-id="${r.id}"`):'')+(can('present_cancel')&&r.state==='settlement'?button('reversal','Solicitar inversion',`data-id="${r.id}"`):'')]))}
       <details><summary>Historico de intentos y resultados</summary>${table(['Recibo','Fecha','Resultado'],x.lines.flatMap(r=>r.events.map(e=>[h(r.concept),h(e.effective_on),h(label(e.kind))])))}</details>`;
   }
   async function openSelection(kind,options){s.selected=new Map();s.form=null;s.review=null;s.selection={kind,offset:0,search:'',...options};await loadSelection();}
@@ -151,6 +152,7 @@ function createBankingUI(ctx) {
     if(action==='account-detail'){s.detail={type:'account',data:s.accounts.find(a=>a.id===Number(b.dataset.id))};render();return;}
     if(action==='result-detail'){s.detail={type:'result',data:await q('results.get',{id:Number(b.dataset.id)})};render();return;}
     if(action==='economic'){await ctx.openReceipt?.(s.community,Number(b.dataset.id));return;}
+    if(action==='return-fee'){await ctx.openReturnFee?.(s.community,Number(b.dataset.id));return;}
     if(action==='bank-document-upload')return form('Adjuntar documento bancario',select('purpose','Finalidad',[
       ...(can('manage_mandates')?[['mandate','Mandato o autorizacion']]:[]),...(can('manage_accounts')?[['account','Cuenta bancaria']]:[]),
       ...(can('configure_creditor')?[['creditor','Contrato de la comunidad']]:[]),...(can('results')?[['result','Justificante de resultado']]:[])])+field('file','PDF o imagen','file'),async(f,node)=>({name:'document.upload',payload:{purpose:f.purpose,filename:node.elements.file.files[0].name,data:await fileBase64(node.elements.file.files[0])},summary:[['Documento','Archivo protegido; no se incorpora a la IA']]}));
@@ -187,19 +189,29 @@ function createBankingUI(ctx) {
     if(action==='domicile-state'){const d=s.domiciles.find(d=>d.id===Number(b.dataset.id)&&d.current);return form('Estado de domiciliacion',select('state','Cambio',[['suspendida','Suspender'],['finalizada','Finalizar']])+field('from','Desde','date',today()),f=>({name:'direct_debit.state',version:d.version,payload:{id:d.id,state:f.state,effective_from:f.from}}));}
     if(action==='domicile'){const m=s.detail.data;return form('Propiedades domiciliadas',field('from','Cambio efectivo desde','date',today()),f=>({special:()=>openSelection('billing',{title:'Propiedades cubiertas por el mandato',mandate:m,from:f.from,reason:f.reason,evidence:f.evidence,filters:{kind:'billing',mandate_id:m.id,on:f.from}}),immediate:true}));}
     if(action==='prepare')return form('Preparar remesa',select('creditor','Acreedor',creditorOptions())+field('requested','Fecha de cargo','date',today()),f=>({special:()=>openSelection('receipts',{title:'Seleccionar recibos',reason:f.reason,evidence:f.evidence,filters:{creditor_id:Number(f.creditor),requested_on:f.requested,...s.filters}}),immediate:true}));
-    if(action==='select-visible'){for(const r of s.selection.rows)if(!r.issues?.length)s.selected.set(r.id,r);render();return;}
-    if(action==='deselect'){s.selected.clear();render();return;}
+    if(action==='select-visible'){s.selection.sentAck=false;s.selection.drafts=null;for(const r of s.selection.rows)if(!r.issues?.length)s.selected.set(r.id,r);render();return;}
+    if(action==='deselect'){s.selection.sentAck=false;s.selection.drafts=null;s.selected.clear();render();return;}
+    if(action==='notice-draft'){s.selection.drafts=(await q('notification.draft',{receipt_ids:selectedRows().map(r=>r.id),requested_on:s.selection.filters.requested_on})).drafts;render();return;}
+    if(action==='copy-notice'){await navigator.clipboard.writeText(s.selection.drafts[Number(b.dataset.index)].text);return;}
+    if(action==='third-party'){
+      const sel=s.selection,row=sel.rows.find(r=>r.id===Number(b.dataset.id));
+      return form('Autorizacion de pagador distinto',`<p class="finWarning">El mandato pertenece a un pagador distinto del recibo. Esta autorizacion solo afecta a este intento; no traslada deuda ni cambia el obligado.</p>`,f=>({immediate:true,special:()=>{sel.authorizations={...sel.authorizations,[row.id]:{mandate_id:row.mandate_id,evidence:evidenceValue(f.evidence)}};sel.sentAck=false;sel.drafts=null;s.selection=sel;render();}}));
+    }
     if(action==='selection-prev'||action==='selection-next'){s.selection.offset+=action==='selection-next'?100:-100;return loadSelection();}
     if(action==='selection-review'){
       const sel=s.selection,rows=selectedRows();if(!rows.length)throw new Error('Selecciona propiedades o recibos.');
+      if(sel.kind==='external'){
+        s.review={title:'Confirmar instrucciones externas',content:table(['Recibo / propiedad'],rows.map(r=>[h(r.label)])),run:()=>command('external.register',{...sel.payload,receipt_ids:rows.map(r=>r.id)},null,sel.reason,sel.evidence)};render();return;
+      }
       if(sel.kind==='billing'){
         const payload={mandate_id:sel.mandate.id,billing_config_ids:rows.map(r=>r.id),effective_from:sel.from,
           replacements:Object.fromEntries(rows.filter(r=>r.replacement).map(r=>[String(r.replacement.id),r.replacement.version]))};
         s.review={title:'Confirmar domiciliaciones',content:table(['Propiedad','Cambio'],rows.map(r=>[h(r.label),r.replacement?'Sustituir domiciliacion':'Nueva domiciliacion'])),run:()=>command('direct_debit.confirm',payload,sel.mandate.version,sel.reason,sel.evidence)};render();return;
       }
       const sent=root().querySelector('[name="sent_on"]').value;
+      if(!root().querySelector('[name="sent_ack"]').checked)throw new Error('Confirma el envio ya realizado. Preparar un borrador no acredita que se haya enviado.');
       const notice=await command('notification.record',{sent_on:sent,lines:rows.map(r=>({receipt_id:r.id,amount_cents:r.pending_cents,requested_on:sel.filters.requested_on,mandate_id:r.mandate_id}))},null,sel.reason,sel.evidence);
-      const payload={creditor_id:sel.filters.creditor_id,requested_on:sel.filters.requested_on,notification_id:notice.id,receipt_ids:rows.map(r=>r.id),retry_of:Object.fromEntries(rows.filter(r=>r.retry_of).map(r=>[String(r.id),r.retry_of]))};
+      const payload={creditor_id:sel.filters.creditor_id,requested_on:sel.filters.requested_on,notification_id:notice.id,receipt_ids:rows.map(r=>r.id),retry_of:Object.fromEntries(rows.filter(r=>r.retry_of).map(r=>[String(r.id),r.retry_of])),third_party_authorizations:Object.fromEntries(rows.filter(r=>sel.authorizations?.[r.id]).map(r=>[String(r.id),sel.authorizations[r.id]]))};
       const preview=await command('remittance.preview',payload,null,sel.reason,sel.evidence);
       s.review={title:'Confirmar remesa · '+money(preview.total_cents),content:table(['Recibo','Propiedad','Importe','Intento'],rows.map(r=>[h(r.number),h(r.property_code),money(r.pending_cents),r.retry_of?'Reenvio expreso':'Primera presentacion'])),run:()=>command('remittance.prepare',{...payload,preview_hash:preview.preview_hash},null,sel.reason,sel.evidence)};render();return;
     }
@@ -213,9 +225,10 @@ function createBankingUI(ctx) {
         ...(action==='export'?{after:async result=>{await download(result.download_token);await load();}}:{})}),{reauth:action==='export'});
     }
     if(action==='permission'){const p={user_id:Number(b.dataset.user),capability:b.dataset.capability,allowed:b.dataset.allow==='1'};return form('Permiso bancario','',()=>({name:'permissions.save',version:Number(b.dataset.version),payload:p,summary:[['Operacion',p.allowed?'Conceder acceso':'Revocar acceso']]}));}
+    if(action==='conflict-review'){const rem=s.detail.data;return form('Revisar contradiccion',field('on','Fecha de revision','date',today())+check('keep','Conservar los hechos economicos confirmados'),f=>({name:'conflict.review',version:rem.version,payload:{event_id:Number(b.dataset.id),effective_on:f.on,keep_economic_history:!!f.keep},summary:[['Efecto','Registrar revision. No rectifica cobros, devoluciones ni deuda.']]}));}
+    if(action==='oneoff-retry'){const row=s.detail.data.lines.find(r=>r.id===Number(b.dataset.id));return form('Acreditar fallo de mandato puntual',field('on','Fecha de acreditacion','date',today()),f=>({name:'mandate.authorize_retry',version:row.mandate.version,payload:{line_id:row.id,effective_on:f.on},summary:[['Recibo',row.concept],['Efecto','Solo habilita propuesta de reenvio; no crea otra remesa ni amplia el mandato.']]}));}
     if(action==='external'){
-      await references();const refs=await q('receipt.candidates',{creditor_id:s.creditors[0]?.id,requested_on:today(),limit:200});
-      return form('Instrucciones externas al corte',field('source','Programa / origen')+field('reference','Referencia bancaria')+field('cutoff','Fecha de corte','date',today())+`<fieldset><legend>Recibos acreditados</legend>${refs.items.map(r=>`<label class="finCheck"><input name="receipt" type="checkbox" value="${r.id}">${h(r.number+' · '+r.property_code)}</label>`).join('')}</fieldset>`,f=>({name:'external.register',payload:{source:f.source,reference:f.reference,cutoff_on:f.cutoff,receipt_ids:f.receipts},summary:[['Origen',f.source],['Recibos',String(f.receipts.length)],['Corte',f.cutoff]]}));
+      return form('Instrucciones externas al corte',field('source','Programa / origen')+field('reference','Referencia bancaria')+field('cutoff','Fecha de corte','date',today()),f=>({immediate:true,special:()=>openSelection('external',{title:'Seleccionar recibos con instruccion externa',reason:f.reason,evidence:f.evidence,payload:{source:f.source,reference:f.reference,cutoff_on:f.cutoff},filters:{kind:'receipts'}})}));
     }
     if(action==='external-close'){const r=s.control.external_instructions.find(r=>r.id===Number(b.dataset.id));return form('Acreditar cierre externo',field('on','Cierre efectivo','date',today()),f=>({name:'external.close',version:r.version,payload:{id:r.id,effective_on:f.on,terminal_confirmed:true},summary:[['Recibo',r.number],['Efecto','Liberar la reserva externa; no cambia deuda']]}));}
     if(action==='result-upload')return form('Importar respuesta bancaria',field('file','Archivo de respuesta (.xml)','file')+field('on','Fecha del resultado','date',today()),async(f,formNode)=>({name:'results.import',payload:{format:'pain002',effective_on:f.on,data:await fileBase64(formNode.elements.file.files[0])},after:async r=>{s.detail={type:'result',data:await q('results.get',{id:r.id})};render();},summary:[['Archivo',formNode.elements.file.files[0]?.name],['Fecha',f.on]]}));
@@ -243,6 +256,15 @@ function createBankingUI(ctx) {
           return {name:'results.confirm',version:pv.version,payload:{...payload,preview_hash:pv.preview_hash},summary:[['Resultado',label(row.kind)],['Fecha',row.effective_on],['Importe',row.amount_cents?money(row.amount_cents):'Sin fondos acreditados'],['Accion',actions.find(a=>a[0]===f.action)?.[1]]]};
         });
     }
+    if(action==='result-batch'){
+      const result=s.detail.data,ids=[...root().querySelectorAll('[name="result_row"]:checked')].map(e=>Number(e.value));
+      if(!ids.length||ids.length>200)throw new Error('Selecciona entre 1 y 200 acuses, rechazos o cierres acreditados.');
+      return form('Confirmar resultados sin movimiento de fondos',table(['Fecha','Resultado'],result.lines.filter(r=>ids.includes(r.id)).map(r=>[h(r.effective_on),h(label(r.kind))])),async f=>{
+        const payload={result_id:result.id,decisions:ids.map(id=>({result_line_id:id,action:'none'}))};
+        const pv=await command('results.preview',payload,null,f.reason,f.evidence);
+        return {name:'results.confirm',version:pv.version,payload:{...payload,preview_hash:pv.preview_hash},summary:[['Resultados seleccionados',String(ids.length)],['Efecto','No registra cobros; rechazos/cierres acreditados liberan sus reservas.']]};
+      });
+    }
     if(action==='import')return form('Importar cuentas observadas',field('source','Programa / origen')+field('cutoff','Fecha de corte','date',today())+field('file','Archivo Excel (.xlsx) o CSV','file')+button('paste-import','Pegar filas de Excel'),async(f,node)=>{
       const file=node.elements.file.files[0],source={file_base64:await fileBase64(file),filename:file.name};
       return {immediate:true,special:async()=>{
@@ -269,7 +291,10 @@ function createBankingUI(ctx) {
         return {name:'import.file_preview',payload:{source_id:parsed.source_id,mapping,source:source.source,cutoff:source.cutoff},
           after:async r=>{s.detail={type:'import',data:await q('import.get',{id:r.id})};render();},
           summary:[['Origen',source.source],['Filas',String(parsed.row_count)],['Corte',source.cutoff],['Mandatos','No se activan: requieren acreditacion']]};
-      },{reason:source.reason,evidence:source.evidence});
+      },{reason:source.reason,evidence:source.evidence,sheetChange:async index=>{
+        const updated=await command('import.analyze',{...file,sheet_index:Number(index)},null,source.reason,source.evidence);
+        importMapping(updated,source,file);
+      }});
   }
   const mask=value=>{const v=String(value).replace(/\s/g,'');return v.length>8?v.slice(0,2)+'** **** ... '+v.slice(-4):'Cuenta por validar';};
   const addressFields=()=>field('country','Pais (ES, DE...)','text','ES')+field('town','Localidad')+field('street','Calle','text','',false)+field('building','Numero','text','',false)+field('postal','Codigo postal','text','',false);
@@ -310,10 +335,14 @@ function createBankingUI(ctx) {
     root().querySelectorAll('[data-bank-action]').forEach(b=>b.onclick=()=>safe(()=>chooseAction(b.dataset.bankAction,b)));
     const community=root().querySelector('[name="bankCommunity"]');if(community)community.onchange=()=>{reset();s.community=Number(community.value);load();};
     root().querySelector('[name="permissionUser"]')?.addEventListener('change',e=>{s.permissionUser=Number(e.target.value);render();});
+    root().querySelector('[name="sheet_index"]')?.addEventListener('change',e=>{const f=s.form;if(f.sheetChange)safe(()=>f.sheetChange(e.target.value));});
+    root().querySelector('[name="sent_ack"]')?.addEventListener('change',e=>{s.selection.sentAck=e.target.checked;});
+    root().querySelector('[name="sent_on"]')?.addEventListener('input',e=>{s.selection.sentOn=e.target.value;s.selection.sentAck=false;root().querySelector('[name="sent_ack"]').checked=false;});
     root().querySelector('[name="propertySearch"]')?.addEventListener('input',e=>{const needle=e.target.value.toLocaleLowerCase();root().querySelectorAll('[data-bank-property]').forEach(r=>r.hidden=!r.dataset.bankProperty.includes(needle));});
-    root().querySelectorAll('[data-bank-select]').forEach(el=>el.onchange=()=>{const id=Number(el.dataset.bankSelect);if(el.checked)s.selected.set(id,s.selection.rows.find(r=>r.id===id));else s.selected.delete(id);render();});
+    root().querySelectorAll('[data-bank-select]').forEach(el=>el.onchange=()=>{const id=Number(el.dataset.bankSelect);s.selection.sentAck=false;s.selection.drafts=null;if(el.checked)s.selected.set(id,s.selection.rows.find(r=>r.id===id));else s.selected.delete(id);render();});
     root().querySelector('[data-bank-form="operation"]')?.addEventListener('submit',e=>{e.preventDefault();safe(()=>submit(e.target));});
     root().querySelector('[data-bank-form="search"]')?.addEventListener('submit',e=>{e.preventDefault();s.selection.search=new FormData(e.target).get('search');s.selection.offset=0;safe(loadSelection);});
+    root().querySelector('[data-bank-form="external-search"]')?.addEventListener('submit',e=>{e.preventDefault();s.externalSearch=new FormData(e.target).get('search');s.offset=0;safe(load);});
     busyControls();
   }
   return {render,reset,ensure:()=>{if(!s.loaded&&!s.loading)load();},open:(community,filters={},scope='')=>{reset();s.community=community;s.filters=filters;s.scope=scope;s.section=filters.owner_id||filters.property_id?'mandates':'remittances';ctx.navigate();}};

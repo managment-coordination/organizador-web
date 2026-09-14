@@ -9,6 +9,33 @@ from .receivables_service import ReceivablesService
 
 
 class BankingQueries:
+    def notification_draft(self,session,query):
+        def op(conn,q):
+            from .receivables_contracts import day,cents
+            require_fields(q.filters,('receipt_ids','requested_on'))
+            ReceivablesService._session(conn,session,q.community_id,'sensitive_read')
+            ids=q.filters['receipt_ids'];requested=day(q.filters['requested_on'])
+            if not isinstance(ids,list) or not 1<=len(ids)<=1000 or len(set(ids))!=len(ids):raise ContractError('Selecciona entre 1 y 1000 recibos sin repetir.')
+            groups={}
+            for rid in ids:
+                receipt=conn.execute('SELECT * FROM erp_recibos WHERE id_comunidad=? AND id=?',(q.community_id,identity(rid))).fetchone()
+                if not receipt:raise NotFoundError('Recibo no disponible.')
+                amount=cents(receipt_balance(conn,q.community_id,rid)['pending_cents'],positive=True)
+                direct=self._direct_for_receipt(conn,q.community_id,receipt,requested)
+                mv=conn.execute('SELECT * FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=? AND effective_from<=? ORDER BY version DESC LIMIT 1',(q.community_id,direct['mandate_id'],requested)).fetchone()
+                details=self.vault.get(conn,q.community_id,mv['secret_id'],'mandate-version')
+                group=groups.setdefault(direct['mandate_id'],{'recipient':details['debtor_name'],'lines':[],'total':0})
+                group['lines'].append(f"- {receipt['number']}: {receipt['description']} - {amount//100},{amount%100:02d} EUR")
+                group['total']+=amount
+            drafts=[]
+            for group in groups.values():
+                amount=group['total']
+                drafts.append({'recipient':group['recipient'],'subject':'Aviso de domiciliacion - '+requested,
+                    'text':'Buenos dias,\n\nLe informamos de la domiciliacion prevista para el '+requested+' de los siguientes recibos:\n\n'+
+                        '\n'.join(group['lines'])+f'\n\nImporte total: {amount//100},{amount%100:02d} EUR.\n\nUn saludo,\nAdministracion de la comunidad.'})
+            return {'drafts':drafts,'sent':False,'creates_notification':False,'requires_review':True}
+        return self._read(session,query,'prepare',op)
+
     def instruction_find(self,session,query):
         def op(conn,q):
             require_fields(q.filters,('attempt_key',))
@@ -75,6 +102,19 @@ class BankingQueries:
             if not isinstance(search,str) or len(search)>200:raise ContractError('Busqueda no valida.')
             pattern='%'+search.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
             kind=q.filters['kind']
+            if kind=='receipts':
+                ReceivablesService._session(conn,session,q.community_id,'read')
+                sql=""" FROM erp_recibos r JOIN cf_propiedades p ON p.id_comunidad=r.id_comunidad AND p.id_propiedad=r.id_propiedad
+                    WHERE r.id_comunidad=? AND (r.number LIKE ? ESCAPE '\\' OR p.codigo_propiedad LIKE ? ESCAPE '\\')"""
+                args=(q.community_id,pattern,pattern)
+                total=conn.execute('SELECT count(*)'+sql,args).fetchone()[0]
+                items=[]
+                for row in conn.execute('SELECT r.id,r.number,p.codigo_propiedad AS property_code'+sql+' ORDER BY r.id DESC LIMIT ? OFFSET ?',(*args,limit,offset)):
+                    issues=[]
+                    if conn.execute("SELECT 1 FROM erp_remesa_reservas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(q.community_id,row['id'])).fetchone():issues.append('Reservado en una remesa local.')
+                    if conn.execute("SELECT 1 FROM erp_banca_instrucciones_externas WHERE id_comunidad=? AND receipt_id=? AND state='activa'",(q.community_id,row['id'])).fetchone():issues.append('Instruccion externa ya registrada.')
+                    items.append({**dict(row),'label':row['number']+' · '+row['property_code'],'issues':issues})
+                return {'items':items,'total':total}
             if kind in ('properties','owners','persons'):
                 table,key,label={'properties':('cf_propiedades','id_propiedad','codigo_propiedad'),
                     'owners':('cf_propietarios','id_propietario','nombre'),
@@ -144,7 +184,7 @@ class BankingQueries:
             rows=[]
             for receipt in conn.execute('SELECT r.*,p.codigo_propiedad AS property_code'+sql+' ORDER BY r.id DESC LIMIT ? OFFSET ?',args+[limit,offset]):
                 balance=receipt_balance(conn,q.community_id,receipt['id'])
-                issues=[];mandate_id=None;validated=False;retry_of=None
+                issues=[];mandate_id=None;validated=False;retry_of=None;third_party=False
                 prior=conn.execute('''SELECT l.id FROM erp_remesa_lineas l WHERE l.id_comunidad=? AND l.receipt_id=? ORDER BY l.id DESC LIMIT 1''',(q.community_id,receipt['id'])).fetchone()
                 if prior:retry_of=prior['id']
                 try:
@@ -153,6 +193,9 @@ class BankingQueries:
                         raise ContractError('El recibo no es elegible.')
                     direct=self._direct_for_receipt(conn,q.community_id,receipt,requested)
                     mandate_id=direct['mandate_id']
+                    mv=conn.execute('SELECT debtor_owner_id,debtor_person_id FROM erp_mandato_versiones WHERE id_comunidad=? AND mandate_id=? AND effective_from<=? ORDER BY version DESC LIMIT 1',(q.community_id,mandate_id,requested)).fetchone()
+                    payer=conn.execute("SELECT owner_id,person_id FROM erp_recibo_sujetos WHERE id_comunidad=? AND receipt_id=? AND role='payer'",(q.community_id,receipt['id'])).fetchone()
+                    third_party=bool(mv and payer and tuple(mv)!=tuple(payer))
                     if q.filters.get('notification_id'):
                         self._remittance_preview(conn,q.community_id,{'creditor_id':q.filters['creditor_id'],'requested_on':requested,
                             'receipt_ids':[receipt['id']],'notification_id':q.filters['notification_id'],
@@ -166,7 +209,7 @@ class BankingQueries:
                 except (ContractError,ConflictError,NotFoundError) as error:issues.append(str(error))
                 rows.append({'id':receipt['id'],'number':receipt['number'],'property_id':receipt['id_propiedad'],
                     'property_code':receipt['property_code'],'description':receipt['description'],'due_on':receipt['due_on'],
-                    'pending_cents':balance['pending_cents'],'mandate_id':mandate_id,'retry_of':retry_of,
+                    'pending_cents':balance['pending_cents'],'mandate_id':mandate_id,'retry_of':retry_of,'requires_third_party_authorization':third_party,
                     'issues':issues,'validated':validated})
             return {'items':rows,'total':total,'requires_final_review':True}
         return self._read(session,query,'prepare',op)
@@ -293,11 +336,14 @@ class BankingQueries:
             lines=[]
             for line in conn.execute('SELECT * FROM erp_remesa_lineas WHERE id_comunidad=? AND revision_id=? ORDER BY id',(q.community_id,revision['id'])):
                 frozen=self.vault.get(conn,q.community_id,line['secret_id'],'remittance-line')
+                mv=self._entity(conn,'erp_mandato_versiones',q.community_id,line['mandate_version_id'])
+                mandate=self._entity(conn,'erp_mandatos',q.community_id,mv['mandate_id'])
                 iban=frozen['payer_account']['iban']
                 events=[dict(r) for r in conn.execute('''SELECT e.id,e.kind,e.effective_on,o.collection_id,o.return_id
                     FROM erp_banca_linea_eventos e LEFT JOIN erp_banco_operaciones o ON o.id=e.operation_id AND o.id_comunidad=e.id_comunidad
                     WHERE e.id_comunidad=? AND e.line_id=? ORDER BY e.id''',(q.community_id,line['id']))]
                 lines.append({'id':line['id'],'receipt_id':line['receipt_id'],'attempt_key':line['attempt_key'],
+                    'mandate':self._mandate_public(mandate),
                     'retry_of_id':line['retry_of_id'],'amount_cents':str(line['amount_cents']),
                     'concept':frozen['concept'],'debtor_name':frozen['mandate_details']['debtor_name'],
                     'masked':iban[:2]+'** **** ... '+iban[-4:], 'state':self._line_status(conn,q.community_id,line['id']),

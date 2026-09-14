@@ -72,7 +72,7 @@ const bankingHttp = createBankingHttp({
 
 function runBankingContract(session, action, envelope) {
   return new Promise((resolve, reject) => {
-    const child = execFile(pythonBin, [path.join(__dirname, 'banking-bridge.py'), databasePath], {
+    const child = execFile(process.env.ERP4_PYTHON_BIN || pythonBin, [path.join(__dirname, 'banking-bridge.py'), databasePath], {
       timeout:90000,maxBuffer:34*1024*1024,env:{...process.env,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'},
     }, (error, stdout) => {
       let result;
@@ -451,7 +451,7 @@ function setSessionCookie(res, user) {
   const value = makeSessionCookie(user);
   res.setHeader(
     "Set-Cookie",
-    `${sessionCookieName}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionMaxAgeSeconds}`
+    `${sessionCookieName}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${sessionMaxAgeSeconds}${process.env.ERP4_BANKING_ENABLED === '1' ? '; Secure' : ''}`
   );
 }
 
@@ -8923,7 +8923,7 @@ function homePage() {
     ${receivablesScript}
     const receivablesUI=createReceivablesUI({api,html:value=>html(value),moneyLabel,moneyCents,moneyInput,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='receivables',navigate:()=>switchView('receivables')});
     ${bankingScript}
-    const bankingUI=createBankingUI({api,html:value=>html(value),moneyLabel,moneyCents,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='banking',navigate:()=>switchView('banking'),isSuperuser:()=>state.usuario?.rol==='Superusuario',openReceipt:(community,id)=>receivablesUI.openReceipt(community,id)});
+    const bankingUI=createBankingUI({api,html:value=>html(value),moneyLabel,moneyCents,communities:()=>masterCommunities(),root:()=>document.getElementById('cards'),active:()=>currentView==='banking',navigate:()=>switchView('banking'),isSuperuser:()=>state.usuario?.rol==='Superusuario',openReturnFee:(community,id)=>receivablesUI.openReturnFee(community,id),openReceipt:(community,id)=>receivablesUI.openReceipt(community,id)});
     let state = { usuario: null, proyectos: [], tareas: [], workflow: { actions: [], notifications: [], president_requests: [], review: { items: [], summary: {}, communities: [] } }, daily: { metrics: {}, map: { items: [], counts: {} }, documents: [], communities: [] } };
     let options = { responsables: [], estados_tarea: [], estados_proyecto: [], prioridades: [], tipos_registro: [], comunidades: [], proyectos: [] };
     let currentView = "home";

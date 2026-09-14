@@ -11,7 +11,7 @@ from erp_core.errors import ContractError, ConflictError, NotFoundError
 QUERIES = {
     'workspace.get','creditor.list','account.list','mandate.list','mandate.detail',
     'direct_debit.list','remittance.list','remittance.get','results.list','results.get','import.get','control.list',
-    'reference.list','permissions.get','receipt.candidates','results.choices','profile.get','document.list','mandate.edit','instruction.find',
+    'reference.list','permissions.get','receipt.candidates','results.choices','profile.get','document.list','mandate.edit','instruction.find','notification.draft',
 }
 
 

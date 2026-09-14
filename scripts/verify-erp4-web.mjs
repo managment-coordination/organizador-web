@@ -9,7 +9,8 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createBankingHttp} from '../server/banking-http.js';
 const exec=promisify(execFile),root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const python=path.join(root,'backups/erp4-runtime/Scripts/python.exe');
-const created=await exec(python,['scripts/erp4-web-fixture.py','create',process.argv[2]||'backups/erp4-pre-20260911.db'],{cwd:root});
+const bulk=process.argv.includes('--bulk');
+const created=await exec(python,['scripts/erp4-web-fixture.py','create',process.argv[2]&&!process.argv[2].startsWith('--')?process.argv[2]:'backups/erp4-pre-20260911.db',...(bulk?['--bulk']:[])],{cwd:root});
 const {fixture}=JSON.parse(created.stdout),config=JSON.parse(fs.readFileSync(fixture,'utf8')),dir=path.dirname(fixture);
 const pw=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE||'C:/Users/EQUIPO/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs').href);
 const pageErrors=[];let browser,base,handler;
@@ -55,24 +56,26 @@ try{
   const confirm=async()=>{await page.locator('[name="bankAck"]').check();await click('confirm');};
   await click('prepare');await page.locator('[name="creditor"]').selectOption(String(config.creditor_id));await fill('requested',config.requested_on);await review();
   await page.getByRole('heading',{name:'Seleccionar recibos'}).waitFor();await click('select-visible');
+  if(bulk){await click('selection-next');await click('select-visible');await page.getByText('200 seleccionadas',{exact:false}).waitFor();}
   await page.screenshot({path:path.join(dir,'desktop-selection.png'),fullPage:true});
+  await click('notice-draft');await page.locator('[name="sent_ack"]').check();
   await click('selection-review');await page.locator('[name="bankAck"]').waitFor();await confirm();
   await page.locator('[data-bank-action="remittance"]').first().waitFor();await click('remittance');await click('build');await review();await confirm();
   await page.locator('[data-bank-action="remittance"]').first().waitFor();await click('remittance');await click('export');await fill('password','synthetic-browser-password');await review();
   const downloaded=page.waitForEvent('download');await confirm();const file=await downloaded;const xml=fs.readFileSync(await file.path(),'utf8');
-  assert(xml.includes('pain.008.001.08'));assert.equal((xml.match(/<DrctDbtTxInf>/g)||[]).length,3);
+  assert(xml.includes('pain.008.001.08'));assert.equal((xml.match(/<DrctDbtTxInf>/g)||[]).length,config.receipt_ids.length);
   const pending=await page.evaluate(async community=>{
     const query=async(name,filters={})=>(await (await fetch('/api/erp/banking/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id_comunidad:community,query:'erp4.'+name,filters})})).json()).entity;
     const list=await query('remittance.list');return (await query('remittance.get',{id:list.items[0].id})).lines.map(l=>l.receipt_balance.pending_cents);
   },config.community);
-  assert.deepEqual(pending,['10000','10000','10000']);
+  assert.deepEqual(pending,config.receipt_ids.map(()=>'10000'));
   await page.locator('[data-bank-action="remittance"]').first().waitFor();await click('remittance');
   await page.getByRole('heading',{name:'Remesa · '+config.requested_on,exact:true}).waitFor();
-  await page.screenshot({path:path.join(dir,'desktop-remittance.png'),fullPage:true});
+  await page.screenshot({path:path.join(dir,'desktop-remittance.png'),fullPage:!bulk});
   for(const width of [1920,390]){
     await page.setViewportSize({width,height:900});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Horizontal page overflow '+width);
-    await page.screenshot({path:path.join(dir,'remittance-'+width+'.png'),fullPage:true});
+    await page.screenshot({path:path.join(dir,'remittance-'+width+'.png'),fullPage:!bulk});
   }
   await click('present');await fill('date',new Date().toLocaleDateString('sv-SE'));await fill('reference','TEST-BANK-PRESENTATION');await review();await confirm();
   await page.locator('[data-bank-action="remittance"]').first().waitFor();await click('remittance');await click('result-manual');await review();await confirm();
@@ -118,7 +121,32 @@ try{
     const list=await query('remittance.list');return (await query('remittance.get',{id:list.items[0].id})).lines[0];
   },config.community);
   assert.equal(afterReturn.state,'returned');assert.equal(afterReturn.receipt_balance.pending_cents,'10000');
+  await page.locator('[data-bank-action="section"][data-section="remittances"]').click();
+  await click('prepare');await page.locator('[name="creditor"]').selectOption(String(config.creditor_id));await fill('requested',config.requested_on);await review();
+  await page.getByRole('heading',{name:'Seleccionar recibos',exact:true}).waitFor();await click('select-visible');
+  if(bulk){await click('selection-next');await click('select-visible');}
+  assert.equal(await page.locator('[data-bank-select]:checked').count(),1,'Only returned receipt is eligible for the new attempt');
+  await page.locator('[name="sent_ack"]').check();await click('selection-review');await confirm();
+  await page.locator('[data-bank-action="remittance"]').first().waitFor();await click('remittance');
+  await click('cancel-local');await review();await confirm();
+  await page.locator('[data-bank-action="section"][data-section="external"]').click();await click('external');
+  await fill('source','Programa anterior sintetico');await fill('reference','EXT-WEB-TEST');await review();
+  await page.getByRole('heading',{name:'Seleccionar recibos con instruccion externa',exact:true}).waitFor();await click('select-visible');
+  if(bulk){await click('selection-next');await click('select-visible');}
+  assert.equal(await page.locator('[data-bank-select]:checked').count(),1);
+  await click('selection-review');await confirm();await page.locator('[data-bank-action="external-close"]').waitFor();
+  await click('external-close');await review();await confirm();
+  await page.locator('[data-bank-form="external-search"]').waitFor();
+  assert.equal(await page.locator('[data-bank-action="external-close"]').count(),0);
+  await page.locator('[data-bank-action="section"][data-section="mandates"]').click();await click('mandate-detail');
+  await click('mandate-account');await review();await confirm();
+  await page.locator('[data-bank-action="mandate-detail"]').first().waitFor();await click('mandate-detail');
+  await page.getByText('Pendiente de revision',{exact:true}).first().waitFor();
   assert.deepEqual(pageErrors,[]);
   console.log(JSON.stringify({ok:true,fixture,https:true,domain:'isolated-real-services',viewports:[1440,1920,390],screenshots:dir,
-    exportDoesNotCollect:true,flows:['bulk-selection','prepare','build','export','present','technical-result-confirm','mandate','masked-account-review','edit-before-confirm','file-import-map-preview-confirm','protected-document-upload-download','collection-allocation-return-erp3']}));
+    exportDoesNotCollect:true,flows:['bulk-selection','prepare','build','export','present','technical-result-confirm','mandate','masked-account-review','edit-before-confirm','file-import-map-preview-confirm','protected-document-upload-download','collection-allocation-return-erp3','confirmed-retry','cancel-retry','external-cutover-selection-close','mandate-amendment-review']}));
+}catch(error){
+  const page=browser?.contexts()[0]?.pages()[0];
+  if(page){await page.screenshot({path:path.join(dir,'failure.png'),fullPage:true});console.error(JSON.stringify({fixture,alerts:await page.locator('[role="alert"]').allTextContents()}));}
+  throw error;
 }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}
