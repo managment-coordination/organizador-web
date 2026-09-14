@@ -23,7 +23,8 @@ parser.add_argument('--commit',required=True)
 parser.add_argument('--bank-python',type=Path,required=True)
 parser.add_argument('--recovery-key-sha256',required=True)
 parser.add_argument('--publish',action='store_true')
-parser.add_argument('--quota-plans',action='store_true',help='Verify the additive ERP 2/3 active-plan extension and full ERP 4 regression.')
+parser.add_argument('--quota-plans',action='store_true',help='Verify the additive ERP 2/3 active-plan extension.')
+parser.add_argument('--full-bank-regression',action='store_true',help='Run every ERP 4 case, rather than the critical economic regression gate.')
 parser.add_argument('--validated-stage',type=Path,help='Reuse the explicitly verified domain gate from a previous attempt; only banking UI/docs/test tooling may differ.')
 args=parser.parse_args()
 assert os.name=='posix' and Path.home()==Path('/home/coordinador') and APP.is_dir()
@@ -89,7 +90,7 @@ for script,parameters in (
             subprocess.run([str(runtime),str(stage/'scripts/verify-quota-plans.py'),str(fixture)],cwd=stage,env=env,check=True)
             subprocess.run([str(runtime),str(stage/'scripts/verify-erp2b-engine.py'),str(source)],cwd=stage,env=env,check=True)
         else:
-            if args.quota_plans and script=='verify-erp4-foundations.py':parameters=[str(source)]
+            if args.full_bank_regression and script=='verify-erp4-foundations.py':parameters=[str(source)]
             subprocess.run([str(runtime),str(stage/'scripts'/script),*parameters],cwd=stage,env=env,check=True)
 subprocess.run(['node',str(stage/'scripts/verify-erp4-http.mjs')],cwd=stage,check=True)
 print(json.dumps({'stage_validated':str(stage),'migration_preserves_existing_tables':len(before)}),flush=True)
